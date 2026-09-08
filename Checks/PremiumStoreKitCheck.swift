@@ -2,9 +2,11 @@
 //  PremiumStoreKitCheck.swift
 //  IntegrationKit
 //
-//  PM-05 (restore) and PM-08 (unfinished transactions) — spec section 6. PM-05 rows 1-5 go through
-//  the `PremiumService` facade with a mocked `AppleSubscribing`, same as `PremiumBarrierCheck`; rows
-//  6-7 and all of PM-08 exercise the real `StoreKitService` against a stubbed `SwiftyStoreKit`.
+//  PM-05 (restore) and PM-08 (unfinished transactions) — spec section 6 — plus PM-07 row 5, which
+//  needs the real `StoreKitService` and so lives here rather than in the barrier check. PM-05 rows
+//  1-5 go through the `PremiumService` facade with a mocked `AppleSubscribing`, same as
+//  `PremiumBarrierCheck`; rows 6-7, PM-07 row 5 and all of PM-08 exercise the real `StoreKitService`
+//  against a stubbed `SwiftyStoreKit`.
 //
 //  PM-08 row 5 is a KNOWN FAILURE — see the comment at that case, near the bottom of `main()`. This
 //  check does not stop at the first failing row: every row runs, every failure is collected, and the
@@ -233,6 +235,18 @@ enum PremiumStoreKitCheck {
 		check(wait { mixedOutcome != nil }, "PM-05 row 7: restore must call back")
 		check(mixedOutcome == .restored, "PM-05 row 7: restored+failed together must resolve to .restored, got \(String(describing: mixedOutcome))")
 
+		// PM-07 row 5: StoreKit did not answer at all (no network when the paywall opened). The error
+		// is logged and the request resolves with an EMPTY dictionary — never an exception, never a
+		// fabricated zero price. There is no Adapty fallback down here on purpose: that merge lives one
+		// layer up, in `PremiumService.products(placement:)`, so `StoreKitService` must answer `[:]`.
+		SwiftyStoreKit.reset()
+		SwiftyStoreKit.retrieveProductsInfoResult = RetrieveResults(retrievedProducts: [], invalidProductIDs: ["year.sub"], error: URLError(.notConnectedToInternet))
+		let offlinePricesService = StoreKitService(sharedSecret: "", productIds: ["year.sub"])
+		var offlinePrices: [String: PremiumProduct]?
+		Task { offlinePrices = await offlinePricesService.products(ids: ["year.sub", "week.sub"]) }
+		check(wait { offlinePrices != nil }, "PM-07 row 5: products(ids:) must call back")
+		check(offlinePrices == [:], "PM-07 row 5: a store that answered nothing must give exactly [:], got \(String(describing: offlinePrices))")
+
 		// PM-08 row 1: one purchased transaction in the queue — finished exactly once, delivered
 		// exactly once.
 		SwiftyStoreKit.reset()
@@ -253,6 +267,21 @@ enum PremiumStoreKitCheck {
 		var finishCountAtDelivery = -1
 		orderedDeliveryService.completeTransactions { finishCountAtDelivery = SwiftyStoreKit.finishTransactionCalls.count }
 		check(finishCountAtDelivery == 1, "PM-08 row 2: finishTransaction must run before onDelivered, saw \(finishCountAtDelivery) finished call(s) inside onDelivered")
+
+		// PM-08 row 4: a transaction in the `.failed` state. Our own loop takes the
+		// `case .failed, .purchasing, .deferred: break` branch — it neither finishes it nor counts it
+		// as delivered, so nothing about it can turn premium on. (Closing failed transactions is the
+		// library's job, unconditionally and before our callback; what is pinned here is that WE do
+		// not touch it.)
+		SwiftyStoreKit.reset()
+		let failedTransaction = StubTransaction(state: .failed, label: "row4")
+		SwiftyStoreKit.completeTransactionsResult = [Purchase(transaction: failedTransaction, productId: "year.sub", needsFinishTransaction: true)]
+		let failedQueueService = StoreKitService(sharedSecret: "", productIds: ["year.sub"])
+		var failedQueueDeliveries = 0
+		failedQueueService.completeTransactions { failedQueueDeliveries += 1 }
+		let failedQueueFinished = SwiftyStoreKit.finishTransactionCalls.compactMap { ($0 as? StubTransaction)?.label }
+		check(failedQueueFinished == [], "PM-08 row 4: a failed transaction must not be finished by our code — expected finishTransaction calls [], got \(failedQueueFinished)")
+		check(failedQueueDeliveries == 0, "PM-08 row 4: a failed transaction is not a delivery — expected onDelivered called 0 times, got \(failedQueueDeliveries)")
 
 		// PM-08 row 6: an empty queue finishes nothing and delivers nothing.
 		SwiftyStoreKit.reset()
@@ -282,7 +311,7 @@ enum PremiumStoreKitCheck {
 		check(wiredPremium.isPremium == true, "PM-08 row 5: a purchase delivered from the queue must grant premium even when the receipt says no, got isPremium == \(wiredPremium.isPremium)")
 
 		if failures.isEmpty {
-			print("PremiumService restore (PM-05) and unfinished transactions (PM-08): 11/11 OK")
+			print("PremiumService restore (PM-05), prices (PM-07) and unfinished transactions (PM-08): 13/13 OK")
 		} else {
 			print("\(failures.count) check(s) failed:")
 			for failure in failures {

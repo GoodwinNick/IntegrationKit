@@ -69,7 +69,12 @@ final class SpyStore: PremiumStateStoring {
 
 /// An Adapty that answers whatever it is told, after however long it is told.
 final class FakeAdapty: AdaptyPremiumProviding {
-	var premiumObserver: ((AdaptyProfile) -> Void)?
+	var premiumObserver: ((AdaptyProfile) -> Void)? {
+		didSet { onObserverSet?() }
+	}
+	/// Fires the moment `start()` installs its observer — case 14 reads the store from inside it to
+	/// see what was already published by then.
+	var onObserverSet: (() -> Void)?
 	var answer: AdaptyProfile?
 	var delay: TimeInterval
 	var buyResult: AdaptyPurchaseResult = .failed
@@ -361,6 +366,267 @@ enum PremiumBarrierCheck {
 		assert(mixed?.first?.localizedPrice == "€34,99" && mixed?.first?.currencyCode == "EUR", "case 11: the store's price wins where the store answered")
 		assert(mixed?.last?.localizedPrice == "$4.99", "case 11: an id the store stayed silent about keeps Adapty's price")
 
-		print("PremiumService barrier, restore, purchase fallback and prices: 11/11 OK")
+		// 12. PM-01 row 1: the migration seed. An app moving onto the package carries only the legacy
+		//     `true` flag and no structured cache — `start()` has to turn that into unverified premium
+		//     from `.legacy`, not into a free state that shows a paywall to a paying user.
+		let seedStore = SpyStore(cached: nil, premium: true)
+		let seedService = PremiumService(store: seedStore, adapty: FakeAdapty(answer: nil), apple: FakeApple(receipt: nil), levels: ["premium"], sourceTimeout: 1)
+		seedService.start()
+		assert(
+			seedStore.cached == PremiumState(isPremium: true, source: .legacy, isVerified: false),
+			"case 12: the legacy flag must seed exactly PremiumState(isPremium: true, source: .legacy, isVerified: false, expiresAt: nil), got \(String(describing: seedStore.cached))"
+		)
+		// Long enough for `start()`'s own refresh to land — with both sources silent it must add
+		// nothing on top of the seed.
+		Thread.sleep(forTimeInterval: 0.3)
+		assert(seedStore.writes == 1, "case 12: the seed is the only write a silent start makes, expected 1, got \(seedStore.writes)")
+		assert(seedService.isPremium == true, "case 12: the seeded state must read back as premium, got \(seedService.isPremium)")
+
+		// 13. PM-01 row 2: a cache that no longer decodes (the verdict schema changed between package
+		//     versions) must read as "no cache", not crash and not fabricate a state. The REAL
+		//     `UserDefaultsPremiumStore` is what carries that behaviour, so this row uses it against a
+		//     throwaway suite instead of `SpyStore`.
+		let suiteName = "com.integrationkit.checks.pm01row2"
+		let suite = UserDefaults(suiteName: suiteName)
+		assert(suite != nil, "case 13: the throwaway UserDefaults suite must open")
+		let realStore = UserDefaultsPremiumStore(defaults: suite!, stateKey: "premiumStateKey", flagKey: "premiumKey")
+		// First prove the wiring: a valid state written through the store reads back. Without this the
+		// `nil` below could just as well come from reading the wrong key.
+		let written = PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: now + hour)
+		realStore.cached = written
+		assert(realStore.cached == written, "case 13: a valid state must round-trip through the real store, got \(String(describing: realStore.cached))")
+		suite!.set(Data("{ this is not a PremiumState".utf8), forKey: "premiumStateKey")
+		assert(suite!.data(forKey: "premiumStateKey") != nil, "case 13: the corrupted payload must actually be in the defaults")
+		assert(realStore.cached == nil, "case 13: a cache that does not decode must read as exactly nil, got \(String(describing: realStore.cached))")
+		suite!.removePersistentDomain(forName: suiteName)
+
+		// 14. PM-01 row 3 and PM-06 row 1 (the same scenario, one case): the Adapty push subscription
+		//     is installed AFTER the cache is published, so a push firing at the instant of
+		//     subscription cannot be overwritten by a cache publication that has not happened yet.
+		//     `onObserverSet` fires exactly when `start()` assigns the observer.
+		let orderStore = SpyStore()
+		let orderAdapty = FakeAdapty(answer: nil)
+		let orderService = PremiumService(store: orderStore, adapty: orderAdapty, apple: FakeApple(receipt: nil), levels: ["premium"], sourceTimeout: 1)
+		let pushedExpiry = now + hour
+		var cachedAtSubscription: PremiumState??
+		var writesAtSubscription = -1
+		orderAdapty.onObserverSet = { [weak orderAdapty] in
+			cachedAtSubscription = orderStore.cached
+			writesAtSubscription = orderStore.writes
+			// The nastiest timing there is: the push lands inside the assignment itself.
+			orderAdapty?.premiumObserver?(profile(active: true, expiresAt: pushedExpiry))
+		}
+		orderService.start()
+		assert(cachedAtSubscription != nil, "case 14: the observer must be installed at all")
+		assert(cachedAtSubscription! != nil, "case 14: the cache must already be published when the observer is installed, got nil")
+		assert(writesAtSubscription == 1, "case 14: exactly 1 store write (the seed) must precede the subscription, got \(writesAtSubscription)")
+		Thread.sleep(forTimeInterval: 0.3)
+		assert(
+			orderStore.cached == PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: pushedExpiry),
+			"case 14: a push during start() must survive, expected the pushed verified premium, got \(String(describing: orderStore.cached))"
+		)
+		assert(orderStore.writes == 2, "case 14: seed then push — exactly 2 writes, got \(orderStore.writes)")
+		assert(orderStore.notified == 1, "case 14: exactly 1 .premiumDidChange, got \(orderStore.notified)")
+
+		// 15. PM-01 row 5: Adapty was never activated (empty key), so the package holds no Adapty side
+		//     at all and no Apple side either. Both `guard let` returns give `nil` — "did not answer" —
+		//     which must leave the verdict exactly as it was, never rewrite it to "no premium".
+		let heldByCache = PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: now + hour)
+		let unwiredStore = SpyStore(cached: heldByCache, premium: true)
+		let unwiredService = PremiumService(store: unwiredStore, adapty: nil, apple: nil, levels: ["premium"], sourceTimeout: 1)
+		unwiredService.refresh()
+		Thread.sleep(forTimeInterval: 0.3)
+		assert(unwiredStore.cached == heldByCache, "case 15: no sources configured must leave the cached verdict untouched, got \(String(describing: unwiredStore.cached))")
+		assert(unwiredStore.writes == 0, "case 15: silence is not an answer — expected 0 writes, got \(unwiredStore.writes)")
+		assert(unwiredStore.notified == 0, "case 15: expected 0 notifications, got \(unwiredStore.notified)")
+		assert(unwiredService.isPremium == true, "case 15: premium must survive a refresh nobody could answer, got \(unwiredService.isPremium)")
+
+		// 16. PM-02 row 1: the deadline is `sourceTimeout`, not a number of its own. Case 4 proves a
+		//     stuck source cannot hold the verdict; this one ties the elapsed time to the configured
+		//     value in both directions — the verdict cannot arrive BEFORE the deadline (both sources
+		//     are awaited together) and must arrive well within a small multiple of it.
+		let deadline: TimeInterval = 0.2
+		let deadlineStore = SpyStore()
+		let neverAdapty = FakeAdapty(answer: profile(active: false), delay: 30)
+		let deadlineService = PremiumService(store: deadlineStore, adapty: neverAdapty, apple: FakeApple(receipt: true), levels: ["premium"], sourceTimeout: deadline)
+		let deadlineStarted = Date()
+		deadlineService.refresh()
+		assert(wait(2) { deadlineStore.writes > 0 }, "case 16: a source that never answers must not hold the verdict past sourceTimeout \(deadline)s")
+		let deadlineElapsed = Date().timeIntervalSince(deadlineStarted)
+		assert(deadlineElapsed >= deadline, "case 16: the verdict cannot precede sourceTimeout \(deadline)s — both sources are awaited, took \(deadlineElapsed)s")
+		assert(deadlineElapsed < deadline * 3, "case 16: the verdict must arrive under \(deadline * 3)s (3 x sourceTimeout \(deadline)s), took \(deadlineElapsed)s")
+		assert(deadlineStore.cached?.source == .apple, "case 16: the verdict is built from the source that answered, got \(String(describing: deadlineStore.cached?.source))")
+
+		// 17. PM-02 rows 3 and 6 (one mechanism, one case): there is no dedup logic, on purpose. What
+		//     keeps a redundant refresh from writing and notifying is the equality guard on the store
+		//     write plus the change guard in the flag setter — so two concurrent refreshes resolving to
+		//     the same state cost exactly one write and one notification, and a third identical one
+		//     costs exactly nothing.
+		let dedupStore = SpyStore()
+		let dedupExpiry = now + hour
+		let dedupAdapty = FakeAdapty(answer: profile(active: true, expiresAt: dedupExpiry))
+		let dedupService = PremiumService(store: dedupStore, adapty: dedupAdapty, apple: nil, levels: ["premium"], sourceTimeout: 1)
+		dedupService.refresh()
+		dedupService.refresh()
+		assert(wait { dedupStore.writes > 0 }, "case 17: two refreshes must produce a verdict")
+		Thread.sleep(forTimeInterval: 0.3)
+		assert(dedupStore.writes == 1, "case 17: two concurrent refreshes onto the same state — exactly 1 write, got \(dedupStore.writes)")
+		assert(dedupStore.notified == 1, "case 17: two concurrent refreshes onto the same state — exactly 1 notification, got \(dedupStore.notified)")
+		dedupService.refresh()
+		Thread.sleep(forTimeInterval: 0.3)
+		assert(dedupStore.writes == 1, "case 17: a third identical refresh must add 0 writes — still exactly 1, got \(dedupStore.writes)")
+		assert(dedupStore.notified == 1, "case 17: a third identical refresh must add 0 notifications — still exactly 1, got \(dedupStore.notified)")
+
+		// 18. PM-02 row 4: an answer that arrives after the barrier already took the verdict is
+		//     dropped, not applied on top of a fresher one. `withSingleResume` is the mechanism —
+		//     exercised directly, because a second `resume` on a continuation is a hard crash, so
+		//     "dropped silently" is exactly what has to be proven.
+		var doubleValue: Int?
+		Task {
+			let settled: Int = await withSingleResume { resume in
+				resume(1)
+				resume(2)
+			}
+			doubleValue = settled
+		}
+		assert(wait { doubleValue != nil }, "case 18: withSingleResume must deliver the first value")
+		assert(doubleValue == 1, "case 18: the first resume wins, expected exactly 1, got \(String(describing: doubleValue))")
+		var lateResume: ((Int) -> Void)?
+		var lateValue: Int?
+		Task {
+			let settled: Int = await withSingleResume { resume in
+				lateResume = resume
+				resume(10)
+			}
+			lateValue = settled
+		}
+		assert(wait { lateValue != nil }, "case 18: withSingleResume must deliver the first value")
+		// The slow source finally answering, long after the deadline took the verdict.
+		lateResume?(20)
+		Thread.sleep(forTimeInterval: 0.2)
+		assert(lateValue == 10, "case 18: a late resume must be dropped, expected the value to stay exactly 10, got \(String(describing: lateValue))")
+
+		// 19. PM-03 row 7, through the facade (the risk row's own "how to reproduce" asks for the
+		//     facade, not the pure resolver): a purchase has just gone through, but the cache holds a
+		//     verified `inactive` Adapty gave us before it. Resolver step 2 would hand that straight
+		//     back — the demotion at `PremiumService.swift:117-119` is what stops it.
+		let staleVerifiedDenial = PremiumState(isPremium: false, source: .adapty, isVerified: true)
+		let freshBuyStore = SpyStore(cached: staleVerifiedDenial)
+		let freshBuyAdapty = FakeAdapty(answer: nil)
+		freshBuyAdapty.buyResult = .success
+		let freshBuyService = PremiumService(store: freshBuyStore, adapty: freshBuyAdapty, apple: FakeApple(receipt: nil), levels: ["premium"], sourceTimeout: 1)
+		var freshBuyOutcome: PurchaseOutcome?
+		freshBuyService.purchase("year.sub", placement: "main") { freshBuyOutcome = $0 }
+		assert(wait { freshBuyOutcome != nil }, "case 19: purchase must call back")
+		assert(freshBuyOutcome == .purchased, "case 19: the Adapty answer is passed through, expected .purchased, got \(String(describing: freshBuyOutcome))")
+		assert(
+			freshBuyStore.cached == PremiumState(isPremium: true, source: .apple, isVerified: false, expiresAt: nil),
+			"case 19: a stale verified denial must not swallow a fresh purchase, expected unverified premium from .apple, got \(String(describing: freshBuyStore.cached))"
+		)
+		assert(freshBuyStore.writes == 1, "case 19: exactly 1 write, got \(freshBuyStore.writes)")
+		assert(freshBuyStore.notified == 1, "case 19: exactly 1 .premiumDidChange, got \(freshBuyStore.notified)")
+
+		// 20. PM-04 row 1: the user changed their mind. That is its own outcome and must never be
+		//     folded in with real failures, or the app shows an error for a deliberate dismissal.
+		let cancelStore = SpyStore(cached: .free)
+		let cancelAdapty = FakeAdapty(answer: nil)
+		cancelAdapty.buyResult = .cancelled
+		let cancelService = PremiumService(store: cancelStore, adapty: cancelAdapty, apple: FakeApple(receipt: nil), levels: ["premium"], sourceTimeout: 1)
+		var cancelOutcome: PurchaseOutcome?
+		cancelService.purchase("year.sub", placement: "main") { cancelOutcome = $0 }
+		assert(wait { cancelOutcome != nil }, "case 20: purchase must call back")
+		assert(cancelOutcome == .cancelled, "case 20: a cancelled purchase maps to exactly .cancelled, never .failed, got \(String(describing: cancelOutcome))")
+		assert(cancelService.isPremium == false, "case 20: a cancelled purchase must not grant premium, got \(cancelService.isPremium)")
+		assert(cancelStore.writes == 0, "case 20: nothing changed — expected 0 writes, got \(cancelStore.writes)")
+
+		// 21. PM-04 row 2: Adapty asked for the StoreKit fallback and there is no Apple side wired up
+		//     at all (the product is not in the ids handed to `configure`, or StoreKit was never set
+		//     up). The optional chain must settle to a plain failure — not a crash, not a hang.
+		let noFallbackStore = SpyStore(cached: .free)
+		let noFallbackAdapty = FakeAdapty(answer: nil)
+		noFallbackAdapty.buyResult = .retryWithStoreKit
+		let noFallbackService = PremiumService(store: noFallbackStore, adapty: noFallbackAdapty, apple: nil, levels: ["premium"], sourceTimeout: 1)
+		var noFallbackOutcome: PurchaseOutcome?
+		noFallbackService.purchase("year.sub", placement: "main") { noFallbackOutcome = $0 }
+		assert(wait { noFallbackOutcome != nil }, "case 21: purchase must call back")
+		assert(noFallbackOutcome == .failed, "case 21: no Apple side to fall back to gives exactly .failed, got \(String(describing: noFallbackOutcome))")
+		assert(noFallbackService.isPremium == false, "case 21: a fallback that could not run must not grant premium, got \(noFallbackService.isPremium)")
+		assert(noFallbackStore.writes == 0, "case 21: nothing changed — expected 0 writes, got \(noFallbackStore.writes)")
+
+		// 22. PM-04 row 6: Adapty was never activated, so there is nothing to buy through. The failure
+		//     is immediate and on the main queue — no network attempt, and no waiting out a timeout.
+		let noAdaptyStore = SpyStore(cached: .free)
+		let noAdaptyService = PremiumService(store: noAdaptyStore, adapty: nil, apple: FakeApple(receipt: nil), levels: ["premium"], sourceTimeout: 1)
+		var noAdaptyOutcome: PurchaseOutcome?
+		let noAdaptyStarted = Date()
+		noAdaptyService.purchase("year.sub", placement: "main") { noAdaptyOutcome = $0 }
+		assert(wait(0.3) { noAdaptyOutcome != nil }, "case 22: purchase must call back")
+		let noAdaptyElapsed = Date().timeIntervalSince(noAdaptyStarted)
+		assert(noAdaptyOutcome == .failed, "case 22: no Adapty means exactly .failed, got \(String(describing: noAdaptyOutcome))")
+		assert(noAdaptyElapsed < 0.3, "case 22: the failure must not wait out sourceTimeout 1.0s, expected under 0.3s, took \(noAdaptyElapsed)s")
+		assert(noAdaptyStore.writes == 0, "case 22: nothing changed — expected 0 writes, got \(noAdaptyStore.writes)")
+
+		// 23. PM-06 row 2: the lock buys atomicity per apply, and NOTHING beyond that. A refresh that
+		//     started earlier and finished later overwrites a push that carried the fresher truth —
+		//     last writer wins, not freshest answer. The risk row calls this a recognised limit
+		//     ("саме так і працює"), so this case pins the behaviour, it does not object to it.
+		let raceStore = SpyStore()
+		let raceAdapty = FakeAdapty(answer: profile(active: false))
+		let raceService = PremiumService(store: raceStore, adapty: raceAdapty, apple: nil, levels: ["premium"], sourceTimeout: 1)
+		raceService.start()
+		assert(wait { raceStore.cached?.source == .adapty }, "case 23: start() must settle on Adapty's answer first")
+		assert(raceStore.writes == 2, "case 23: seed then start's refresh — exactly 2 writes before the race, got \(raceStore.writes)")
+		// The stale reader: it reads the SAME inactive profile, it just takes 0.3s to come back.
+		raceAdapty.delay = 0.3
+		raceService.refresh()
+		Thread.sleep(forTimeInterval: 0.1)
+		// The fresher truth, arriving 0.2s BEFORE the refresh that started before it.
+		raceAdapty.premiumObserver?(profile(active: true, expiresAt: now + hour))
+		assert(raceStore.cached?.isPremium == true, "case 23: the push must land first, expected isPremium true right after it, got \(String(describing: raceStore.cached?.isPremium))")
+		assert(wait { raceStore.cached?.isPremium == false }, "case 23: the older, slower refresh must land last and overwrite the fresher push")
+		assert(
+			raceStore.cached == PremiumState(isPremium: false, source: .adapty, isVerified: true, expiresAt: nil),
+			"case 23: the last writer wins — expected the stale refresh's verified inactive verdict, got \(String(describing: raceStore.cached))"
+		)
+		assert(raceStore.writes == 4, "case 23: seed, start's refresh, the push, the stale refresh — exactly 4 writes, got \(raceStore.writes)")
+		assert(raceStore.notified == 2, "case 23: the flag went false-true-false — exactly 2 notifications, got \(raceStore.notified)")
+
+		// 24. PM-06 row 3: Adapty re-pushing a profile it already pushed is free. The second delivery
+		//     of the identical profile must cost exactly zero writes and zero notifications.
+		let idempotentStore = SpyStore()
+		let idempotentAdapty = FakeAdapty(answer: nil)
+		let idempotentService = PremiumService(store: idempotentStore, adapty: idempotentAdapty, apple: nil, levels: ["premium"], sourceTimeout: 1)
+		idempotentService.start()
+		Thread.sleep(forTimeInterval: 0.3)
+		assert(idempotentStore.writes == 1, "case 24: a silent start writes only the seed, expected exactly 1, got \(idempotentStore.writes)")
+		let repeatedProfile = profile(active: true, expiresAt: now + hour)
+		idempotentAdapty.premiumObserver?(repeatedProfile)
+		assert(idempotentStore.writes == 2, "case 24: the first push must write, expected exactly 2 writes total, got \(idempotentStore.writes)")
+		assert(idempotentStore.notified == 1, "case 24: the first push must notify, expected exactly 1, got \(idempotentStore.notified)")
+		idempotentAdapty.premiumObserver?(repeatedProfile)
+		assert(idempotentStore.writes == 2, "case 24: an identical push must add 0 writes — still exactly 2, got \(idempotentStore.writes)")
+		assert(idempotentStore.notified == 1, "case 24: an identical push must add 0 notifications — still exactly 1, got \(idempotentStore.notified)")
+
+		// 25. PM-06 row 4: premium granted by hand from the Adapty dashboard. It reaches the app as an
+		//     ordinary profile push and needs no request from the app at all — `FakeAdapty`'s observer
+		//     stands in for the real `didLoadLatestProfile` delegate callback, which only the live SDK
+		//     can fire. The grant must land as fully verified Adapty premium.
+		let grantStore = SpyStore()
+		let grantAdapty = FakeAdapty(answer: nil)
+		let grantService = PremiumService(store: grantStore, adapty: grantAdapty, apple: nil, levels: ["premium"], sourceTimeout: 1)
+		grantService.start()
+		Thread.sleep(forTimeInterval: 0.3)
+		assert(grantService.isPremium == false, "case 25: nothing has granted premium yet, got \(grantService.isPremium)")
+		let grantedUntil = now + hour
+		grantAdapty.premiumObserver?(profile(active: true, expiresAt: grantedUntil))
+		assert(
+			grantStore.cached == PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: grantedUntil),
+			"case 25: a dashboard grant must land as verified Adapty premium with the profile's expiry, got \(String(describing: grantStore.cached))"
+		)
+		assert(grantService.isPremium == true, "case 25: the grant must reach premium access, got \(grantService.isPremium)")
+		assert(grantStore.premium == true, "case 25: the flag mirror must move with it, got \(grantStore.premium)")
+		assert(grantStore.notified == 1, "case 25: exactly 1 .premiumDidChange, got \(grantStore.notified)")
+
+		print("PremiumService barrier, restore, purchase fallback and prices: 25/25 OK")
 	}
 }
