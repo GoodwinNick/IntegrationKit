@@ -88,20 +88,21 @@ final class FakeAdapty: AdaptyPremiumProviding {
 	func remoteValue<T>(placement: String, key: String) -> T? { nil }
 	func logPaywallOpen(placement: String) {}
 	func hasPaywall(placement: String) -> Bool { false }
+	func syncReceipt() {}
 }
 
 /// The Apple side, same idea. `restoreDelay` is new here — none of the barrier check's cases needed
 /// a slow `restore()`, but PM-05 rows 1 and 4 do.
 final class FakeApple: AppleSubscribing {
-	var receipt: Bool?
+	var receipt: ReceiptAnswer?
 	var restoreResult: RestoreOutcome = .nothingToRestore
 	var restoreDelay: TimeInterval = 0
 
-	init(receipt: Bool?) {
+	init(receipt: ReceiptAnswer?) {
 		self.receipt = receipt
 	}
 
-	func checkReceipt() async -> Bool? { receipt }
+	func checkReceipt() async -> ReceiptAnswer? { receipt }
 
 	func restore() async -> RestoreOutcome {
 		if restoreDelay > 0 {
@@ -168,7 +169,7 @@ enum PremiumStoreKitCheck {
 		let matchedCached = PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: matchedExpiry)
 		let matchedStore = SpyStore(cached: matchedCached, premium: true)
 		let matchedAdapty = FakeAdapty(answer: profile(active: true, expiresAt: matchedExpiry))
-		let matchedApple = FakeApple(receipt: true)
+		let matchedApple = FakeApple(receipt: ReceiptAnswer(isActive: true, expiresAt: nil))
 		matchedApple.restoreResult = .nothingToRestore
 		let matchedService = PremiumService(store: matchedStore, adapty: matchedAdapty, apple: matchedApple, levels: ["premium"], sourceTimeout: 1)
 		var matchedOutcome: RestoreOutcome?
@@ -199,8 +200,9 @@ enum PremiumStoreKitCheck {
 		stuckService.restore { stuckOutcome = $0 }
 		check(!wait(0.5) { stuckOutcome != nil }, "PM-05 row 4: a restore that never resolves must not call back within 0.5s, got \(String(describing: stuckOutcome))")
 
-		// PM-05 row 5: Adapty answered — it wins over a StoreKit restore that just landed, in both
-		// directions (PremiumResolver step 1).
+		// PM-05 row 5: Adapty active still wins outright over a restore (PremiumResolver step 1).
+		// An inactive answer arriving in the same round no longer does: a restore that just landed
+		// carries its own mark, same as PM-03 row 10, and Adapty has not confirmed THIS restore yet.
 		let overriddenStore = SpyStore()
 		let overriddenAdapty = FakeAdapty(answer: profile(active: false))
 		let overriddenApple = FakeApple(receipt: nil)
@@ -209,13 +211,13 @@ enum PremiumStoreKitCheck {
 		var overriddenOutcome: RestoreOutcome?
 		overriddenService.restore { overriddenOutcome = $0 }
 		check(wait { overriddenOutcome != nil }, "PM-05 row 5: restore must call back")
-		check(overriddenService.isPremium == false, "PM-05 row 5: an inactive Adapty must override a fresh restore, got isPremium == \(overriddenService.isPremium)")
+		check(overriddenService.isPremium == true, "PM-05 row 5: a fresh restore's mark must hold against an inactive Adapty answer in the same round, got isPremium == \(overriddenService.isPremium)")
 
 		// PM-05 row 6: an empty shared secret means receipt validation was never configured —
 		// `checkReceipt` answers nil without ever reaching the network.
 		SwiftyStoreKit.reset()
 		let blankSecretService = StoreKitService(sharedSecret: "", productIds: ["a"])
-		var blankSecretReceipt: Bool??
+		var blankSecretReceipt: ReceiptAnswer??
 		Task { blankSecretReceipt = await blankSecretService.checkReceipt() }
 		check(wait { blankSecretReceipt != nil }, "PM-05 row 6: checkReceipt must call back")
 		check(blankSecretReceipt! == nil, "PM-05 row 6: an empty sharedSecret must answer nil, got \(String(describing: blankSecretReceipt!))")

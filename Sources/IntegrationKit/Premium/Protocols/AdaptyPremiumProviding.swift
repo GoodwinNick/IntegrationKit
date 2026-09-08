@@ -28,4 +28,8 @@ protocol AdaptyPremiumProviding: AnyObject {
 	func remoteValue<T>(placement: String, key: String) -> T?
 	func logPaywallOpen(placement: String)
 	func hasPaywall(placement: String) -> Bool
+
+	/// Asks Adapty to upload the local receipt to its backend and refresh the profile. Called by
+	/// `PremiumService.purchase` after a StoreKit-fallback purchase Adapty itself did not see.
+	func syncReceipt()
 }

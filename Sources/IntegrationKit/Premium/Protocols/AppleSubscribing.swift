@@ -13,7 +13,7 @@ import Foundation
 protocol AppleSubscribing: AnyObject {
 	/// `nil` means the receipt could not be checked (offline, sandbox, verification error) —
 	/// never "no subscription".
-	func checkReceipt() async -> Bool?
+	func checkReceipt() async -> ReceiptAnswer?
 
 	/// Restore on the StoreKit side. Premium is turned on by `PremiumService` afterwards, not
 	/// by this call.

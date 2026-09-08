@@ -88,8 +88,12 @@ public enum SubscriptionType {
 	case autoRenewable
 }
 
+// ponytail: no stored properties, nothing here constructs one yet — add fields when a check needs
+// receipt item data.
+public struct ReceiptItem {}
+
 public enum VerifySubscriptionResult {
-	case purchased
+	case purchased(expiryDate: Date, items: [ReceiptItem])
 	case expired
 	case notPurchased
 }

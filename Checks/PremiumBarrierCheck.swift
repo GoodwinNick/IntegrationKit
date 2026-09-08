@@ -97,11 +97,12 @@ final class FakeAdapty: AdaptyPremiumProviding {
 	func remoteValue<T>(placement: String, key: String) -> T? { nil }
 	func logPaywallOpen(placement: String) {}
 	func hasPaywall(placement: String) -> Bool { false }
+	func syncReceipt() {}
 }
 
 /// The Apple side, same idea.
 final class FakeApple: AppleSubscribing {
-	var receipt: Bool?
+	var receipt: ReceiptAnswer?
 	var delay: TimeInterval
 	var restoreResult: RestoreOutcome = .nothingToRestore
 	var purchaseResult: PurchaseOutcome = .failed
@@ -114,12 +115,12 @@ final class FakeApple: AppleSubscribing {
 	/// Adapty listed, not for some list of its own.
 	var askedForIds: Set<String>?
 
-	init(receipt: Bool?, delay: TimeInterval = 0) {
+	init(receipt: ReceiptAnswer?, delay: TimeInterval = 0) {
 		self.receipt = receipt
 		self.delay = delay
 	}
 
-	func checkReceipt() async -> Bool? {
+	func checkReceipt() async -> ReceiptAnswer? {
 		if delay > 0 {
 			try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
 		}
@@ -170,7 +171,7 @@ enum PremiumBarrierCheck {
 		//    twice: the receipt's intermediate value, then Adapty's overwrite.
 		let store = SpyStore()
 		let adapty = FakeAdapty(answer: profile(active: true, expiresAt: now + hour), delay: 0.15)
-		let apple = FakeApple(receipt: true, delay: 0.01)
+		let apple = FakeApple(receipt: ReceiptAnswer(isActive: true, expiresAt: nil), delay: 0.01)
 		let service = PremiumService(store: store, adapty: adapty, apple: apple, levels: ["premium"], sourceTimeout: 1)
 		service.refresh()
 		assert(wait { store.writes > 0 }, "case 1: the barrier must produce a verdict")
@@ -185,7 +186,7 @@ enum PremiumBarrierCheck {
 		//    block is left behind: the next refresh still runs.
 		let silentStore = SpyStore()
 		let silentAdapty = FakeAdapty(answer: nil)
-		let receiptApple = FakeApple(receipt: true)
+		let receiptApple = FakeApple(receipt: ReceiptAnswer(isActive: true, expiresAt: nil))
 		let silentService = PremiumService(store: silentStore, adapty: silentAdapty, apple: receiptApple, levels: ["premium"], sourceTimeout: 1)
 		silentService.refresh()
 		assert(wait { silentStore.cached?.isPremium == true }, "case 2: a silent Adapty must not stop the receipt verdict")
@@ -214,7 +215,7 @@ enum PremiumBarrierCheck {
 		//    on the timeout's schedule, not the stuck source's.
 		let timeoutStore = SpyStore()
 		let stuckAdapty = FakeAdapty(answer: profile(active: false), delay: 3)
-		let quickApple = FakeApple(receipt: true, delay: 0.01)
+		let quickApple = FakeApple(receipt: ReceiptAnswer(isActive: true, expiresAt: nil), delay: 0.01)
 		let timeoutService = PremiumService(store: timeoutStore, adapty: stuckAdapty, apple: quickApple, levels: ["premium"], sourceTimeout: 0.2)
 		let started = Date()
 		timeoutService.refresh()
@@ -448,7 +449,7 @@ enum PremiumBarrierCheck {
 		let deadline: TimeInterval = 0.2
 		let deadlineStore = SpyStore()
 		let neverAdapty = FakeAdapty(answer: profile(active: false), delay: 30)
-		let deadlineService = PremiumService(store: deadlineStore, adapty: neverAdapty, apple: FakeApple(receipt: true), levels: ["premium"], sourceTimeout: deadline)
+		let deadlineService = PremiumService(store: deadlineStore, adapty: neverAdapty, apple: FakeApple(receipt: ReceiptAnswer(isActive: true, expiresAt: nil)), levels: ["premium"], sourceTimeout: deadline)
 		let deadlineStarted = Date()
 		deadlineService.refresh()
 		assert(wait(2) { deadlineStore.writes > 0 }, "case 16: a source that never answers must not hold the verdict past sourceTimeout \(deadline)s")
@@ -509,7 +510,7 @@ enum PremiumBarrierCheck {
 		// 19. PM-03 row 7, through the facade (the risk row's own "how to reproduce" asks for the
 		//     facade, not the pure resolver): a purchase has just gone through, but the cache holds a
 		//     verified `inactive` Adapty gave us before it. Resolver step 2 would hand that straight
-		//     back — the demotion at `PremiumService.swift:117-119` is what stops it.
+		//     back — the demotion inside `PremiumResolver.resolve` is what stops it.
 		let staleVerifiedDenial = PremiumState(isPremium: false, source: .adapty, isVerified: true)
 		let freshBuyStore = SpyStore(cached: staleVerifiedDenial)
 		let freshBuyAdapty = FakeAdapty(answer: nil)
@@ -520,7 +521,7 @@ enum PremiumBarrierCheck {
 		assert(wait { freshBuyOutcome != nil }, "case 19: purchase must call back")
 		assert(freshBuyOutcome == .purchased, "case 19: the Adapty answer is passed through, expected .purchased, got \(String(describing: freshBuyOutcome))")
 		assert(
-			freshBuyStore.cached == PremiumState(isPremium: true, source: .apple, isVerified: false, expiresAt: nil),
+			freshBuyStore.cached == PremiumState(isPremium: true, source: .apple, isVerified: false, expiresAt: nil, localPurchase: true),
 			"case 19: a stale verified denial must not swallow a fresh purchase, expected unverified premium from .apple, got \(String(describing: freshBuyStore.cached))"
 		)
 		assert(freshBuyStore.writes == 1, "case 19: exactly 1 write, got \(freshBuyStore.writes)")

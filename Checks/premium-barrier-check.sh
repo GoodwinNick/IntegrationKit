@@ -24,6 +24,7 @@ swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty \
 	Sources/IntegrationKit/Premium/Protocols/AppleSubscribing.swift \
 	Sources/IntegrationKit/Premium/Protocols/PremiumStateStoring.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumState.swift \
+	Sources/IntegrationKit/Premium/Models/ReceiptAnswer.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumSource.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumAccess.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumAccess+Adapty.swift \

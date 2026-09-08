@@ -254,6 +254,13 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	func remoteValue<T>(placement: String, key: String) -> T? {
 		getRemoteValue(placement: placement, key: key)
 	}
+
+	/// Asks Adapty to upload the local receipt to its backend and refresh the profile. Called by
+	/// `PremiumService` right after a StoreKit fallback purchase succeeds, to close the window the
+	/// local-purchase mark exists to cover.
+	func syncReceipt() {
+		Adapty.restorePurchases { _ in }
+	}
 }
 
 extension AdaptyService: AdaptyDelegate {

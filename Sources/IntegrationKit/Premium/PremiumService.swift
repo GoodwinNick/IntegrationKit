@@ -15,6 +15,9 @@ final class PremiumService: PremiumServicing {
 	private let apple: AppleSubscribing?
 	/// Access level ids as named in the Adapty dashboard — the app decides, not the library.
 	private let levels: Set<String>
+	/// The subscription ids to look for in the Apple receipt, and the fallback list `products`
+	/// prices directly when Adapty's own listing for the placement comes back empty.
+	private let productIds: Set<String>
 	// Guards the cached state AND its flag mirror together — see `apply`.
 	// Holding it across the mirror write is safe: the store's setter posts `.premiumDidChange`
 	// on `DispatchQueue.main.async`, so no observer ever runs inside this critical section.
@@ -35,13 +38,15 @@ final class PremiumService: PremiumServicing {
 		adapty: AdaptyPremiumProviding? = nil,
 		apple: AppleSubscribing? = nil,
 		levels: Set<String> = ["premium"],
-		sourceTimeout: TimeInterval = 5
+		sourceTimeout: TimeInterval = 5,
+		productIds: Set<String> = []
 	) {
 		self.store = store
 		self.adapty = adapty
 		self.apple = apple
 		self.levels = levels
 		self.sourceTimeout = sourceTimeout
+		self.productIds = productIds
 	}
 
 	/// Convenience read for call sites that just need the current answer.
@@ -117,7 +122,7 @@ final class PremiumService: PremiumServicing {
 	}
 
 	/// `nil` means the receipt could not be checked, in time or at all — never "no subscription".
-	private func askApple() async -> Bool? {
+	private func askApple() async -> ReceiptAnswer? {
 		guard let apple else { return nil }
 		return await withTimeout(sourceTimeout) { await apple.checkReceipt() }.flatMap { $0 }
 	}
@@ -128,16 +133,11 @@ final class PremiumService: PremiumServicing {
 		apply(adapty: adapty, apple: nil)
 	}
 
-	private func apply(adapty: PremiumAccess?, apple: Bool?, localPurchase: Bool = false) {
+	private func apply(adapty: PremiumAccess?, apple: ReceiptAnswer?, localPurchase: Bool = false) {
 		lock.lock()
-		// A purchase or a restore that has just gone through is a receipt saying yes, and it is
-		// newer than the cache: a verified `inactive` Adapty gave us before the purchase must not
-		// swallow it (resolver step 2 would hand that cached state straight back). Only this
-		// resolve sees the demoted copy — what gets stored is the verdict below.
-		let cached = localPurchase
-			? store.cached.map { PremiumState(isPremium: $0.isPremium, source: $0.source, isVerified: false, expiresAt: $0.expiresAt) }
-			: store.cached
-		let state = PremiumResolver.resolve(adapty: adapty, apple: localPurchase ? true : apple, cached: cached, now: Date())
+		// The local-purchase mark and its cache-demotion trick now live entirely in
+		// PremiumResolver.resolve — this just hands over what it has and takes back the verdict.
+		let state = PremiumResolver.resolve(adapty: adapty, apple: apple, cached: store.cached, localPurchase: localPurchase, now: Date())
 		// PM-02 rows 2 and 6: one store write per refresh. An answer that resolves to the state already
 		// cached writes nothing, so a receipt landing before Adapty cannot flash an intermediate
 		// value at the UI and be overwritten a moment later.
@@ -219,6 +219,12 @@ final class PremiumService: PremiumServicing {
 					// be a branch leaving the single entrance and returning through the back door.
 					// No Apple side wired up means there is no fallback to run, so it is a failure.
 					outcome = await self?.apple?.purchase(productId: productId) ?? .failed
+					// Adapty just failed to serve the purchase, so it does not know about it yet —
+					// ask it to upload the local receipt and refresh its profile, closing the window
+					// the mark exists to cover. Only when the fallback itself actually succeeded.
+					if outcome == .purchased {
+						adapty.syncReceipt()
+					}
 			}
 			await self?.resolveBoth(localPurchase: outcome == .purchased)
 			self?.endPurchase()
@@ -250,8 +256,17 @@ final class PremiumService: PremiumServicing {
 			return
 		}
 		let apple = self.apple
+		let productIds = self.productIds
 		Task {
 			let listed = await adapty.products(placement: placement)
+			if listed.isEmpty {
+				// The placement did not load — an unloaded paywall must not leave a screen with no
+				// prices at all. Fall back to the ids handed to `init` and price them from the store
+				// directly; an id the store also stayed silent about is simply not in the result.
+				let priced = await apple?.products(ids: productIds) ?? [:]
+				DispatchQueue.main.async { completion(Array(priced.values)) }
+				return
+			}
 			let priced = await apple?.products(ids: Set(listed.map(\.id))) ?? [:]
 			// A product the store stayed silent about (not approved yet, offline) keeps Adapty's
 			// copy: a slightly staler price beats a paywall with a hole in it.

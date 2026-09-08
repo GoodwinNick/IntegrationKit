@@ -1,13 +1,15 @@
 #!/bin/sh
-# PM-05 (restore) and PM-08 (unfinished transactions) self-check — no XCTest, no Xcode project.
-# `StoreKitService` names `Adapty` (through `PremiumService`) and `SwiftyStoreKit` directly, so both
-# get a stub module compiled first and linked in their place, same trick as `premium-barrier-check.sh`.
+# Local-purchase mark self-check — spec for a NOT-YET-IMPLEMENTED behaviour, most rows RED on
+# purpose. No XCTest, no Xcode project. Same trick as `premium-barrier-check.sh`: `PremiumService`
+# names exactly one Adapty type (`AdaptyProfile`), so a stub module called `Adapty` is compiled
+# first and linked in its place.
 #
-# This check does not stop at the first failing row — it runs every row, collects every failure, and
-# exits non-zero if any row failed.
+# A non-zero exit here is the expected, healthy outcome until the local-purchase mark is
+# implemented — this script still uses `set -e` and exits non-zero on a genuine compile failure,
+# same as every other check.
 set -e
 cd "$(dirname "$0")/.."
-work="${TMPDIR:-/tmp}/premium-storekit-check"
+work="${TMPDIR:-/tmp}/premium-local-purchase-check"
 rm -rf "$work"
 mkdir -p "$work"
 swiftc -emit-module -emit-library -static \
@@ -15,17 +17,11 @@ swiftc -emit-module -emit-library -static \
 	-emit-module-path "$work/Adapty.swiftmodule" \
 	-o "$work/libAdapty.a" \
 	Checks/Stubs/AdaptyProfile.swift
-swiftc -emit-module -emit-library -static \
-	-module-name SwiftyStoreKit \
-	-emit-module-path "$work/SwiftyStoreKit.swiftmodule" \
-	-o "$work/libSwiftyStoreKit.a" \
-	Checks/Stubs/SwiftyStoreKit.swift
-swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty -lSwiftyStoreKit \
-	Checks/PremiumStoreKitCheck.swift \
+swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty \
+	Checks/PremiumLocalPurchaseCheck.swift \
 	Sources/IntegrationKit/Support/DebugLog.swift \
 	Sources/IntegrationKit/Support/SingleResume.swift \
 	Sources/IntegrationKit/Support/WithTimeout.swift \
-	Sources/IntegrationKit/StoreKit/StoreKitService.swift \
 	Sources/IntegrationKit/Premium/PremiumService.swift \
 	Sources/IntegrationKit/Premium/Protocols/PremiumServicing.swift \
 	Sources/IntegrationKit/Premium/Protocols/AdaptyPremiumProviding.swift \
@@ -38,11 +34,8 @@ swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty -lSwiftyStoreKit \
 	Sources/IntegrationKit/Premium/Models/PremiumAccess.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumAccess+Adapty.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumProduct.swift \
-	Sources/IntegrationKit/Premium/Models/PremiumProduct+StoreKit.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumPeriod.swift \
-	Sources/IntegrationKit/Premium/Models/PremiumPeriod+StoreKit.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumOffer.swift \
-	Sources/IntegrationKit/Premium/Models/PremiumOffer+StoreKit.swift \
 	Sources/IntegrationKit/Premium/Models/PurchaseOutcome.swift \
 	Sources/IntegrationKit/Premium/Models/RestoreOutcome.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumNotification.swift \

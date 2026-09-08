@@ -129,6 +129,7 @@ final class CountingAdapty: AdaptyPremiumProviding {
 	func remoteValue<T>(placement: String, key: String) -> T? { nil }
 	func logPaywallOpen(placement: String) {}
 	func hasPaywall(placement: String) -> Bool { false }
+	func syncReceipt() {}
 }
 
 @main
