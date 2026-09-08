@@ -3,7 +3,7 @@
 //  IntegrationKit — Checks/Stubs
 //
 //  Stand-in for `AdaptyPaywall` (Adapty 2.10.x). Only `remoteConfig` is here — the one field
-//  `AdaptyService`'s `getRemoteValue`/`getAbValue`/`getBoolValue` read.
+//  `AdaptyService`'s `getRemoteValue` reads.
 //
 
 import Foundation

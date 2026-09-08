@@ -155,19 +155,6 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		return nil
 	}
 
-	func getAbValue(placement: String) -> Int? {
-		if let id = paywalls[placement]?.remoteConfig?["id"] as? Int {
-			return id
-		}
-		return nil
-	}
-	func getBoolValue(placement: String, key: String) -> Bool {
-		if let id = paywalls[placement]?.remoteConfig?[key] as? Bool {
-			return id
-		}
-		return false
-	}
-
 	func logPaywallOpen(placement: String) {
 		if let paywall = paywalls[placement] {
 			Adapty.logShowPaywall(paywall)

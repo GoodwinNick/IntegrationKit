@@ -17,8 +17,6 @@ protocol AdaptyServicing: AnyObject {
 	/// — this protocol is the app-facing surface that trigger can reach.
 	func refreshPaywalls()
 	func getRemoteValue<Type>(placement: String, key: String) -> Type?
-	func getAbValue(placement: String) -> Int?
-	func getBoolValue(placement: String, key: String) -> Bool
 	func logPaywallOpen(placement: String)
 	func logOnboardingOpen(step: Int)
 	func updateAttribution(attribution: [AnyHashable: Any])
