@@ -1,67 +1,74 @@
-# IntegrationKit — детальний гайд по інтеграції
+# IntegrationKit — integration guide
 
-Джерела фактів: код пакета (`Sources/IntegrationKit/*.swift`), скіли інтеграцій
-(`~/.claude/skills/{firebase,amplitude,appsflyer}-integration`, `adapty-premium`,
-`analytics-events`) і живий еталон `video-to-mp3` (`VideoToMp3/Core/AppDelegate.swift` та
-`VideoToMp3/Services/*.swift`). Де вимога береться зі скіла чи еталона, а не з коду пакета —
-позначено окремо.
+This is the detailed companion to the top-level [`README.md`](../README.md).
+Every code sample here is checked against the actual public API — the
+protocols in `Sources/IntegrationKit/*/Protocols`, the models in
+`Sources/IntegrationKit/Premium/Models`, and the composition root in
+`Sources/IntegrationKit/IntegrationKit.swift`. Where a step is a fact about
+the Xcode project rather than the package's Swift API (plist keys, Run Script,
+capabilities), it is called out as such.
 
-## Зміст
+`BuildHost/Sources/App.swift` is the canonical example of everything in this
+guide put together — a build host that never runs, only compiles, so the
+compiler proves the public API is enough on its own.
 
-- [Підключення з нуля](#підключення-з-нуля)
-- [Firebase](#firebase)
-- [Amplitude](#amplitude)
-- [Adapty](#adapty)
-- [AppsFlyer](#appsflyer)
-- [Преміум](#преміум)
-- [Deep linking](#deep-linking)
-- [Тести](#тести)
-- [Граблі](#граблі)
-- [Перевірки](#перевірки)
-- [Чекліст готовності](#чекліст-готовності)
+## Contents
 
-## Підключення з нуля
+- [Setup from scratch](#setup-from-scratch)
+- [`IntegrationKit.configure`](#integrationkitconfigure)
+- [Analytics](#analytics)
+- [Crash reporting](#crash-reporting)
+- [Premium](#premium)
+- [Implementing `AppleSubscribing`](#implementing-applesubscribing)
+- [Deep links](#deep-links)
+- [Building and checks](#building-and-checks)
+- [Troubleshooting](#troubleshooting)
+- [Readiness checklist](#readiness-checklist)
 
-### 1. Додати пакет
+## Setup from scratch
 
-Xcode → File → Add Package Dependencies → url цього репо → продукт `IntegrationKit`.
-Мінімальна платформа таргета — iOS 15.6 (нижче пакет не збереться).
+### 1. Add the package
 
-### 2. Покласти файли в проєкт
+Xcode → File → Add Package Dependencies → this repo's URL → product
+`IntegrationKit`.
 
-- **`GoogleService-Info.plist`** — свій Firebase-проєкт на кожну апку (Firebase-консоль,
-  акаунт `text.alex.erko` — вимога зі `Skill(firebase-integration)`, у коді пакета не
-  видно). Файл — у корінь таргета, і **обов'язково перевірити target membership**: без
-  нього `FirebaseApp.configure()` мовчки не знайде конфіг.
-- **`Configuration.storekit`** (опційно, для дебага Adapty-покупок) — Xcode → File → New →
-  File → StoreKit Configuration File, з реальними product id апки. Прописується у
-  Debug-схемі (Run → Options → StoreKit Configuration) і в кожному тест-плані. Вимога зі
-  `Skill(adapty-premium)`, п. 8 — без нього симулятор на першому зверненні до StoreKit
-  показує системний алерт входу в App Store акаунт, який деактивує апку (в еталоні
-  video-to-mp3 через це намертво зависав ATT-запит).
+```swift
+.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.2.0")
+```
 
-### 3. Info.plist / build settings
+The target's minimum deployment target must be iOS 15.6 or the package will
+not build.
 
-Жоден із цих ключів пакет не ставить — усі на боці апки (сучасний Xcode тримає їх як
-`INFOPLIST_KEY_*` build settings, а не окремі рядки в `Info.plist`-файлі):
+### 2. Add `GoogleService-Info.plist`
 
-| Ключ | Навіщо | Приклад значення з еталона |
+Your own Firebase project's config file (Firebase console), dropped into the
+target's root with **target membership checked**. Without it,
+`FirebaseIntegration.configure()` calls `FirebaseApp.configure()`, which
+fails fatally at launch — there is no soft-fail path.
+
+### 3. `Info.plist` / build settings
+
+None of these are set by the package — all of them are app-side (modern Xcode
+keeps them as `INFOPLIST_KEY_*` build settings rather than literal
+`Info.plist` rows):
+
+| Key | Why | Used by |
 |---|---|---|
-| `NSUserTrackingUsageDescription` | ATT-діалог (без нього `requestTrackingAuthorization` не показує вікно) | `"Allowing tracking helps us personalize your experience and show content that matches your interests."` (video-to-mp3) |
+| `NSUserTrackingUsageDescription` | Required for the ATT dialog — without it `ATTrackingManager.requestTrackingAuthorization` shows nothing | ATT / AppsFlyer / Amplitude IDFA |
 
 ### 4. Capabilities
 
-- **Associated Domains** — тільки якщо апка приймає Universal Links через AppsFlyer OneLink
-  (`applinks:<app>.onelink.me` або власний домен з AppsFlyer). У video-to-mp3 цієї
-  capability ще немає — деплінки в еталоні йдуть тільки через URL-схему. Без Associated
-  Domains `application(_:continue:restorationHandler:)` просто не викликається системою.
-- URL-схема для legacy-деплінків — стандартний `CFBundleURLTypes` в Info.plist (Xcode →
-  таргет → Info → URL Types), окремо від пакета.
+- **Associated Domains** — only if the app accepts Universal Links through an
+  AppsFlyer OneLink (`applinks:<app>.onelink.me` or a custom domain). Without
+  it, iOS never calls `application(_:continue:restorationHandler:)` at all.
+- A URL scheme for legacy deep links — standard `CFBundleURLTypes` in
+  `Info.plist` (Xcode → target → Info → URL Types), independent of the
+  package.
 
-### 5. Run Script — dSYM для Crashlytics
+### 5. Run Script — dSYM upload for Crashlytics
 
-Обов'язково для Crashlytics, інакше креші в дашборді не символізуються. Фаза «Run Script»
-після Compile Sources, точно за еталоном video-to-mp3 (`project.pbxproj`):
+Required for Crashlytics, otherwise crashes show up unsymbolicated in the
+dashboard. Add a Run Script build phase after "Compile Sources":
 
 **Input Files:**
 ```
@@ -85,135 +92,127 @@ else
 fi
 ```
 
-`checkouts/firebase-ios-sdk` тут — SPM-чекаут у `SourcePackages` **самого хост-таргета**
-(не пакета): оскільки `IntegrationKit` тягне `firebase-ios-sdk` транзитивно, він
-з'являється там автоматично після резолву залежностей.
+`checkouts/firebase-ios-sdk` is the SPM checkout in the **app target's** own
+`SourcePackages`, not the package's — since `IntegrationKit` pulls in
+`firebase-ios-sdk` transitively, it shows up there automatically once
+dependencies resolve.
 
-### 6. Порядок ініціалізації
+### 6. Call `FirebaseIntegration.configure()`, then `IntegrationKit.configure(...)`
 
-Фіксований: **Firebase → Amplitude → Adapty → PremiumService → AppsFlyer**. Причина —
-`AdaptyService.configure()` лінкує Amplitude-ідентичність усередині себе
-(`linkAmplitudeUserId`), тож Amplitude має вже мати `deviceId` виставленим; AppsFlyer з
-атрибуцією пише в Adapty-профіль, тож Adapty має бути активований раніше.
-
-### 7. Повний AppDelegate
-
-За живим еталоном `video-to-mp3` (`VideoToMp3/Core/AppDelegate.swift`), переписаний на
-типи пакета замість прямих SDK-викликів:
+Firebase configures first, and separately — it has no state the composition
+root needs. Everything else goes through one call:
 
 ```swift
-import UIKit
 import IntegrationKit
 
-@main
-class AppDelegate: UIResponder, UIApplicationDelegate {
+final class AppStoreKit: AppleSubscribing {
+	func checkReceipt() async -> Bool? { /* ... */ nil }
+	func restore() async -> RestoreOutcome { /* ... */ .nothingToRestore }
+	func purchase(productId: String) async -> PurchaseOutcome { /* ... */ .failed }
+}
 
-	static var window: UIWindow?
-	let rootRouter = RootRouter()
+final class AppDelegate: NSObject, UIApplicationDelegate {
 
-	// SDKKeys, AppDefaults, appOwnedReceiptChecker — на боці апки, не пакета.
-	private let analytics: AnalyticsTracking = AmplitudeAnalytics()
-	private let adapty = AdaptyService()
-	private lazy var appsFlyer: AppsFlyerServicing = AppsFlyerService(analytics: analytics, adapty: adapty)
-	private lazy var premium = PremiumService(adapty: adapty, apple: appOwnedReceiptChecker)
+	private var kit: IntegrationKit?
 
-	func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-		#if DEBUG
-			UITestMode.applyLaunchState()
-		#endif
+	func application(
+		_ application: UIApplication,
+		didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+	) -> Bool {
+		FirebaseIntegration.configure()
 
-		// 1. Firebase — гард на plist, апка вирішує сама (FirebaseIntegration.configure()
-		// без нього впаде фатальною помилкою всередині FirebaseApp.configure()).
-		if Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") != nil {
-			FirebaseIntegration.configure()
+		let kit = IntegrationKit.configure(
+			deviceId: AppDefaults.deviceId,
+			amplitudeKey: ObfuscatedSecret.reveal(encrypted: SDKKeys.amplitudeEncrypted, secret: SDKKeys.secret),
+			adaptyKey: ObfuscatedSecret.reveal(encrypted: SDKKeys.adaptyEncrypted, secret: SDKKeys.secret),
+			placements: ["main", "onboarding"],
+			sessionsCounter: AppDefaults.sessionsCounter,
+			apple: AppStoreKit(),
+			levels: ["premium"],
+			firstOpenEvent: "first_open",
+			appsFlyerDevKey: ObfuscatedSecret.reveal(encrypted: SDKKeys.appsFlyerEncrypted, secret: SDKKeys.secret),
+			appsFlyerAppId: "1234567890"
+		)
+		self.kit = kit
+
+		NotificationCenter.default.addObserver(
+			forName: .premiumDidChange,
+			object: nil,
+			queue: .main
+		) { _ in
+			print("premium is now \(kit.premium.isPremium)")
 		}
 
-		AppDefaults.sessionsCounter += 1
-
-		// 2. Amplitude — deviceId ставиться до першої події, до Adapty.
-		analytics.configure(apiKey: SDKKeys.amplitude(), deviceId: AppDefaults.deviceId, firstOpenEvent: "first_open_custom")
-
-		// 3. Adapty — премум + атрибуція.
-		adapty.configure(
-			apiKey: SDKKeys.adapty(),
-			customerUserId: AppDefaults.deviceId,
-			sessionsCounter: AppDefaults.sessionsCounter,
-			placements: ["main", "onboarding"],
-			analytics: analytics
-		)
-
-		// 3b. Арбітраж преміуму — одразу після Adapty, PremiumService сам запитає обидва джерела.
-		premium.start()
-
-		// 4. AppsFlyer — devKey обфускований і живе в апці, appId підтверджений юзером.
-		appsFlyer.configure(devKey: SDKKeys.appsflyer(), appId: "<AppsFlyer App ID>", deviceId: AppDefaults.deviceId)
-
-		analytics.logEvent("app_launch")
-
-		let window = UIWindow(frame: UIScreen.main.bounds)
-		window.rootViewController = UIStoryboard(name: "LaunchScreen", bundle: .main).instantiateInitialViewController()
-		window.makeKeyAndVisible()
-		AppDelegate.window = window
-		rootRouter.configure(window: window)
-		rootRouter.toSplash()
-
+		kit.analytics.logEvent("app_open")
 		return true
 	}
 
-	func application(_ application: UIApplication, continue userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void) -> Bool {
-		appsFlyer.handleContinue(userActivity, restorationHandler: restorationHandler)
+	func application(
+		_ application: UIApplication,
+		continue userActivity: NSUserActivity,
+		restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void
+	) -> Bool {
+		kit?.handleContinue(userActivity, restorationHandler: restorationHandler)
 		return true
 	}
 
 	func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
-		appsFlyer.handleOpen(url, options: options)
+		kit?.handleOpen(url, options: options)
 		return true
 	}
 }
 ```
 
-`SDKKeys`, `AppDefaults`, `RootRouter`, `appOwnedReceiptChecker` — типи апки, не пакета;
-у видаленому з еталона прикладі вони показують, звідки саме беруться значення, які пакет
-приймає параметрами.
+`SDKKeys` and `AppDefaults` are app-side types, not part of the package — they
+show where the app is expected to get its keys and stable identifiers from.
+Keys arrive at `configure` as plain strings: an app that ships them obfuscated
+in its binary reveals them with `ObfuscatedSecret.reveal(encrypted:secret:)`
+first — the package never guesses where a key came from or how it was stored.
 
-## Firebase
+Everything inside `IntegrationKit.configure(...)` — Amplitude, then Adapty,
+then AppsFlyer, then starting the premium arbiter — happens in one fixed
+order that the app cannot reorder or skip a step of. That is the entire point
+of the composition root: there is no longer a way to call `premium.start()`
+late, or configure AppsFlyer before Adapty exists to receive its attribution.
 
-**Що робить:** ініціалізує Firebase Core і Crashlytics; у DEBUG вимикає збір крешів.
-`FirebaseAnalytics` пакет свідомо не тягне (рішення 2026-09-03 з `Skill(firebase-integration)`:
-DebugView непридатний для перевірки, аналітика в наборі апок — тільки Amplitude).
-
-**Публічний тип:** `FirebaseIntegration.configure()` — без параметрів.
-
-```swift
-public enum FirebaseIntegration {
-	public static func configure()
-}
-```
-
-**Що дає апка:**
-- `GoogleService-Info.plist` (свій Firebase-проєкт, у корені таргета, у target membership);
-- гард на наявність plist перед викликом — інакше фатальна помилка на старті;
-- Run Script для dSYM (розділ «Підключення з нуля», п. 5).
-
-**Автоматично:** `Crashlytics.crashlytics().setCrashlyticsCollectionEnabled(false)` у DEBUG.
-
-Для нефатальних помилок — окремий тип, не частина `FirebaseIntegration`:
+## `IntegrationKit.configure`
 
 ```swift
-public struct CrashReporter: CrashReporting {
-	public func recordNonFatal(_ tag: String, _ error: Error, _ info: [String: Any])
-}
+public static func configure(
+	deviceId: String,
+	amplitudeKey: String,
+	adaptyKey: String,
+	placements: [String],
+	sessionsCounter: Int,
+	apple: AppleSubscribing? = nil,
+	levels: Set<String> = ["premium"],
+	firstOpenEvent: String? = nil,
+	appsFlyerDevKey: String = "",
+	appsFlyerAppId: String = ""
+) -> IntegrationKit
 ```
 
-Фільтрує мережевий шум сам (`NSURLErrorNotConnectedToInternet`, `NSURLErrorCancelled` не
-летять у Crashlytics).
+| Parameter | What it is | Where it comes from | If you don't pass it |
+|---|---|---|---|
+| `deviceId` | One stable id, shared by Amplitude, Adapty and AppsFlyer so all three describe the same user | An app-generated/stored UUID, stable across launches | Required — no default. Amplitude, Adapty and AppsFlyer end up describing different users. |
+| `amplitudeKey` | Amplitude project API key | Amplitude dashboard, per app | Required — no default. Amplitude never activates. |
+| `adaptyKey` | Adapty public SDK key (`public_live_...`) | Adapty dashboard, per app | Required — no default. Adapty never activates, so premium can only ever come from `apple`. |
+| `placements` | Adapty placement ids to preload paywalls/products for | Adapty dashboard, per app | An empty array means no placement is warmed up — `hasPaywall`/`products` for any placement return empty until Adapty is asked directly through a refresh. |
+| `sessionsCounter` | The app's own session counter, incremented once per launch before this call | App-owned persistent counter | Required — no default. Written into the Adapty profile as-is; passing a stale or constant value just means that field in the profile stops being meaningful. |
+| `apple` | The app's `AppleSubscribing` implementation (StoreKit) | The app itself — the package never touches StoreKit directly | `nil` (default). Premium then relies on Adapty alone; there is no local StoreKit fallback if Adapty cannot be reached. |
+| `levels` | The set of Adapty access level ids that count as "premium" | Adapty dashboard — access level ids configured for the paywall | Defaults to `["premium"]`. Wrong values here mean a real Adapty premium purchase never flips `isPremium` to true. |
+| `firstOpenEvent` | Analytics event name logged exactly once per install | App's own event naming | `nil` (default) — no first-open event is logged at all. |
+| `appsFlyerDevKey` | AppsFlyer dev key | AppsFlyer dashboard, per app | Defaults to `""`. An empty dev key means **AppsFlyer is not created at all** — no attribution, `kit.handleContinue`/`kit.handleOpen` become no-ops. |
+| `appsFlyerAppId` | Numeric App Store id | App Store Connect / `itunes.apple.com/lookup` | Defaults to `""`. Only meaningful together with a non-empty `appsFlyerDevKey`; without a confirmed App ID, AppsFlyer attribution can end up pointed at the wrong app. |
 
-## Amplitude
+The returned `IntegrationKit` exposes exactly three things to build UI on top
+of: `premium: PremiumServicing`, `analytics: AnalyticsTracking`,
+`crashes: CrashReporting`. Everything AppsFlyer- or Adapty-specific
+(`AdaptyService`, `AppsFlyerService`, and their internal protocols) stays
+behind the facade — the app cannot reach them even by trying, since 0.2.0
+they are not public types.
 
-**Що робить:** ініціалізує Amplitude SDK, ставить user id до першого івента, логує подію
-першого відкриття один раз на інстал, додає IDFA-плагін після дозволу ATT.
-
-**Публічний тип:**
+## Analytics
 
 ```swift
 public protocol AnalyticsTracking: AnyObject {
@@ -226,262 +225,393 @@ public protocol AnalyticsTracking: AnyObject {
 }
 ```
 
-Реалізація — `AmplitudeAnalytics`. `logEvent(_:)` без properties доступний через
-protocol extension.
-
-**Що дає апка:**
-- прод API key з дашборда Amplitude (з Jira-задачі цієї апки — вимога зі скіла, у коді
-  пакета ключ ніде не зашитий);
-- стабільний `deviceId` — той самий, що йде в Adapty й AppsFlyer;
-- `firstOpenEvent` — назву події першого відкриття (опційно, `nil` — не логувати).
-
-**Автоматично:** маркування `environment: production/sandbox` на перший `identify`; догляд
-за тим, щоб `firstOpenEvent` пішов рівно один раз (прапорець
-`IntegrationKit.amplitude.firstOpenTracked` у `UserDefaults.standard`); `AmplitudeIDFAPlugin`
-підвішується сам при `status == .authorized` через `updateTrackingAuthorization`.
-
-Список подій (`LogEventKey` чи інший enum) — на боці апки; пакет приймає подію як `String`.
-
-## Adapty
-
-**Що робить:** активує Adapty, тягне пейволи й продукти для переданих плейсментів, пише
-`launchSession`/`lastUsedDay`/деплінк у профіль, лінкує Amplitude-ідентичність, проводить
-покупки, шле AppsFlyer-атрибуцію в Adapty.
-
-**Публічні типи:**
+`configure` is already called for you inside `IntegrationKit.configure(...)`
+— the app never calls it itself. `logEvent(_:)` without properties is
+available through a protocol extension:
 
 ```swift
-public protocol AdaptyServicing: AnyObject {
-	func configure(apiKey: String, customerUserId: String, sessionsCounter: Int, placements: [String], analytics: AnalyticsTracking)
-	func setProfileValue(value: String, key: String)
+public extension AnalyticsTracking {
+	func logEvent(_ event: String) {
+		logEvent(event, properties: nil)
+	}
+}
+```
+
+Usage:
+
+```swift
+kit.analytics.logEvent("app_open")
+kit.analytics.logEvent("onboarding_step_completed", properties: ["step": 2])
+kit.analytics.setUserProperties(["locale": "en_US"])
+```
+
+The package accepts event names as plain `String` — it does not define an
+event enum. Keeping one (e.g. a `LogEventKey` enum) is the app's decision.
+
+**ATT.** Forward the tracking authorization result through the facade, not
+directly to Amplitude — it also reaches Adapty's attribution:
+
+```swift
+ATTrackingManager.requestTrackingAuthorization { status in
+	kit.updateTrackingAuthorization(status)
+}
+```
+
+`IntegrationKit.updateTrackingAuthorization(_:)` calls
+`analytics.updateTrackingAuthorization(_:)` (which attaches Amplitude's IDFA
+plugin once the answer is `.authorized`) and Adapty's own ATT status update,
+in that order.
+
+**First-open event.** Pass a name through `firstOpenEvent` at `configure`
+time and the package logs it once per install, gated internally so a
+reinstall or a relaunch never double-logs it. Pass `nil` to opt out.
+
+## Crash reporting
+
+```swift
+public protocol CrashReporting {
+	func recordNonFatal(_ tag: String, _ error: Error, _ info: [String: Any])
+}
+```
+
+A protocol extension drops the `info` dictionary when there is nothing extra
+to attach:
+
+```swift
+public extension CrashReporting {
+	func recordNonFatal(_ tag: String, _ error: Error) {
+		recordNonFatal(tag, error, [:])
+	}
+}
+```
+
+```swift
+kit.crashes.recordNonFatal("network", someError)
+kit.crashes.recordNonFatal("purchase", someError, ["placement": "main"])
+```
+
+That is the entire surface — `recordNonFatal` is the only method
+`CrashReporting` exposes. There is no `log(_:)` and no way to set a user id
+on the crash reporter through this protocol (Crashlytics's own `setUserID`/
+custom-log APIs are not exposed here); if your app needs breadcrumb logging
+or a Crashlytics user id, that has to go through Firebase directly, outside
+this package, since `IntegrationKit` does not expose a hook for it today.
+
+Internally, `recordNonFatal` filters out network noise before it reaches
+Crashlytics (`NSURLErrorNotConnectedToInternet`, `NSURLErrorCancelled`) — no
+action needed from the app for that.
+
+## Premium
+
+`PremiumServicing` is the single entry point for paywalls, products,
+purchases and the current premium flag. Adapty and the Apple receipt are
+both internal to the implementation behind it.
+
+```swift
+public protocol PremiumServicing: AnyObject {
+	var isPremium: Bool { get }
+	func start()
+	func refresh()
+	func restore(completion: @escaping (RestoreOutcome) -> Void)
+	func purchase(_ productId: String, placement: String, completion: @escaping (PurchaseOutcome) -> Void)
+	func product(_ productId: String, placement: String, completion: @escaping (PremiumProduct?) -> Void)
+	func products(placement: String, completion: @escaping ([PremiumProduct]) -> Void)
 	func hasPaywall(placement: String) -> Bool
-	func hasProductsForPaywall(placement: String, id: String) -> Bool
-	func hasProductsForPaywall(placement: String) -> Bool
-	func getRemoteValue<Type>(placement: String, key: String) -> Type?
-	func getAbValue(placement: String) -> Int?
-	func getBoolValue(placement: String, key: String) -> Bool
+	func remoteValue<T>(placement: String, key: String) -> T?
 	func logPaywallOpen(placement: String)
-	func logOnboardingOpen(step: Int)
-	func updateAttribution(attribution: [AnyHashable: Any])
-	func buyProduct(placement: String, id: String, completion: ((AdaptyPurchaseResult) -> Void)?)
-	func integrateFirebase(appInstanceId: String)
-	func integrateFacebook(id: String)
-	func updateAppTrackingTransparencyStatus(_ status: ATTrackingManager.AuthorizationStatus)
-	func updateAppsFlyerAttribution(_ data: [AnyHashable: Any], networkUserId: String?)
 }
 ```
 
-Реалізація — `AdaptyService` (клас, не struct — тримає стан пейволів). Плейсменти й
-access-level id — прості `String`: пакет не заводить enum, апка передає власні назви з
-дашборда Adapty (на відміну від еталона AISONG, де `AdaptyPlacement` — власний enum апки;
-у пакеті це узагальнено до `[String]`).
+`start()` is already called once by `IntegrationKit.configure(...)` — the app
+never calls it. `isPremium` is synchronous and reads from cache, no network
+round trip; the source of truth behind it is Adapty first, the app's
+`AppleSubscribing` receipt as a fallback when Adapty has not answered yet.
 
-**Що дає апка:**
-- Adapty public API key (`public_live_...`, з дашборда Adapty цієї апки — не переносити
-  ключ іншої апки, вимога зі скіла);
-- `customerUserId` — той самий стабільний id, що і в Amplitude/AppsFlyer;
-- `placements` — id плейсментів з дашборда Adapty;
-- `sessionsCounter` — власний лічильник сесій апки.
-
-**Автоматично:** підписка на `Adapty.delegate` до `activate()` (щоб не пропустити перший
-push профілю); лінк Amplitude user id/device id у профіль; запис `lastUsedDay` і
-`launchSession`; підвантаження продуктів для кожного плейсменту.
-
-`AdaptyPurchaseResult` (`success`/`cancelled`/`retryWithStoreKit`/`failed`) — сигнал
-результату покупки; `retryWithStoreKit` означає, що сам запит до Adapty впав (офлайн, бад
-продукт, серверна помилка) — це не рішення про преміум, а команда «спробуй StoreKit
-напряму».
-
-## Преміум
-
-Чотири типи, разом — арбітр преміум-статусу апки.
+### The paywall-to-purchase flow
 
 ```swift
-public final class PremiumService {
-	public init(
-		store: PremiumStateStoring = UserDefaultsPremiumStore(),
-		adapty: AdaptyPremiumProviding? = nil,
-		apple: AppleReceiptChecking? = nil,
-		levels: Set<String> = ["premium"]
-	)
-	public var isPremium: Bool { get }
-	public func start()
-	public func refresh()
-	public func apply(adapty: PremiumAccess?)
-	public func applyLocalPurchase()
-	public func applyReceiptCheck(_ hasReceipt: Bool?)
+func paywall() {
+	kit.premium.logPaywallOpen(placement: "main")
+
+	let title: String? = kit.premium.remoteValue(placement: "main", key: "title")
+	let paywallExists = kit.premium.hasPaywall(placement: "main")
+
+	kit.premium.products(placement: "main") { products in
+		for product in products {
+			print(product.localizedTitle, product.localizedPrice)
+		}
+	}
+
+	kit.premium.product("year.sub", placement: "main") { product in
+		guard let product else { return }
+		kit.premium.purchase(product.id, placement: "main") { outcome in
+			switch outcome {
+				case .purchased:
+					// kit.premium.isPremium is already true by this point.
+					break
+				case .cancelled:
+					break
+				case .failed:
+					break
+			}
+		}
+	}
 }
 ```
+
+- **`logPaywallOpen(placement:)`** — logs the paywall-shown event to Adapty.
+  Call it when the paywall screen appears, not before.
+- **`hasPaywall(placement:)`** — whether Adapty has a paywall configured for
+  this placement at all. `false` for a placement that was never preloaded
+  (see `placements` at `configure` time) or does not exist in the Adapty
+  dashboard.
+- **`remoteValue<T>(placement:key:)`** — reads a value out of the paywall's
+  remote config by key; returns `nil` if the placement, the key, or the type
+  cast does not match.
+- **`products(placement:completion:)`** / **`product(_:placement:completion:)`**
+  — `PremiumProduct` values for a placement, or a single one by product id.
+  Both complete with an empty result / `nil` if the placement has no paywall
+  or no matching product.
+- **`purchase(_:placement:completion:)`** — takes a `PremiumProduct.id`. When
+  Adapty's own purchase request fails and asks for a StoreKit retry, the
+  package runs that retry itself through the app's `AppleSubscribing.purchase(productId:)`
+  — the app never sees a "please retry" signal, only the final
+  `PurchaseOutcome`.
+- **`restore(completion:)`** — restores through both sources (Adapty, then
+  the app's `AppleSubscribing.restore()`) and reports one combined
+  `RestoreOutcome`. `isPremium` already reflects `.restored` by the time the
+  completion fires.
+- **`refresh()`** — re-asks both sources and updates the cached state; safe
+  to call any time (e.g. on foreground), concurrent calls collapse into one.
+
+### Models
 
 ```swift
-public protocol AdaptyPremiumProviding: AnyObject {
-	var premiumObserver: ((AdaptyProfile) -> Void)? { get set }
-	func refreshPremium()
+public struct PremiumProduct: Equatable, Sendable {
+	public let id: String
+	public let localizedTitle: String
+	public let localizedPrice: String
+	public let price: Decimal
+	public let currencyCode: String?
+	public let subscriptionPeriod: PremiumPeriod?
+	public let introductoryOffer: PremiumOffer?
 }
-// AdaptyService конформить автоматично (AdaptyService+Premium.swift).
 
-public protocol AppleReceiptChecking: AnyObject {
-	func checkReceipt(completion: @escaping (Bool?) -> Void)
+public struct PremiumPeriod: Equatable, Sendable {
+	public enum Unit: String, Equatable, Sendable { case day, week, month, year, unknown }
+	public let unit: Unit
+	public let numberOfUnits: Int
 }
-// Пакет НЕ реалізує — валідація рецепта лишається StoreKit-логікою апки
-// (у video-to-mp3 — SwiftyStoreKit-based SubscriptionService, поза пакетом).
 
-public protocol PremiumStateStoring: AnyObject {
-	var cached: PremiumState? { get set }
-	var premium: Bool { get set }
+public struct PremiumOffer: Equatable, Sendable {
+	public enum PaymentMode: String, Equatable, Sendable { case payAsYouGo, payUpFront, freeTrial, unknown }
+	public let price: Decimal
+	public let localizedPrice: String?
+	public let period: PremiumPeriod
+	public let numberOfPeriods: Int
+	public let paymentMode: PaymentMode
 }
-// Дефолт — UserDefaultsPremiumStore (ключі "premiumStateKey" / "premiumKey").
+
+public enum PurchaseOutcome: Equatable, Sendable {
+	case purchased
+	case cancelled
+	case failed
+}
+
+public enum RestoreOutcome: Equatable, Sendable {
+	case restored
+	case nothingToRestore
+	case failed
+}
 ```
 
-### Правило арбітражу
+`PurchaseOutcome.failed` and `RestoreOutcome.failed` both cover the StoreKit
+fallback path too — the "retry through StoreKit" signal from Adapty never
+leaves the package, it always resolves to one of these three/three cases
+before reaching the app.
 
-Вирішує чиста функція `PremiumResolver.resolve(adapty:apple:cached:now:) -> PremiumState`,
-у порядку:
-
-1. **Adapty відповів — він головний, завжди й в обидва боки.** Verified premium так само,
-   як verified revoke: свіжий `false` від Adapty знімає преміум, навіть якщо кеш або
-   Apple-рецепт кажуть інакше.
-2. **Кеш, якщо ще валідний і (verified АБО premium).** Це і є свідоме рішення: непідтверджена
-   Adapty покупка (щойно куплена локально, профіль ще не прийшов) тримається, поки Adapty
-   не скаже своє — а не скидається одразу, як тільки Apple-рецепт відповість `false`.
-   Рішення 2026-09-07: **«краще трохи доплатити за халявщика, ніж втратити преміум»** —
-   це не баг, а обраний компроміс на користь юзера.
-3. **Apple-рецепт як резерв**, якщо Adapty й валідний кеш мовчать. `apple == nil` означає
-   «рецепт не перевірявся», а не «немає доступу» — це окремий стан, не `false`.
-4. **Ніхто не відповів, кеш є** — повертає те, що було, але знімає прапорець `isVerified`.
-5. Нічого немає взагалі — `PremiumState.free`.
-
-Тобто **Adapty завжди переможе** — і коли дає преміум, і коли забирає. Локальний
-StoreKit-рецепт ніколи не переб'є вже підтверджений Adapty-стан; його роль — тільки
-заповнити паузу до першої відповіді Adapty (офлайн-старт, ще не активований профіль).
-
-`PremiumService.start()` мігрує legacy-прапорець преміуму апки при першому запуску
-(`store.cached == nil` → сідить кеш зі старого `store.premium`, `source: .legacy`), потім
-підписується на `adapty?.premiumObserver` і викликає `refresh()`. `refresh()` захищений
-від паралельних запусків прапорцями `awaitingAdapty`/`awaitingApple`: поки попередній
-`refresh()` ще чекає відповіді, другий виклик — no-op. Увесь запис у сховище — під одним
-`NSRecursiveLock`, щоб `cached` і дзеркальний `premium`-прапорець ніколи не розійшлися.
-
-`Notification.Name.premiumDidChange` (`PremiumNotification.swift`) шлеться тільки коли
-значення прапорця дійсно змінюється, на `DispatchQueue.main.async`.
-
-## Deep linking
-
-Пакет форвардить обидва системні виклики в AppsFlyer SDK і не більше:
+### Reacting to premium changes
 
 ```swift
-public protocol AppsFlyerServicing: AnyObject {
-	func configure(devKey: String, appId: String, deviceId: String)
-	func handleContinue(_ userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void)
-	func handleOpen(_ url: URL, options: [UIApplication.OpenURLOptionsKey: Any])
+NotificationCenter.default.addObserver(
+	forName: .premiumDidChange,
+	object: nil,
+	queue: .main
+) { _ in
+	print("premium is now \(kit.premium.isPremium)")
 }
 ```
 
-- **Universal Links** (`application(_:continue:restorationHandler:)`) — потребують
-  capability Associated Domains з `applinks:<домен AppsFlyer OneLink>` в Xcode-таргеті.
-  Без неї система взагалі не викликає цей метод AppDelegate.
-- **URL-схема** — реєструється окремо, стандартний `CFBundleURLTypes` в Info.plist, і йде
-  через `application(_:open:options:)`.
+`Notification.Name.premiumDidChange` fires only when the flag actually
+changes value — never on a write of the same value — always on the main
+queue.
 
-Обидва форварди в `AppDelegate` — через методи сервіса (`handleContinue`/`handleOpen`), не
-`AppsFlyerLib.shared()` напряму: інакше під `-uitest` SDK торкається в обхід стаба.
-
-**Чесно про межі:** коли деплінк резолвиться, пакет виконує рівно це:
+## Implementing `AppleSubscribing`
 
 ```swift
-func applyDeepLink(deeplinkValue: String?, clickEvent: [String: Any]) {
-	let (payload, dlvValue) = AppsFlyerAttributionMapping.deepLinkPayload(deeplinkValue: deeplinkValue, clickEvent: clickEvent)
-	analytics.logEvent("af_didResolveDeepLink", properties: payload)
-	analytics.setUserProperties(["deep_link_value": dlvValue])
-	adapty.setProfileValue(value: dlvValue, key: "deep_link_value")
+public protocol AppleSubscribing: AnyObject {
+	func checkReceipt() async -> Bool?
+	func restore() async -> RestoreOutcome
+	func purchase(productId: String) async -> PurchaseOutcome
 }
 ```
 
-Тобто: **лог в аналітику + запис у профіль Adapty. Все.** Пакет нікуди не веде юзера — у
-`AppsFlyerServicing` немає колбека назовні на резолвнутий деплінк. Якщо апці треба
-відкрити конкретний екран за `deeplinkValue`, це рішення й код — повністю на боці апки
-(власний обробник, що читає той самий `deeplinkValue`, який пакет уже проатрибутував і
-залогував).
+This is the one protocol the app implements rather than only consumes — the
+package has no StoreKit code of its own and does not know your product ids
+or your StoreKit stack (StoreKit 2, `SwiftyStoreKit`, or anything else).
 
-`AppsFlyerAttributionMapping` (чисті функції `cleanedAttributionData`/`deepLinkPayload`) —
-винесено в окремий файл спеціально, щоб перевірятись без лінковки бінарного
-`AppsFlyerLib` (див. «Перевірки»).
+- **`checkReceipt() async -> Bool?`** — return `nil` when the receipt could
+  not be checked at all (offline, sandbox weirdness, a verification error),
+  never `false` for "unknown". `false` must mean "checked, and there is no
+  active subscription". The premium arbiter treats `nil` as "no answer yet",
+  not as "no access" — returning `false` when you mean "couldn't tell" will
+  incorrectly revoke premium.
+- **`restore() async -> RestoreOutcome`** — run the StoreKit-side restore and
+  report its outcome. Turning `isPremium` on afterwards is
+  `PremiumServicing`'s job, not this method's — this only reports what
+  StoreKit found.
+- **`purchase(productId: String) async -> PurchaseOutcome`** — the fallback
+  purchase path. `PremiumServicing.purchase(_:placement:completion:)` calls
+  this itself when Adapty's own purchase attempt asks for a StoreKit retry;
+  the app never calls this method directly, and never buys anything past the
+  `premium` facade, so there is still exactly one purchase verdict for the
+  whole app.
 
-## Тести
+`BuildHost/Sources/App.swift` stubs this out to compile only — `checkReceipt`
+returns `nil`, `restore` returns `.nothingToRestore`, `purchase` returns
+`.failed`. A real implementation replaces all three with actual StoreKit
+calls.
 
-Пакет не постачає жодного стаба — тільки протоколи (`AnalyticsTracking`, `AdaptyServicing`,
-`AppsFlyerServicing`, `CrashReporting`, `AppleReceiptChecking`, `PremiumStateStoring`).
-Підміна на UI-тестах — рішення й код апки: `#if DEBUG` + `UITestMode.isActive`-гард,
-стаби пишуть лог у файл (патерн `AnalyticsStub` в еталонах), мережі нуль.
+## Deep links
 
-`PremiumService` тестується без окремого стаба — конструктор приймає протокол-типізовані
-`adapty`/`apple`/`store`, юніт-тест підставляє власні спаї напряму через `init(...)`.
+```swift
+public func handleContinue(_ userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void)
+public func handleOpen(_ url: URL, options: [UIApplication.OpenURLOptionsKey: Any])
+```
 
-Правило з `Skill(xcuitest)` (інцидент AISONG 2026-08-26): тестовий гачок має бути
-**невидимий поза `-uitest`** — або взагалі не компілюється поза DEBUG, або компілюється,
-але `UITestMode.isActive` не дає йому активуватись. Стаб-ключі (`uitest-invalid-*-key`)
-лишаються невалідними навіть якщо гард колись прибрати — друга лінія захисту.
+Forward both `AppDelegate` callbacks through `kit`, not to AppsFlyer
+directly — AppsFlyer's own service type is internal, this is the only way to
+reach it:
 
-## Граблі
+```swift
+func application(_ application: UIApplication, continue userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void) -> Bool {
+	kit?.handleContinue(userActivity, restorationHandler: restorationHandler)
+	return true
+}
 
-- **Adapty ламає публічний API всередині мінорних версій.** 2.11 переробила
-  `remoteConfig` на структуру — код, що читав його як словник, перестав компілюватись.
-  Тому `Package.swift` пінить `Adapty`/`AdaptyUI` через `.upToNextMinor`, а не `from:`.
-  AppsFlyer запінений так само, превентивно (бінарний xcframework, свіжа мінорна вже
-  ламала попередній пакет).
-- **`waitForATTUserAuthorization(timeoutInterval: 60)`.** Якщо ATT-діалог в апці не
-  показався (запит стоїть не в `viewDidAppear`, або система вже деактивувала апку іншим
-  алертом — вхід в App Store акаунт на симуляторі, дзвінок, Face ID), AppsFlyer чекає
-  відповіді рівно 60 секунд перед стартом. Симптом ідентичний «SDK не стартує» — а
-  причина за три кроки вбік.
-- **Пакет не збирається сам по собі.** `swift build` цілиться в macOS-хост і падає на
-  вимогах платформи; прямий `xcodebuild` закритий хуком. Перевірка йде через
-  `BuildHost/` — мінімальну iOS-апку на xcodegen, яка лінкує пакет: `cd BuildHost && xcb
-  app-sim`. Змінив `project.yml` → `xcodegen generate`.
-- **AppsFlyer App ID — не вгадується.** Числовий App Store id, окремий від devKey.
-  Кандидата можна знайти в самій апці (rate-us/share URL) або через
-  `curl -s "https://itunes.apple.com/lookup?bundleId=<bundle id>"` (поле `trackId`), але
-  **фінальне значення підтверджує юзер** — атрибуція на чужий id виявляється в дашборді
-  через тижні, а не одразу.
+func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
+	kit?.handleOpen(url, options: options)
+	return true
+}
+```
 
-## Перевірки
+- **Universal Links** (`handleContinue`) need the Associated Domains
+  capability with `applinks:<AppsFlyer OneLink domain>`. Without it, iOS
+  never calls `application(_:continue:restorationHandler:)` in the first
+  place — this is a project setting, not something the package can detect
+  or fall back around.
+- **URL scheme** (`handleOpen`) needs `CFBundleURLTypes` in `Info.plist`,
+  independent of the package.
+- If `appsFlyerDevKey` was empty at `configure` time, both methods are
+  effectively no-ops — there is no AppsFlyer instance behind them to forward
+  to.
 
-Дві self-перевірки без XCTest і без Xcode-проєкту — пряма `swiftc`-компіляція чистих
-типів (жодних SDK-імпортів):
+**What the package does with a resolved deep link:** logs an
+`af_didResolveDeepLink` analytics event, sets a `deep_link_value` user
+property, and writes the same value into the Adapty profile. It does not
+navigate anywhere. If the app needs to open a specific screen based on the
+resolved deep link value, that routing is entirely the app's own code —
+`IntegrationKit` has no callback for "the deep link resolved to X".
+
+## Building and checks
+
+The package does not build standalone — `swift build` targets the macOS host
+and fails on iOS-only dependencies, and running `xcodebuild` directly is
+blocked by the local build hook. Verification goes through `BuildHost/`, a
+minimal iOS app on xcodegen that links the package:
+
+```bash
+cd BuildHost && xcb app-sim
+```
+
+Changed `BuildHost/project.yml`? Run `xcodegen generate` first.
+
+`Checks/` are self-checks that compile pure Swift types directly with
+`swiftc` — no XCTest, no Xcode project, no SDK imports:
 
 ```bash
 ./Checks/premium-resolver-check.sh
 ```
-Компілює `PremiumResolver` + `PremiumAccess`/`PremiumState`/`PremiumSource` і ганяє 5
-асертів: Adapty active перебиває кеш; Adapty inactive знімає навіть непідтверджену
-покупку; `false`-рецепт НЕ знімає непідтверджену покупку (правило арбітражу з
-2026-09-07); протухлий кеш + `true`-рецепт дає unverified без `expiresAt`; тиша всюди —
-`.free`.
+Compiles `PremiumResolver` plus `PremiumAccess`/`PremiumState`/`PremiumSource`
+and runs assertions on the arbitration order: a verified Adapty answer beats
+the cache in both directions; a false receipt does not revoke an unverified
+local purchase; a stale cache plus a true receipt yields unverified state
+with no `expiresAt`; silence everywhere yields `.free`.
+
+```bash
+./Checks/premium-barrier-check.sh
+```
+Compiles `PremiumService` against a stub `Adapty` module (built first as a
+static library so the real SDK is never linked) and checks the `refresh()`
+concurrency barrier plus the StoreKit-fallback and facade-price paths.
 
 ```bash
 ./Checks/appsflyer-attribution-check.sh
 ```
-Компілює `AppsFlyerAttributionMapping` і ганяє 4 асерти: `NSNull`/нескалярні
-значення/нестрокові ключі відкидаються з `cleanedAttributionData`; порожній вхід лишається
-порожнім; `nil` deeplinkValue падає у `"-"`; поля `clickEvent` протікають у payload.
+Compiles `AppsFlyerAttributionMapping` and checks that `NSNull`/non-scalar
+values and non-string keys are dropped from `cleanedAttributionData`; that an
+empty input stays empty; that a `nil` deep link value becomes `"-"`; that
+`clickEvent` fields flow through into the payload.
 
-## Чекліст готовності
+## Troubleshooting
 
-- [ ] Пакет додано через SPM, продукт `IntegrationKit`
-- [ ] `GoogleService-Info.plist` — свій для цієї апки, у target membership
-- [ ] Run Script для Crashlytics dSYM додано, `inputPaths` вказують на цей таргет
-- [ ] `NSUserTrackingUsageDescription` виставлено в Info.plist
-- [ ] Associated Domains додано, якщо потрібні Universal Links
-- [ ] `AppDelegate`: Firebase (з гардом) → Amplitude → Adapty → `PremiumService.start()` →
-      AppsFlyer, у цьому порядку
-- [ ] Forwards `application(_:continue:restorationHandler:)` і `application(_:open:options:)`
-      ідуть через методи сервіса AppsFlyer, не напряму в `AppsFlyerLib`
-- [ ] Amplitude API key, Adapty API key, AppsFlyer devKey (обфускований) — реальні ключі
-      цієї апки, не перенесені з іншої
-- [ ] AppsFlyer App ID — підтверджений юзером, не вгаданий
-- [ ] `deviceId` — один і той самий стабільний id у Amplitude/Adapty/AppsFlyer
-- [ ] `AppleReceiptChecking` — або власний конформер апки, або свідомо `nil`
-- [ ] Стаби для UI-тестів заведені в апці, невидимі поза `-uitest`
-- [ ] `./Checks/premium-resolver-check.sh` і `./Checks/appsflyer-attribution-check.sh`
-      зелені
-- [ ] `cd BuildHost && xcb app-sim` — пакет лінкується і збирається
+- **`hasPaywall(placement:)` is always `false`.** Either the placement was
+  never in `placements` at `configure` time, or the placement id does not
+  match the Adapty dashboard exactly (case-sensitive, no trailing
+  whitespace).
+- **`products(placement:)` returns an empty array on a paywall that has
+  products in the dashboard.** Usually a wrong `adaptyKey` — a key copied
+  from a different app or a different Adapty project resolves placements
+  that do not exist. Confirm the key against this app's Adapty dashboard, not
+  a sibling app's.
+- **`isPremium` stays `false` after a real purchase.** Check `levels` at
+  `configure` time against the Adapty access level id actually granted by
+  the paywall — a mismatch here means a genuinely successful Adapty purchase
+  never counts as premium from this package's point of view.
+- **ATT dialog never shows.** `NSUserTrackingUsageDescription` missing from
+  Info.plist, or `requestTrackingAuthorization` called before the app is
+  fully foregrounded. Confirm you're calling
+  `IntegrationKit.updateTrackingAuthorization(_:)` from the completion
+  handler, and that the request itself isn't skipped in a debug/simulator
+  build.
+- **AppsFlyer never fires `handleContinue`/`handleOpen`.** Confirm
+  `appsFlyerDevKey` is non-empty — an empty dev key silently skips creating
+  AppsFlyer entirely, and both forwards become no-ops. Separately, Universal
+  Links additionally need the Associated Domains capability configured, or
+  iOS never calls `application(_:continue:restorationHandler:)` at all.
+- **Crashlytics dashboard shows unsymbolicated crashes.** The dSYM Run
+  Script (setup step 5) is missing or its `inputPaths` point at the wrong
+  target.
+
+## Readiness checklist
+
+- [ ] Package added via SPM, product `IntegrationKit`
+- [ ] `GoogleService-Info.plist` — this app's own, target membership checked
+- [ ] Crashlytics dSYM Run Script added, `inputPaths` point at this target
+- [ ] `NSUserTrackingUsageDescription` set in Info.plist
+- [ ] Associated Domains added, if Universal Links are needed
+- [ ] `AppDelegate` calls `FirebaseIntegration.configure()` before
+      `IntegrationKit.configure(...)`
+- [ ] `AppleSubscribing` implemented for real (not the build-host stub) and
+      passed as `apple:`
+- [ ] `handleContinue`/`handleOpen` forwarded through `kit`, not any SDK
+      directly
+- [ ] `deviceId` is one stable id, the same value across app launches
+- [ ] Amplitude key, Adapty key, AppsFlyer dev key — real keys for this app,
+      not copied from another one
+- [ ] AppsFlyer App ID confirmed against App Store Connect, not guessed
+- [ ] `levels` matches the Adapty access level id actually granted by the
+      paywall
+- [ ] `./Checks/premium-resolver-check.sh`, `./Checks/premium-barrier-check.sh`
+      and `./Checks/appsflyer-attribution-check.sh` all pass
+- [ ] `cd BuildHost && xcb app-sim` builds

@@ -1,130 +1,118 @@
 # IntegrationKit
 
-Swift Package з обгортками чотирьох SDK — **Firebase** (Core + Crashlytics), **Amplitude**,
-**Adapty**, **AppsFlyer** — плюс арбітраж преміум-статусу (`PremiumService`). Механіка
-інтеграцій, однакова для будь-якої апки, живе тут; специфіка апки (ключі, події, плейсменти,
-модель підписки) лишається в апці й приходить параметрами.
+A Swift Package that wraps four third-party SDKs behind one small public surface:
+**Firebase** (Core + Crashlytics), **Amplitude**, **Adapty** (premium/paywalls) and
+**AppsFlyer** (attribution, deep links). The package owns the wiring and the
+premium arbitration between Adapty and Apple's own receipt; the app supplies keys,
+event names, placements and its StoreKit implementation.
 
-Детальний гайд по підключенню, кожній інтеграції, деплінкам, тестам і граблям —
-[`docs/Integration.md`](docs/Integration.md). Цей файл — швидкий старт.
+Only three protocols and a handful of models are public — everything else (Adapty,
+AppsFlyer, and the concrete services behind them) is an internal implementation
+detail. The full walkthrough — every `configure` parameter, paywall flow, deep
+links, troubleshooting — lives in [`docs/Integration.md`](docs/Integration.md).
+This file is the short version.
 
-## Що входить
+## Requirements
 
-| SDK | Продукти | Пінінг у `Package.swift` |
-|---|---|---|
-| Firebase | `FirebaseCore`, `FirebaseCrashlytics` (без `FirebaseAnalytics`) | `from: "12.0.0"` |
-| Amplitude | `AmplitudeSwift` | `from: "1.18.7"` |
-| Adapty | `Adapty`, `AdaptyUI` | `.upToNextMinor(from: "2.10.4")` / `"2.1.5"` |
-| AppsFlyer | `AppsFlyerLib` | `.upToNextMinor(from: "7.0.2")` |
+- iOS 15.6+
+- Swift 5.9 (`swift-tools-version: 5.9`)
 
-Мінімальна платформа — iOS 15.6 (`swift-tools-version: 5.9`).
-
-Adapty й AppsFlyer запінені `.upToNextMinor`, а не `from:` — обидва ламали публічний API
-всередині мінорних версій. Деталі — у розділі «Граблі» довгого гайду.
-
-## Підключення
+## Installation
 
 ```swift
-.package(url: "https://github.com/GoodwinNick/IntegrationKit.git", from: "0.1.0")
+.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.2.0")
 ```
 
-В Xcode: File → Add Package Dependencies → та сама url, продукт `IntegrationKit`.
+In Xcode: File → Add Package Dependencies → the same URL, product `IntegrationKit`.
 
-Що ще покласти в Xcode-проєкт (plist-файли, Run Script, ключі в Info.plist, capabilities) —
-крок за кроком у [`docs/Integration.md`](docs/Integration.md#підключення-з-нуля).
-
-## Швидкий приклад
+## Quick start
 
 ```swift
 import IntegrationKit
 
-// 1. Firebase — Core + Crashlytics. Апка сама гардить на наявність plist.
-if Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") != nil {
-	FirebaseIntegration.configure()
+final class AppStoreKit: AppleSubscribing {
+	func checkReceipt() async -> Bool? { /* StoreKit receipt check */ nil }
+	func restore() async -> RestoreOutcome { /* StoreKit restore */ .nothingToRestore }
+	func purchase(productId: String) async -> PurchaseOutcome { /* StoreKit purchase */ .failed }
 }
 
-let crashReporter: CrashReporting = CrashReporter()
-crashReporter.recordNonFatal("network", error)
+// Call before IntegrationKit.configure(...).
+FirebaseIntegration.configure()
 
-// 2. Amplitude
-let analytics: AnalyticsTracking = AmplitudeAnalytics()
-analytics.configure(apiKey: apiKey, deviceId: deviceId, firstOpenEvent: "first_open")
-analytics.logEvent("app_launch")
+let kit = IntegrationKit.configure(
+	deviceId: deviceId,
+	amplitudeKey: amplitudeApiKey,
+	adaptyKey: adaptyApiKey,
+	placements: ["main", "onboarding"],
+	sessionsCounter: sessionsCounter,
+	apple: AppStoreKit(),
+	levels: ["premium"],
+	firstOpenEvent: "first_open",
+	appsFlyerDevKey: appsFlyerDevKey,
+	appsFlyerAppId: appsFlyerAppId
+)
 
-// 3. Adapty (premium + attribution sink). Concrete type, не протокол — конформить і
-// AdaptyServicing, і AdaptyPremiumProviding (для PremiumService).
-let adapty = AdaptyService()
-adapty.configure(apiKey: apiKey, customerUserId: deviceId, sessionsCounter: sessionsCounter, placements: placements, analytics: analytics)
-
-// AppleReceiptChecking пакет не реалізує — це StoreKit-логіка апки; передати свій конформер
-// або nil, щоб покладатись тільки на Adapty.
-let premium = PremiumService(adapty: adapty, apple: appOwnedReceiptChecker)
-premium.start()
-
-// 4. AppsFlyer — devKey/appId декодує й тримає апка, ніколи не пакет
-let appsFlyer: AppsFlyerServicing = AppsFlyerService(analytics: analytics, adapty: adapty)
-appsFlyer.configure(devKey: devKey, appId: appId, deviceId: deviceId)
+kit.analytics.logEvent("app_open")
+kit.crashes.recordNonFatal("launch", someError)
 ```
 
-Порядок виклику фіксований: **Firebase → Amplitude → Adapty → AppsFlyer**, `PremiumService.start()`
-— одразу після Adapty. Чому саме такий порядок і повний `AppDelegate` — у довгому гайді.
+`kit.premium`, `kit.analytics`, `kit.crashes` are the only surfaces the app talks
+to afterwards — `PremiumServicing`, `AnalyticsTracking`, `CrashReporting`. Deep
+links go through `kit.handleContinue(...)` / `kit.handleOpen(...)`, and the ATT
+answer through `kit.updateTrackingAuthorization(_:)`. See
+[`docs/Integration.md`](docs/Integration.md) for the full `AppDelegate`, the
+meaning of every `configure` parameter and the paywall-to-purchase flow.
 
-`CrashReporting`, `AnalyticsTracking`, `AdaptyServicing`, `AppsFlyerServicing`,
-`AppleReceiptChecking`, `PremiumStateStoring` — публічні протоколи, апка підмінює їх стабами
-у UI-тестах.
+## What stays in your app
 
-## Що лишається на боці апки
+- SDK keys (Amplitude, Adapty, AppsFlyer dev key) — obtained from each
+  dashboard; obfuscated keys are decoded with `ObfuscatedSecret.reveal` before
+  being passed in.
+- `deviceId` — one stable id shared across Amplitude, Adapty and AppsFlyer.
+- Event names and analytics properties — the package takes plain `String`, it
+  does not define an event enum.
+- `GoogleService-Info.plist`, the Crashlytics dSYM Run Script, ATT usage string
+  and Associated Domains — everything Xcode-project-side.
+- The `AppleSubscribing` implementation (StoreKit): `checkReceipt`, `restore`,
+  `purchase(productId:)`. The package calls `purchase(productId:)` itself as a
+  fallback whenever Adapty asks to retry a purchase through StoreKit directly.
+- Calling `FirebaseIntegration.configure()` and `IntegrationKit.configure(...)`
+  at app launch, and forwarding `application(_:continue:restorationHandler:)` /
+  `application(_:open:options:)` through `kit.handleContinue` / `kit.handleOpen`.
 
-- Ключі й ідентифікатори SDK, `GoogleService-Info.plist`, Run Script для dSYM, ключі в
-  Info.plist, capabilities — усе, чого немає в коді пакета.
-- Enum подій аналітики (`LogEventKey`), назви подій, місця виклику.
-- Стаби сервісів для UI-тестів (`#if DEBUG` + `UITestMode.isActive` — рішення апки).
-- Реалізація `AppleReceiptChecking` (StoreKit) і `AppleReceiptChecking`-конформер.
-- Навігація за deep link'ом — пакет тільки логує й атрибутує, не веде юзера на екран.
-
-## Структура
+## Package layout
 
 ```
 Sources/IntegrationKit/
-├── Firebase/     Core + Crashlytics
-├── Amplitude/    фасад аналітики, IDFA-плагін
-├── Adapty/       активація, пейволи, профіль, покупки
-├── AppsFlyer/    ATT, дип-лінки, атрибуція
-├── Premium/      арбітраж преміуму над Adapty і рецептом
-└── Support/      debugLog, деобфускація ключа
+├── Firebase/     Core + Crashlytics, FirebaseIntegration, CrashReporting
+├── Amplitude/    analytics facade, IDFA plugin, AnalyticsTracking
+├── Adapty/       activation, paywalls, purchases (internal)
+├── AppsFlyer/    ATT, deep links, attribution (internal)
+├── Premium/      Adapty/Apple arbitration behind PremiumServicing
+└── Support/      composition-root helpers (obfuscated secrets, timeouts, debug log)
 ```
 
-Тека на кожну інтеграцію, `Premium/` окремо — він не належить жодному SDK, а вирішує
-між ними. SPM забирає файли рекурсивно, тому `Package.swift` про теки не знає.
+`IntegrationKit.swift` at the top of `Sources/IntegrationKit/` is the
+composition root — the one place that builds and wires all of the above.
 
-## Збірка
+## Building and checks
 
-Пакет сам по собі не збирається (`swift build` цілиться в macOS-хост). `BuildHost/` —
-мінімальна iOS-апка на xcodegen, яка лінкує пакет:
+The package does not build on its own (`swift build` targets the macOS host and
+fails on the iOS-only dependencies). `BuildHost/` is a minimal iOS app on
+xcodegen that links the package and proves the public API is enough:
 
 ```bash
 cd BuildHost && xcb app-sim
 ```
 
-## Перевірки
-
-Дві self-перевірки без XCTest, пряма swift-компіляція й запуск:
+`Checks/` has self-checks that compile and run without Xcode or XCTest:
 
 ```bash
-./Checks/premium-resolver-check.sh          # PremiumResolver, 5 асертів
-./Checks/appsflyer-attribution-check.sh     # AppsFlyerAttributionMapping, 4 асерти
+./Checks/premium-resolver-check.sh
+./Checks/premium-barrier-check.sh
+./Checks/appsflyer-attribution-check.sh
 ```
 
-## Статус
+## License
 
-- [x] Крок 1 — каркас + Firebase
-- [x] Крок 2 — Amplitude
-- [x] Крок 3 — Adapty (+ `PremiumService` арбітраж)
-- [x] Крок 4 — AppsFlyer
-- [ ] Крок 5 — міграція апок на пакет (жодна апка ще не переведена)
-
-Версія `0.1.0` — мінорна гілка ще може ламати API, поки пакет не обкатано на живій апці.
-
-## Ліцензія
-
-MIT © 2026 Yevhenii Petrenko — [LICENSE](LICENSE).
+MIT (c) 2026 Yevhenii Petrenko — [LICENSE](LICENSE).
