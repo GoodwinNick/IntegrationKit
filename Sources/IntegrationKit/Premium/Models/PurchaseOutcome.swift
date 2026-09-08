@@ -10,8 +10,8 @@ import Foundation
 public enum PurchaseOutcome: Equatable, Sendable {
 	case purchased
 	case cancelled
-	/// The request itself failed (offline, bad product, server error) — not a premium decision,
-	/// just a signal to fall back to a StoreKit purchase path.
-	case retryWithStoreKit
+	/// Everything that is not a purchase and not a user cancel, the StoreKit fallback included:
+	/// when Adapty asks to retry through StoreKit, `PremiumService` runs that itself and reports
+	/// its result here — "retry" never leaves the package.
 	case failed
 }

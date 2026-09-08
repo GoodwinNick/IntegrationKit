@@ -15,4 +15,8 @@ public protocol AppleSubscribing: AnyObject {
 	/// Restore on the StoreKit side. Premium is turned on by `PremiumService` afterwards, not
 	/// by this call.
 	func restore() async -> RestoreOutcome
+
+	/// The fallback purchase, used when Adapty's own request failed. `PremiumService.purchase`
+	/// calls it — the app never buys past the facade, so there is still exactly one verdict.
+	func purchase(productId: String) async -> PurchaseOutcome
 }

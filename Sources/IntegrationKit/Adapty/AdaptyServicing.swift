@@ -6,17 +6,7 @@
 import AppTrackingTransparency
 import Foundation
 
-/// What Adapty answered about one purchase attempt. `retryWithStoreKit` is Adapty's own
-/// signal that the request itself failed (offline, bad product, server error) — not a
-/// premium decision, just "try the fallback purchase path instead".
-public enum AdaptyPurchaseResult {
-	case success
-	case cancelled
-	case retryWithStoreKit
-	case failed
-}
-
-public protocol AdaptyServicing: AnyObject {
+protocol AdaptyServicing: AnyObject {
 	func configure(apiKey: String, customerUserId: String, sessionsCounter: Int, placements: [String], analytics: AnalyticsTracking)
 	func setProfileValue(value: String, key: String)
 	func hasPaywall(placement: String) -> Bool

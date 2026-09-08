@@ -7,10 +7,10 @@
 
 import Foundation
 
-public enum PremiumResolver {
+enum PremiumResolver {
 	/// Adapty is the final authority; Apple's receipt is the reserve when Adapty stays silent.
 	/// `apple == nil` means "receipt not checked", not "no access".
-	public static func resolve(adapty: PremiumAccess?, apple: Bool?, cached: PremiumState?, now: Date) -> PremiumState {
+	static func resolve(adapty: PremiumAccess?, apple: Bool?, cached: PremiumState?, now: Date) -> PremiumState {
 		// 1. Adapty answered — it wins, always, in both directions.
 		if let adapty {
 			return PremiumState(isPremium: adapty.isActive, source: .adapty, isVerified: true, expiresAt: adapty.expiresAt)

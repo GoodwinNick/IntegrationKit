@@ -71,7 +71,7 @@ final class FakeAdapty: AdaptyPremiumProviding {
 	var premiumObserver: ((AdaptyProfile) -> Void)?
 	var answer: AdaptyProfile?
 	var delay: TimeInterval
-	var buyResult: PurchaseOutcome = .failed
+	var buyResult: AdaptyPurchaseResult = .failed
 
 	init(answer: AdaptyProfile?, delay: TimeInterval = 0) {
 		self.answer = answer
@@ -86,7 +86,7 @@ final class FakeAdapty: AdaptyPremiumProviding {
 	}
 
 	func products(placement: String) async -> [PremiumProduct] { [] }
-	func buy(productId: String, placement: String) async -> PurchaseOutcome { buyResult }
+	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult { buyResult }
 	func remoteValue<T>(placement: String, key: String) -> T? { nil }
 	func logPaywallOpen(placement: String) {}
 	func hasPaywall(placement: String) -> Bool { false }
@@ -97,6 +97,7 @@ final class FakeApple: AppleSubscribing {
 	var receipt: Bool?
 	var delay: TimeInterval
 	var restoreResult: RestoreOutcome = .nothingToRestore
+	var purchaseResult: PurchaseOutcome = .failed
 
 	init(receipt: Bool?, delay: TimeInterval = 0) {
 		self.receipt = receipt
@@ -111,6 +112,8 @@ final class FakeApple: AppleSubscribing {
 	}
 
 	func restore() async -> RestoreOutcome { restoreResult }
+
+	func purchase(productId: String) async -> PurchaseOutcome { purchaseResult }
 }
 
 @main
@@ -242,7 +245,7 @@ enum PremiumBarrierCheck {
 		//    not an optimistic flag waiting for Adapty's push to confirm it.
 		let buyStore = SpyStore()
 		let buyAdapty = FakeAdapty(answer: profile(active: true, expiresAt: now + hour))
-		buyAdapty.buyResult = .purchased
+		buyAdapty.buyResult = .success
 		let buyService = PremiumService(store: buyStore, adapty: buyAdapty, apple: FakeApple(receipt: nil), levels: ["premium"], sourceTimeout: 1)
 		var buyOutcome: PurchaseOutcome?
 		var premiumInsidePurchase: Bool?

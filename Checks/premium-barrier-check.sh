@@ -20,6 +20,7 @@ swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty \
 	Sources/IntegrationKit/Premium/PremiumService.swift \
 	Sources/IntegrationKit/Premium/Protocols/PremiumServicing.swift \
 	Sources/IntegrationKit/Premium/Protocols/AdaptyPremiumProviding.swift \
+	Sources/IntegrationKit/Adapty/AdaptyPurchaseResult.swift \
 	Sources/IntegrationKit/Premium/Protocols/AppleSubscribing.swift \
 	Sources/IntegrationKit/Premium/Protocols/PremiumStateStoring.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumState.swift \

@@ -6,7 +6,7 @@
 import Foundation
 import UIKit
 
-public protocol AppsFlyerServicing: AnyObject {
+protocol AppsFlyerServicing: AnyObject {
 	/// devKey and appId are app-specific and never guessed by the package — the app decodes
 	/// (or already holds) them and passes the plain values in. deviceId ties AppsFlyer to the
 	/// same stable id Amplitude/Adapty use.

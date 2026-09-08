@@ -8,7 +8,7 @@ import Foundation
 import Adapty
 import AdaptyUI
 
-public final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
+final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 
 	private var paywalls: [String: AdaptyPaywall] = [:] {
 		didSet {
@@ -18,17 +18,17 @@ public final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 
 	private var cachedProducts: [String: [AdaptyPaywallProduct]] = [:]
 
-	public var observer: (() -> Void)?
+	var observer: (() -> Void)?
 	/// Fires whenever Adapty pushes a fresh profile (activation, any profile change). Callers
 	/// derive their own premium decision from `AdaptyProfile.accessLevels`.
-	public var premiumObserver: ((AdaptyProfile) -> Void)?
+	var premiumObserver: ((AdaptyProfile) -> Void)?
 	/// Fires right after a purchase succeeds, before Adapty's own profile push round-trips back
 	/// through `premiumObserver` — lets a caller apply an optimistic premium state immediately.
-	public var onPurchaseSucceeded: (() -> Void)?
+	var onPurchaseSucceeded: (() -> Void)?
 
-	public init() {}
+	init() {}
 
-	public func configure(apiKey: String, customerUserId: String, sessionsCounter: Int, placements: [String], analytics: AnalyticsTracking) {
+	func configure(apiKey: String, customerUserId: String, sessionsCounter: Int, placements: [String], analytics: AnalyticsTracking) {
 		// Set before activate so the very first profile push is not missed.
 		Adapty.delegate = self
 		Adapty.activate(apiKey, observerMode: false, customerUserId: customerUserId, dispatchQueue: .main, { _ in
@@ -51,7 +51,7 @@ public final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		})
 	}
 
-	public func setProfileValue(value: String, key: String) {
+	func setProfileValue(value: String, key: String) {
 		do {
 			var builder = try AdaptyProfileParameters.Builder()
 				.with(customAttribute: value, forKey: key)
@@ -82,53 +82,53 @@ public final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		}
 	}
 
-	public func hasPaywall(placement: String) -> Bool {
+	func hasPaywall(placement: String) -> Bool {
 		return paywalls[placement] != nil
 	}
 
-	public func hasProductsForPaywall(placement: String, id: String) -> Bool {
+	func hasProductsForPaywall(placement: String, id: String) -> Bool {
 		return cachedProducts[placement]?.contains(where: {$0.vendorProductId == id}) ?? false
 	}
 
-	public func hasProductsForPaywall(placement: String) -> Bool {
+	func hasProductsForPaywall(placement: String) -> Bool {
 		return cachedProducts[placement]?.first != nil
 	}
 
-	public func getRemoteValue<Type>(placement: String, key: String) -> Type? {
+	func getRemoteValue<Type>(placement: String, key: String) -> Type? {
 		if let id = paywalls[placement]?.remoteConfig?[key] as? Type {
 			return id
 		}
 		return nil
 	}
 
-	public func getAbValue(placement: String) -> Int? {
+	func getAbValue(placement: String) -> Int? {
 		if let id = paywalls[placement]?.remoteConfig?["id"] as? Int {
 			return id
 		}
 		return nil
 	}
-	public func getBoolValue(placement: String, key: String) -> Bool {
+	func getBoolValue(placement: String, key: String) -> Bool {
 		if let id = paywalls[placement]?.remoteConfig?[key] as? Bool {
 			return id
 		}
 		return false
 	}
 
-	public func logPaywallOpen(placement: String) {
+	func logPaywallOpen(placement: String) {
 		if let paywall = paywalls[placement] {
 			Adapty.logShowPaywall(paywall)
 		}
 	}
 
-	public func logOnboardingOpen(step: Int) {
+	func logOnboardingOpen(step: Int) {
 		Adapty.logShowOnboarding(name: "onboarding_\(step)", screenName: nil, screenOrder: UInt(step))
 	}
 
-	public func updateAttribution(attribution: [AnyHashable: Any]) {
+	func updateAttribution(attribution: [AnyHashable: Any]) {
 		Adapty.updateAttribution(attribution, source: .adjust)
 	}
 
-	public func updateAppsFlyerAttribution(_ data: [AnyHashable: Any], networkUserId: String?) {
+	func updateAppsFlyerAttribution(_ data: [AnyHashable: Any], networkUserId: String?) {
 		Adapty.updateAttribution(data, source: .appsflyer, networkUserId: networkUserId) { error in
 			if let error {
 				debugLog("[AppsFlyer→Adapty] updateAttribution failed: \(error)")
@@ -138,7 +138,7 @@ public final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		}
 	}
 
-	public func buyProduct(placement: String, id: String, completion: ((AdaptyPurchaseResult) -> Void)?) {
+	func buyProduct(placement: String, id: String, completion: ((AdaptyPurchaseResult) -> Void)?) {
 		if let product = cachedProducts[placement]?.first(where: { $0.vendorProductId == id }) {
 			Adapty.makePurchase(product: product) { result in
 				switch result {
@@ -162,7 +162,7 @@ public final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		}
 	}
 
-	public func integrateFirebase(appInstanceId: String) {
+	func integrateFirebase(appInstanceId: String) {
 		let builder = AdaptyProfileParameters.Builder()
 			.with(firebaseAppInstanceId: appInstanceId)
 		Adapty.updateProfile(params: builder.build()) { error in
@@ -170,7 +170,7 @@ public final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		}
 	}
 
-	public func integrateFacebook(id: String) {
+	func integrateFacebook(id: String) {
 		let builder = AdaptyProfileParameters.Builder()
 			.with(facebookAnonymousId: id)
 
@@ -191,7 +191,7 @@ public final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		}
 	}
 
-	public func updateAppTrackingTransparencyStatus(_ status: ATTrackingManager.AuthorizationStatus) {
+	func updateAppTrackingTransparencyStatus(_ status: ATTrackingManager.AuthorizationStatus) {
 		let builder = AdaptyProfileParameters.Builder()
 			.with(appTrackingTransparencyStatus: status)
 		Adapty.updateProfile(params: builder.build()) { error in
@@ -208,7 +208,7 @@ public final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	/// On the SDK side (2.10.x) `getProfile` performs a network fetch and falls back to the
 	/// stored profile when that request fails, so `.failure` here means the SDK is not activated
 	/// or the profile was swapped mid-flight — being offline still answers, from the cache.
-	public func profile() async -> AdaptyProfile? {
+	func profile() async -> AdaptyProfile? {
 		await withSingleResume { resume in
 			Adapty.getProfile { result in
 				switch result {
@@ -224,7 +224,7 @@ public final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	/// Products of a placement, already wrapped so the caller never sees an Adapty type.
 	/// Uses the cache `configure` filled; fetches only when it is still empty, which is the
 	/// normal case for a paywall opened right after launch.
-	public func products(placement: String) async -> [PremiumProduct] {
+	func products(placement: String) async -> [PremiumProduct] {
 		if let cached = cachedProducts[placement], !cached.isEmpty {
 			return cached.map(PremiumProduct.init(product:))
 		}
@@ -245,31 +245,20 @@ public final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		return fetched.map(PremiumProduct.init(product:))
 	}
 
-	public func buy(productId: String, placement: String) async -> PurchaseOutcome {
+	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult {
 		await withSingleResume { resume in
-			self.buyProduct(placement: placement, id: productId) { result in
-				switch result {
-					case .success:
-						resume(.purchased)
-					case .cancelled:
-						resume(.cancelled)
-					case .retryWithStoreKit:
-						resume(.retryWithStoreKit)
-					case .failed:
-						resume(.failed)
-				}
-			}
+			self.buyProduct(placement: placement, id: productId) { resume($0) }
 		}
 	}
 
-	public func remoteValue<T>(placement: String, key: String) -> T? {
+	func remoteValue<T>(placement: String, key: String) -> T? {
 		getRemoteValue(placement: placement, key: key)
 	}
 }
 
 extension AdaptyService: AdaptyDelegate {
 	/// Adapty pushes this on activation, on any profile change, and after a dashboard grant.
-	public func didLoadLatestProfile(_ profile: AdaptyProfile) {
+	func didLoadLatestProfile(_ profile: AdaptyProfile) {
 		premiumObserver?(profile)
 	}
 }

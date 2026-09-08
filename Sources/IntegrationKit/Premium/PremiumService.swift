@@ -9,7 +9,7 @@
 import Adapty
 import Foundation
 
-public final class PremiumService: PremiumServicing {
+final class PremiumService: PremiumServicing {
 	private let store: PremiumStateStoring
 	private let adapty: AdaptyPremiumProviding?
 	private let apple: AppleSubscribing?
@@ -25,7 +25,7 @@ public final class PremiumService: PremiumServicing {
 	/// its own instead of patching the package.
 	private let sourceTimeout: TimeInterval
 
-	public init(
+	init(
 		store: PremiumStateStoring = UserDefaultsPremiumStore(),
 		adapty: AdaptyPremiumProviding? = nil,
 		apple: AppleSubscribing? = nil,
@@ -40,12 +40,12 @@ public final class PremiumService: PremiumServicing {
 	}
 
 	/// Convenience read for call sites that just need the current answer.
-	public var isPremium: Bool {
+	var isPremium: Bool {
 		store.cached?.isPremium ?? false
 	}
 
 	/// PM-01: seeds the cache on the first launch after the update, then publishes what we know.
-	public func start() {
+	func start() {
 		lock.lock()
 		if store.cached == nil {
 			let wasPremium = store.premium
@@ -72,7 +72,7 @@ public final class PremiumService: PremiumServicing {
 	///
 	/// An intermediate state no longer exists either: the receipt cannot land first, flash a
 	/// value at the UI, and be overwritten by Adapty a moment later.
-	public func refresh() {
+	func refresh() {
 		Task { [weak self] in await self?.resolveBoth() }
 	}
 
@@ -104,7 +104,7 @@ public final class PremiumService: PremiumServicing {
 
 	/// PM-04: Adapty answered about the premium access level. The delegate push (`didLoadLatestProfile`)
 	/// comes in here — a one-way entrance that is deliberately not part of the `refresh()` barrier.
-	public func apply(adapty: PremiumAccess?) {
+	func apply(adapty: PremiumAccess?) {
 		apply(adapty: adapty, apple: nil)
 	}
 
@@ -133,15 +133,15 @@ public final class PremiumService: PremiumServicing {
 
 	// MARK: - PremiumServicing: paywalls and remote config, pass straight through to Adapty.
 
-	public func hasPaywall(placement: String) -> Bool {
+	func hasPaywall(placement: String) -> Bool {
 		adapty?.hasPaywall(placement: placement) ?? false
 	}
 
-	public func remoteValue<T>(placement: String, key: String) -> T? {
+	func remoteValue<T>(placement: String, key: String) -> T? {
 		adapty?.remoteValue(placement: placement, key: key)
 	}
 
-	public func logPaywallOpen(placement: String) {
+	func logPaywallOpen(placement: String) {
 		adapty?.logPaywallOpen(placement: placement)
 	}
 
@@ -151,7 +151,7 @@ public final class PremiumService: PremiumServicing {
 	/// Nothing is left for the caller to chase: by the time `completion` fires, `isPremium` is
 	/// already the answer. This is the defect the rewrite exists for — `Subtitle Video Translator`
 	/// returned success from its own restore and left premium off until the next launch.
-	public func restore(completion: @escaping (RestoreOutcome) -> Void) {
+	func restore(completion: @escaping (RestoreOutcome) -> Void) {
 		guard let apple else {
 			DispatchQueue.main.async { completion(.failed) }
 			return
@@ -168,25 +168,48 @@ public final class PremiumService: PremiumServicing {
 	/// Buys through Adapty and settles the state the same way `restore` does — one resolve, one
 	/// write, one notification — before the completion runs. Not an optimistic flag waiting for
 	/// the delegate push to confirm it: a finished verdict.
-	public func purchase(_ productId: String, placement: String, completion: @escaping (PurchaseOutcome) -> Void) {
+	func purchase(_ productId: String, placement: String, completion: @escaping (PurchaseOutcome) -> Void) {
 		guard let adapty else {
 			DispatchQueue.main.async { completion(.failed) }
 			return
 		}
 		Task { [weak self] in
-			let outcome = await adapty.buy(productId: productId, placement: placement)
+			let outcome: PurchaseOutcome
+			switch await adapty.buy(productId: productId, placement: placement) {
+				case .success:
+					outcome = .purchased
+				case .cancelled:
+					outcome = .cancelled
+				case .failed:
+					outcome = .failed
+				case .retryWithStoreKit:
+					// Adapty's own request failed — not the payment. The fallback stays INSIDE the
+					// facade: an app that had to buy through StoreKit itself and report back would
+					// be a branch leaving the single entrance and returning through the back door.
+					// No Apple side wired up means there is no fallback to run, so it is a failure.
+					outcome = await self?.apple?.purchase(productId: productId) ?? .failed
+			}
 			await self?.resolveBoth(localPurchase: outcome == .purchased)
 			DispatchQueue.main.async { completion(outcome) }
 		}
 	}
 
-	// MARK: - PremiumServicing: stubs. TEMPORARY — `product`/`products` land in step 6.
+	// MARK: - PremiumServicing: prices.
+	// Spec 3.4: products come from Adapty, which the package already loaded — a second SDK for
+	// the same data is a second cache and a second way to go out of sync.
 
-	public func product(_ productId: String, placement: String, completion: @escaping (PremiumProduct?) -> Void) {
-		completion(nil)
+	func product(_ productId: String, placement: String, completion: @escaping (PremiumProduct?) -> Void) {
+		products(placement: placement) { completion($0.first { $0.id == productId }) }
 	}
 
-	public func products(placement: String, completion: @escaping ([PremiumProduct]) -> Void) {
-		completion([])
+	func products(placement: String, completion: @escaping ([PremiumProduct]) -> Void) {
+		guard let adapty else {
+			DispatchQueue.main.async { completion([]) }
+			return
+		}
+		Task {
+			let list = await adapty.products(placement: placement)
+			DispatchQueue.main.async { completion(list) }
+		}
 	}
 }

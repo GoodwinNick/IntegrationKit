@@ -10,7 +10,7 @@ import AppsFlyerLib
 import Foundation
 import UIKit
 
-public final class AppsFlyerService: NSObject, AppsFlyerServicing {
+final class AppsFlyerService: NSObject, AppsFlyerServicing {
 
 	private let analytics: AnalyticsTracking
 	private let adapty: AdaptyServicing
@@ -19,13 +19,13 @@ public final class AppsFlyerService: NSObject, AppsFlyerServicing {
 	/// without going through the real `AppsFlyerLib.shared().start()` network call.
 	var didStartAppsFlyer = false
 
-	public init(analytics: AnalyticsTracking, adapty: AdaptyServicing) {
+	init(analytics: AnalyticsTracking, adapty: AdaptyServicing) {
 		self.analytics = analytics
 		self.adapty = adapty
 		super.init()
 	}
 
-	public func configure(devKey: String, appId: String, deviceId: String) {
+	func configure(devKey: String, appId: String, deviceId: String) {
 		guard !devKey.isEmpty else {
 			debugLog("[AppsFlyer] dev key is empty — SDK not started")
 			return
@@ -46,7 +46,7 @@ public final class AppsFlyerService: NSObject, AppsFlyerServicing {
 		)
 	}
 
-	public func handleContinue(_ userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void) {
+	func handleContinue(_ userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void) {
 		// AppsFlyer's block param is untyped NSArray*, imported as `[Any]?` — bridged explicitly
 		// instead of passing `restorationHandler` straight through, which type-checks as a
 		// contravariant mismatch against `[UIUserActivityRestoring]?` and crashes the compiler.
@@ -55,7 +55,7 @@ public final class AppsFlyerService: NSObject, AppsFlyerServicing {
 		}
 	}
 
-	public func handleOpen(_ url: URL, options: [UIApplication.OpenURLOptionsKey: Any]) {
+	func handleOpen(_ url: URL, options: [UIApplication.OpenURLOptionsKey: Any]) {
 		AppsFlyerLib.shared().handleOpen(url, options: options)
 	}
 
@@ -72,7 +72,7 @@ public final class AppsFlyerService: NSObject, AppsFlyerServicing {
 
 extension AppsFlyerService: AppsFlyerLibDelegate {
 
-	public func onConversionDataSuccess(_ installData: [AnyHashable: Any]) {
+	func onConversionDataSuccess(_ installData: [AnyHashable: Any]) {
 		debugLog("[AppsFlyer] conversion data received: \(installData)")
 		let cleanedData = AppsFlyerAttributionMapping.cleanedAttributionData(from: installData)
 
@@ -91,22 +91,22 @@ extension AppsFlyerService: AppsFlyerLibDelegate {
 		adapty.updateAppsFlyerAttribution(cleanedData, networkUserId: appsFlyerUID)
 	}
 
-	public func onConversionDataFail(_ error: Error) {
+	func onConversionDataFail(_ error: Error) {
 		debugLog("[AppsFlyer] conversion data error: \(error.localizedDescription)")
 	}
 
-	public func onAppOpenAttribution(_ attributionData: [AnyHashable: Any]) {
+	func onAppOpenAttribution(_ attributionData: [AnyHashable: Any]) {
 		debugLog("[AppsFlyer] app open attribution: \(attributionData)")
 	}
 
-	public func onAppOpenAttributionFailure(_ error: Error) {
+	func onAppOpenAttributionFailure(_ error: Error) {
 		debugLog("[AppsFlyer] app open attribution failure: \(error.localizedDescription)")
 	}
 }
 
 extension AppsFlyerService: AppsFlyerDeepLinkDelegate {
 
-	public func didResolveDeepLink(_ result: DeepLinkResult) {
+	func didResolveDeepLink(_ result: DeepLinkResult) {
 		switch result.status {
 			case .found:
 				guard let deepLink = result.deepLink else {

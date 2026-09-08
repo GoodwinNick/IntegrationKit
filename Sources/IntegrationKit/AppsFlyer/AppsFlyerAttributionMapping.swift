@@ -8,11 +8,11 @@
 
 import Foundation
 
-public enum AppsFlyerAttributionMapping {
+enum AppsFlyerAttributionMapping {
 
 	/// Drops NSNull and any non-JSON-safe value so the result is safe to hand to an analytics
 	/// event's properties.
-	public static func cleanedAttributionData(from installData: [AnyHashable: Any]) -> [String: Any] {
+	static func cleanedAttributionData(from installData: [AnyHashable: Any]) -> [String: Any] {
 		var result: [String: Any] = [:]
 
 		for (key, value) in installData {
@@ -32,7 +32,7 @@ public enum AppsFlyerAttributionMapping {
 
 	/// Deep-link click event flattened into the `af_didResolveDeepLink` event payload plus the
 	/// `deep_link_value` used as a user/profile property.
-	public static func deepLinkPayload(deeplinkValue: String?, clickEvent: [String: Any]) -> (payload: [String: Any], dlvValue: String) {
+	static func deepLinkPayload(deeplinkValue: String?, clickEvent: [String: Any]) -> (payload: [String: Any], dlvValue: String) {
 		let dlvValue = deeplinkValue ?? "-"
 
 		let payload: [String: Any] = [

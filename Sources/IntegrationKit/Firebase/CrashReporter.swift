@@ -6,11 +6,11 @@
 import Foundation
 import FirebaseCrashlytics
 
-public struct CrashReporter: CrashReporting {
+struct CrashReporter: CrashReporting {
 
-	public init() {}
+	init() {}
 
-	public func recordNonFatal(_ tag: String, _ error: Error, _ info: [String: Any]) {
+	func recordNonFatal(_ tag: String, _ error: Error, _ info: [String: Any]) {
 		let nsError = error as NSError
 		let isNoise = nsError.domain == NSURLErrorDomain
 			&& (nsError.code == NSURLErrorNotConnectedToInternet || nsError.code == NSURLErrorCancelled)
