@@ -73,13 +73,19 @@ public final class PremiumService: PremiumServicing {
 	/// An intermediate state no longer exists either: the receipt cannot land first, flash a
 	/// value at the UI, and be overwritten by Adapty a moment later.
 	public func refresh() {
-		Task { [weak self] in
-			guard let self else { return }
-			async let adaptyAnswer = self.askAdapty()
-			async let appleAnswer = self.askApple()
-			let (access, receipt) = await (adaptyAnswer, appleAnswer)
-			self.apply(adapty: access, apple: receipt)
-		}
+		Task { [weak self] in await self?.resolveBoth() }
+	}
+
+	/// The barrier itself, awaitable. `refresh()` fires it and forgets; `restore`/`purchase` await
+	/// it, which is what lets their completion run with the verdict already stored.
+	///
+	/// `localPurchase` marks that a purchase or a StoreKit restore has just gone through on this
+	/// device. That is a receipt saying yes, newer than any check we could run — see `apply`.
+	private func resolveBoth(localPurchase: Bool = false) async {
+		async let adaptyAnswer = askAdapty()
+		async let appleAnswer = askApple()
+		let (access, receipt) = await (adaptyAnswer, appleAnswer)
+		apply(adapty: access, apple: receipt, localPurchase: localPurchase)
 	}
 
 	/// `nil` means Adapty did not answer — an error, no source at all, or slower than
@@ -102,22 +108,16 @@ public final class PremiumService: PremiumServicing {
 		apply(adapty: adapty, apple: nil)
 	}
 
-	/// PM-04: a StoreKit purchase or restore just succeeded — that is newer than any cached
-	/// Adapty answer, so drop the verified flag and let Adapty re-confirm right after.
-	public func applyLocalPurchase() {
+	private func apply(adapty: PremiumAccess?, apple: Bool?, localPurchase: Bool = false) {
 		lock.lock()
-		store.cached = store.cached.map {
-			PremiumState(isPremium: $0.isPremium, source: $0.source, isVerified: false, expiresAt: $0.expiresAt)
-		}
-		lock.unlock()
-		apply(adapty: nil, apple: true)
-		// Let Adapty confirm right after. Nothing to gate: the barrier has no flags to trip.
-		refresh()
-	}
-
-	private func apply(adapty: PremiumAccess?, apple: Bool?) {
-		lock.lock()
-		let state = PremiumResolver.resolve(adapty: adapty, apple: apple, cached: store.cached, now: Date())
+		// A purchase or a restore that has just gone through is a receipt saying yes, and it is
+		// newer than the cache: a verified `inactive` Adapty gave us before the purchase must not
+		// swallow it (resolver step 2 would hand that cached state straight back). Only this
+		// resolve sees the demoted copy — what gets stored is the verdict below.
+		let cached = localPurchase
+			? store.cached.map { PremiumState(isPremium: $0.isPremium, source: $0.source, isVerified: false, expiresAt: $0.expiresAt) }
+			: store.cached
+		let state = PremiumResolver.resolve(adapty: adapty, apple: localPurchase ? true : apple, cached: cached, now: Date())
 		// PM-02 row 2: one store write per refresh. An answer that resolves to the state already
 		// cached writes nothing, so a receipt landing before Adapty cannot flash an intermediate
 		// value at the UI and be overwritten a moment later.
@@ -145,16 +145,42 @@ public final class PremiumService: PremiumServicing {
 		adapty?.logPaywallOpen(placement: placement)
 	}
 
-	// MARK: - PremiumServicing: stubs. TEMPORARY (premium rewrite step 2) — `restore`/`purchase`
-	// land in step 5, `product`/`products` in step 6. No `fatalError()`, this is a public package.
+	// MARK: - PremiumServicing: restore and purchase.
 
+	/// StoreKit restore, then the same barrier `refresh()` runs, then the caller hears about it.
+	/// Nothing is left for the caller to chase: by the time `completion` fires, `isPremium` is
+	/// already the answer. This is the defect the rewrite exists for — `Subtitle Video Translator`
+	/// returned success from its own restore and left premium off until the next launch.
 	public func restore(completion: @escaping (RestoreOutcome) -> Void) {
-		completion(.notImplemented)
+		guard let apple else {
+			DispatchQueue.main.async { completion(.failed) }
+			return
+		}
+		Task { [weak self] in
+			// No timeout around this one on purpose: StoreKit may be showing an account prompt,
+			// and there is no continuation to leak — the deadline guard belongs to the sources.
+			let outcome = await apple.restore()
+			await self?.resolveBoth(localPurchase: outcome == .restored)
+			DispatchQueue.main.async { completion(outcome) }
+		}
 	}
 
+	/// Buys through Adapty and settles the state the same way `restore` does — one resolve, one
+	/// write, one notification — before the completion runs. Not an optimistic flag waiting for
+	/// the delegate push to confirm it: a finished verdict.
 	public func purchase(_ productId: String, placement: String, completion: @escaping (PurchaseOutcome) -> Void) {
-		completion(.notImplemented)
+		guard let adapty else {
+			DispatchQueue.main.async { completion(.failed) }
+			return
+		}
+		Task { [weak self] in
+			let outcome = await adapty.buy(productId: productId, placement: placement)
+			await self?.resolveBoth(localPurchase: outcome == .purchased)
+			DispatchQueue.main.async { completion(outcome) }
+		}
 	}
+
+	// MARK: - PremiumServicing: stubs. TEMPORARY — `product`/`products` land in step 6.
 
 	public func product(_ productId: String, placement: String, completion: @escaping (PremiumProduct?) -> Void) {
 		completion(nil)

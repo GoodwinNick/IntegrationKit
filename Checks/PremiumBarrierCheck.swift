@@ -2,7 +2,8 @@
 //  PremiumBarrierCheck.swift
 //  IntegrationKit
 //
-//  PM-02 (the `refresh()` barrier) in four asserts — spec section 6, points 1-4.
+//  PM-02 (the `refresh()` barrier) plus restore/purchase — spec section 6, points 1-5, with a
+//  negative restore and a purchase on top.
 //  Run:  ./Checks/premium-barrier-check.sh
 //
 
@@ -70,6 +71,7 @@ final class FakeAdapty: AdaptyPremiumProviding {
 	var premiumObserver: ((AdaptyProfile) -> Void)?
 	var answer: AdaptyProfile?
 	var delay: TimeInterval
+	var buyResult: PurchaseOutcome = .failed
 
 	init(answer: AdaptyProfile?, delay: TimeInterval = 0) {
 		self.answer = answer
@@ -84,7 +86,7 @@ final class FakeAdapty: AdaptyPremiumProviding {
 	}
 
 	func products(placement: String) async -> [PremiumProduct] { [] }
-	func buy(productId: String, placement: String) async -> PurchaseOutcome { .failed }
+	func buy(productId: String, placement: String) async -> PurchaseOutcome { buyResult }
 	func remoteValue<T>(placement: String, key: String) -> T? { nil }
 	func logPaywallOpen(placement: String) {}
 	func hasPaywall(placement: String) -> Bool { false }
@@ -94,6 +96,7 @@ final class FakeAdapty: AdaptyPremiumProviding {
 final class FakeApple: AppleSubscribing {
 	var receipt: Bool?
 	var delay: TimeInterval
+	var restoreResult: RestoreOutcome = .nothingToRestore
 
 	init(receipt: Bool?, delay: TimeInterval = 0) {
 		self.receipt = receipt
@@ -107,7 +110,7 @@ final class FakeApple: AppleSubscribing {
 		return receipt
 	}
 
-	func restore() async -> RestoreOutcome { .notImplemented }
+	func restore() async -> RestoreOutcome { restoreResult }
 }
 
 @main
@@ -121,13 +124,14 @@ enum PremiumBarrierCheck {
 	}
 
 	/// Polls instead of awaiting: `refresh()` is fire-and-forget by contract, so the only thing
-	/// an observer can do is watch the store.
+	/// an observer can do is watch the store. Pumps the run loop rather than sleeping, because
+	/// `restore`/`purchase` hand their completion back on the main queue.
 	@discardableResult
 	static func wait(_ seconds: TimeInterval = 2, for condition: () -> Bool) -> Bool {
 		let deadline = Date().addingTimeInterval(seconds)
 		while Date() < deadline {
 			if condition() { return true }
-			Thread.sleep(forTimeInterval: 0.005)
+			RunLoop.current.run(until: Date().addingTimeInterval(0.005))
 		}
 		return condition()
 	}
@@ -193,6 +197,66 @@ enum PremiumBarrierCheck {
 		assert(elapsed < 1.5, "case 4: the verdict must arrive on the timeout, took \(elapsed)s")
 		assert(timeoutStore.cached?.isPremium == true && timeoutStore.cached?.source == .apple, "case 4: the verdict is built from what did arrive")
 
-		print("PremiumService barrier: 4/4 OK")
+		// 5. Spec section 6 point 5, and the defect the rewrite exists for: restore succeeds and
+		//    premium is already on INSIDE the completion — nothing left for the caller to chase.
+		//    The starting cache is the nasty one: a verified `inactive` Adapty gave us before the
+		//    restore, which resolver step 2 hands straight back unless the local restore demotes
+		//    it first. Adapty stays silent here, so the verdict has to come from the restore.
+		let staleDenial = PremiumState(isPremium: false, source: .adapty, isVerified: true)
+		let restoreStore = SpyStore(cached: staleDenial)
+		let restoreAdapty = FakeAdapty(answer: nil)
+		let restoreApple = FakeApple(receipt: nil)
+		restoreApple.restoreResult = .restored
+		let restoreService = PremiumService(store: restoreStore, adapty: restoreAdapty, apple: restoreApple, levels: ["premium"], sourceTimeout: 1)
+		var restoreOutcome: RestoreOutcome?
+		var premiumInsideRestore: Bool?
+		restoreService.restore { outcome in
+			premiumInsideRestore = restoreService.isPremium
+			restoreOutcome = outcome
+		}
+		assert(wait { restoreOutcome != nil }, "case 5: restore must call back")
+		assert(restoreOutcome == .restored, "case 5: the StoreKit answer is passed through untouched")
+		assert(premiumInsideRestore == true, "case 5: premium must be on BEFORE the completion returns")
+		assert(restoreStore.cached?.isPremium == true && restoreStore.cached?.source == .apple, "case 5: a restored purchase grants unverified premium")
+		assert(restoreStore.notified == 1, "case 5: exactly one .premiumDidChange, got \(restoreStore.notified)")
+
+		// 6. The negative: nothing to restore grants nothing, and costs neither a write nor a
+		//    notification. Forcing the local-purchase receipt on every restore shows up right here.
+		let emptyStore = SpyStore(cached: .free)
+		let emptyService = PremiumService(
+			store: emptyStore,
+			adapty: FakeAdapty(answer: nil),
+			apple: FakeApple(receipt: nil),
+			levels: ["premium"],
+			sourceTimeout: 1
+		)
+		var emptyOutcome: RestoreOutcome?
+		emptyService.restore { emptyOutcome = $0 }
+		assert(wait { emptyOutcome != nil }, "case 6: restore must call back")
+		assert(emptyOutcome == .nothingToRestore, "case 6: nothing was restored")
+		assert(emptyService.isPremium == false, "case 6: nothing to restore must not grant premium")
+		assert(emptyStore.writes == 0, "case 6: nothing changed — nothing to write, got \(emptyStore.writes)")
+		assert(emptyStore.notified == 0, "case 6: nothing changed — nothing to notify about, got \(emptyStore.notified)")
+
+		// 7. Purchase settles through the same barrier: the completion sees a finished verdict,
+		//    not an optimistic flag waiting for Adapty's push to confirm it.
+		let buyStore = SpyStore()
+		let buyAdapty = FakeAdapty(answer: profile(active: true, expiresAt: now + hour))
+		buyAdapty.buyResult = .purchased
+		let buyService = PremiumService(store: buyStore, adapty: buyAdapty, apple: FakeApple(receipt: nil), levels: ["premium"], sourceTimeout: 1)
+		var buyOutcome: PurchaseOutcome?
+		var premiumInsidePurchase: Bool?
+		buyService.purchase("year.sub", placement: "main") { outcome in
+			premiumInsidePurchase = buyService.isPremium
+			buyOutcome = outcome
+		}
+		assert(wait { buyOutcome != nil }, "case 7: purchase must call back")
+		assert(buyOutcome == .purchased, "case 7: the Adapty answer is passed through untouched")
+		assert(premiumInsidePurchase == true, "case 7: premium must be on BEFORE the completion returns")
+		assert(buyStore.writes == 1, "case 7: one write, got \(buyStore.writes)")
+		assert(buyStore.notified == 1, "case 7: one .premiumDidChange, got \(buyStore.notified)")
+		assert(buyStore.cached?.source == .adapty && buyStore.cached?.isVerified == true, "case 7: Adapty confirmed the purchase in the same round trip")
+
+		print("PremiumService barrier, restore and purchase: 7/7 OK")
 	}
 }
