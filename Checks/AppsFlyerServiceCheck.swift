@@ -549,10 +549,29 @@ enum AppsFlyerServiceCheck {
 				+ "prefix its events do, got \(writtenPropertyNames.sorted())"
 		)
 
+		// ── AF-02 row 1 — start belongs on every foreground return ───────────────────────────
+		// The open question behind this row was closed against the docs on 2026-09-09: `start` is
+		// documented for `applicationDidBecomeActive`, and near-identical starts are deduped by
+		// the SDK itself (`minTimeBetweenSessions`, 5 s), not by a flag on our side. That makes
+		// the once-per-process guard at `AppsFlyerService.swift:63-67` a defect rather than a
+		// boundary. Two foreground signals with nothing reset in between — unlike T9, which
+		// clears the flag on purpose — so the second one must still reach the SDK. Red.
+		AppsFlyerLib.reset()
+		let t25Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
+		t25Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1")
+		postForegroundSignal()
+		postForegroundSignal()
+		NotificationCenter.default.removeObserver(t25Service)
+		check(
+			AppsFlyerLib.startCallCount == 2,
+			"T25 AF-02 row 1: a second foreground return must start a new session, got "
+				+ "\(AppsFlyerLib.startCallCount) start(s)"
+		)
+
 		if failures.isEmpty {
-			print("AppsFlyerService (AF-01…AF-06): 24/24 OK")
+			print("AppsFlyerService (AF-01…AF-06): 25/25 OK")
 		} else {
-			print("\(failures.count) of 24 asserts FAILED:")
+			print("\(failures.count) of 25 asserts FAILED:")
 			for failure in failures {
 				print("  - \(failure)")
 			}
