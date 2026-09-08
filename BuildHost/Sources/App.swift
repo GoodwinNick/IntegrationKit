@@ -12,14 +12,6 @@ import IntegrationKit
 import SwiftUI
 import UIKit
 
-/// The Apple half of the premium state — StoreKit is the app's zone, so the app implements it.
-/// Stubbed out here: this build host only has to compile.
-final class AppStoreKit: AppleSubscribing {
-	func checkReceipt() async -> Bool? { nil }
-	func restore() async -> RestoreOutcome { .nothingToRestore }
-	func purchase(productId: String) async -> PurchaseOutcome { .failed }
-}
-
 final class AppDelegate: NSObject, UIApplicationDelegate {
 
 	private var kit: IntegrationKit?
@@ -36,7 +28,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 			adaptyKey: "public_live_fake_adapty_key",
 			placements: ["main", "onboarding"],
 			sessionsCounter: 1,
-			apple: AppStoreKit(),
+			sharedSecret: "00000000000000000000000000000000",
+			productIds: ["year.sub", "week.sub"],
 			levels: ["premium"],
 			firstOpenEvent: "first_open",
 			appsFlyerDevKey: "fakeDevKey",
