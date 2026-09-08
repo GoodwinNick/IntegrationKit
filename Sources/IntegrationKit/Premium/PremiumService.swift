@@ -20,24 +20,23 @@ public final class PremiumService: PremiumServicing {
 	// on `DispatchQueue.main.async`, so no observer ever runs inside this critical section.
 	// Recursive anyway, so that a future synchronous notification cannot turn into a self-deadlock.
 	private let lock = NSRecursiveLock()
-	// PM-02 row 3: one refresh at a time. Each flag says that the running refresh is still waiting
-	// on that source; while either is set, a second `refresh()` is a no-op instead of a second pair
-	// of requests. Both are cleared once both answers arrived.
-	// Ceiling: an Adapty that never answers leaves `awaitingAdapty` set and blocks later refreshes.
-	// That is PM-02 row 4 (no timeout on `refreshPremium`), a separate fix.
-	private var awaitingAdapty = false
-	private var awaitingApple = false
+	/// How long `refresh()` waits for one source before deciding without it. Five seconds is a
+	/// number from practice, not a guarantee Adapty documents — an app on a worse network passes
+	/// its own instead of patching the package.
+	private let sourceTimeout: TimeInterval
 
 	public init(
 		store: PremiumStateStoring = UserDefaultsPremiumStore(),
 		adapty: AdaptyPremiumProviding? = nil,
 		apple: AppleSubscribing? = nil,
-		levels: Set<String> = ["premium"]
+		levels: Set<String> = ["premium"],
+		sourceTimeout: TimeInterval = 5
 	) {
 		self.store = store
 		self.adapty = adapty
 		self.apple = apple
 		self.levels = levels
+		self.sourceTimeout = sourceTimeout
 	}
 
 	/// Convenience read for call sites that just need the current answer.
@@ -66,46 +65,40 @@ public final class PremiumService: PremiumServicing {
 		refresh()
 	}
 
-	/// PM-02: re-asks both sources. Adapty answers through `premiumObserver`, the receipt through
-	/// `applyReceiptCheck`; those two are also what clear the in-flight flags.
+	/// PM-02: one barrier instead of two in-flight flags. Both sources are asked at once and the
+	/// verdict is taken when both have answered — one resolve, one store write, one notification.
+	/// A source that never answers costs `sourceTimeout` and nothing more: there is no flag left
+	/// raised, so it cannot block any later `refresh()`.
 	///
-	/// TEMPORARY (premium rewrite step 2): the two requests are wrapped in bare `Task`s so this
-	/// still-dual-flag `refresh()` compiles against the now-async `adapty`/`apple` protocols.
-	/// Step 4 replaces this whole method with the `async let` barrier from the spec.
+	/// An intermediate state no longer exists either: the receipt cannot land first, flash a
+	/// value at the UI, and be overwritten by Adapty a moment later.
 	public func refresh() {
-		lock.lock()
-		guard !awaitingAdapty, !awaitingApple else {
-			lock.unlock()
-			return
-		}
-		awaitingAdapty = adapty != nil
-		awaitingApple = apple != nil
-		lock.unlock()
-
-		requestAdaptyProfile()
-		if let apple {
-			Task { [weak self] in
-				let hasReceipt = await apple.checkReceipt()
-				self?.applyReceiptCheck(hasReceipt)
-			}
-		}
-	}
-
-	/// TEMPORARY (premium rewrite step 2): see `refresh()`. `nil` (Adapty did not answer) leaves
-	/// `awaitingAdapty` set — matching the current ceiling that step 4 removes, not fixing it here.
-	private func requestAdaptyProfile() {
-		guard let adapty else { return }
 		Task { [weak self] in
-			guard let self, let profile = await adapty.profile() else { return }
-			self.apply(adapty: PremiumAccess(profile: profile, levels: self.levels))
+			guard let self else { return }
+			async let adaptyAnswer = self.askAdapty()
+			async let appleAnswer = self.askApple()
+			let (access, receipt) = await (adaptyAnswer, appleAnswer)
+			self.apply(adapty: access, apple: receipt)
 		}
 	}
 
-	/// PM-04: Adapty answered about the premium access level.
+	/// `nil` means Adapty did not answer — an error, no source at all, or slower than
+	/// `sourceTimeout`. Never "no premium": that is `PremiumAccess(isActive: false)`.
+	private func askAdapty() async -> PremiumAccess? {
+		guard let adapty else { return nil }
+		let profile = await withTimeout(sourceTimeout) { await adapty.profile() }
+		return profile.flatMap { $0 }.map { PremiumAccess(profile: $0, levels: levels) }
+	}
+
+	/// `nil` means the receipt could not be checked, in time or at all — never "no subscription".
+	private func askApple() async -> Bool? {
+		guard let apple else { return nil }
+		return await withTimeout(sourceTimeout) { await apple.checkReceipt() }.flatMap { $0 }
+	}
+
+	/// PM-04: Adapty answered about the premium access level. The delegate push (`didLoadLatestProfile`)
+	/// comes in here — a one-way entrance that is deliberately not part of the `refresh()` barrier.
 	public func apply(adapty: PremiumAccess?) {
-		lock.lock()
-		awaitingAdapty = false
-		lock.unlock()
 		apply(adapty: adapty, apple: nil)
 	}
 
@@ -118,16 +111,8 @@ public final class PremiumService: PremiumServicing {
 		}
 		lock.unlock()
 		apply(adapty: nil, apple: true)
-		requestAdaptyProfile()
-	}
-
-	/// Local receipt validation finished. `nil` means it could not run, not "no access".
-	/// Only `refresh()` feeds this — SU-04 row 4: the receipt has exactly one way in.
-	public func applyReceiptCheck(_ hasReceipt: Bool?) {
-		lock.lock()
-		awaitingApple = false
-		lock.unlock()
-		apply(adapty: nil, apple: hasReceipt)
+		// Let Adapty confirm right after. Nothing to gate: the barrier has no flags to trip.
+		refresh()
 	}
 
 	private func apply(adapty: PremiumAccess?, apple: Bool?) {
