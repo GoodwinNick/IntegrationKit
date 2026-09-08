@@ -24,9 +24,14 @@ Adapty й AppsFlyer запінені `.upToNextMinor`, а не `from:` — об�
 
 ## Підключення
 
-Swift Package Manager, url цього репо, продукт `IntegrationKit`. Що ще покласти в
-Xcode-проєкт (plist-файли, Run Script, ключі в Info.plist, capabilities) — крок за кроком у
-[`docs/Integration.md`](docs/Integration.md#підключення-з-нуля).
+```swift
+.package(url: "https://github.com/GoodwinNick/IntegrationKit.git", from: "0.1.0")
+```
+
+В Xcode: File → Add Package Dependencies → та сама url, продукт `IntegrationKit`.
+
+Що ще покласти в Xcode-проєкт (plist-файли, Run Script, ключі в Info.plist, capabilities) —
+крок за кроком у [`docs/Integration.md`](docs/Integration.md#підключення-з-нуля).
 
 ## Швидкий приклад
 
@@ -117,3 +122,9 @@ cd BuildHost && xcb app-sim
 - [x] Крок 3 — Adapty (+ `PremiumService` арбітраж)
 - [x] Крок 4 — AppsFlyer
 - [ ] Крок 5 — міграція апок на пакет (жодна апка ще не переведена)
+
+Версія `0.1.0` — мінорна гілка ще може ламати API, поки пакет не обкатано на живій апці.
+
+## Ліцензія
+
+MIT © 2026 Yevhenii Petrenko — [LICENSE](LICENSE).
