@@ -15,6 +15,10 @@ import SwiftyStoreKit
 final class StoreKitService: AppleSubscribing {
 	private let sharedSecret: String
 	private let productIds: Set<String>
+	// PM-08 row 5: the queue handed over a purchase in this launch. Read from the cooperative pool
+	// (`checkReceipt`) and written from SwiftyStoreKit's callback, so it goes behind a lock.
+	private let lock = NSLock()
+	private var deliveredPurchase = false
 
 	/// An empty `sharedSecret` means the app did not configure receipt validation: `checkReceipt`
 	/// then answers `nil` — "not checked" — and everything else keeps working.
@@ -31,7 +35,7 @@ final class StoreKitService: AppleSubscribing {
 	/// only after it is finished, so the premium state has to be re-asked afterwards — `start()`'s
 	/// own refresh has already run by then.
 	func completeTransactions(onDelivered: @escaping () -> Void) {
-		SwiftyStoreKit.completeTransactions(atomically: true) { purchases in
+		SwiftyStoreKit.completeTransactions(atomically: true) { [weak self] purchases in
 			var delivered = false
 			for purchase in purchases {
 				switch purchase.transaction.transactionState {
@@ -48,16 +52,41 @@ final class StoreKitService: AppleSubscribing {
 			}
 			debugLog("[IntegrationKit] completeTransactions: \(purchases.count) pending, delivered: \(delivered)")
 			if delivered {
+				// Marked before the callback, not after: `onDelivered` is what re-asks the sources,
+				// and the answer has to already know a purchase went through on this device.
+				self?.markDelivered()
 				onDelivered()
 			}
 		}
+	}
+
+	private func markDelivered() {
+		lock.lock()
+		deliveredPurchase = true
+		lock.unlock()
 	}
 
 	// MARK: - AppleSubscribing
 
 	/// `nil` means the receipt could not be checked — never "no subscription". `false` is only
 	/// returned when the receipt was read and carries no active subscription of ours.
+	///
+	/// PM-08 row 5: a purchase the queue delivered in this launch outranks the receipt. Apple's copy
+	/// is fetched from its servers and can still be a version behind a transaction finished seconds
+	/// ago, so a "no" from it is not news — the same rule `PremiumService` applies to `purchase` and
+	/// `restore` through its `localPurchase` mark. The receipt is still read: the mark replaces a
+	/// stale answer, it does not skip the check.
 	func checkReceipt() async -> Bool? {
+		let receiptAnswer = await receiptSaysPremium()
+		lock.lock()
+		let delivered = deliveredPurchase
+		lock.unlock()
+		return delivered ? true : receiptAnswer
+	}
+
+	/// The receipt half of `checkReceipt`, split off so the delivered-purchase rule above stays one
+	/// readable line instead of a branch repeated at every `return`.
+	private func receiptSaysPremium() async -> Bool? {
 		guard !sharedSecret.isEmpty else { return nil }
 		// A sandbox receipt against the production validator can only ever answer 21007, so there
 		// is nothing to learn from asking. TestFlight and the simulator land here.

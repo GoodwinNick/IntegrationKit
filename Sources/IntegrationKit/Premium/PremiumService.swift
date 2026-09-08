@@ -20,6 +20,11 @@ final class PremiumService: PremiumServicing {
 	// on `DispatchQueue.main.async`, so no observer ever runs inside this critical section.
 	// Recursive anyway, so that a future synchronous notification cannot turn into a self-deadlock.
 	private let lock = NSRecursiveLock()
+	/// PM-01 row 4: `start()` has already run. The composition root calls it, so an app that also
+	/// calls it itself would otherwise install a second push observer and repeat the seed/refresh.
+	private var didStart = false
+	/// PM-04 row 7: a purchase is in flight. Lifted when it settles, whichever way it ends.
+	private var isPurchasing = false
 	/// How long `refresh()` waits for one source before deciding without it. Five seconds is a
 	/// number from practice, not a guarantee Adapty documents — an app on a worse network passes
 	/// its own instead of patching the package.
@@ -45,8 +50,16 @@ final class PremiumService: PremiumServicing {
 	}
 
 	/// PM-01: seeds the cache on the first launch after the update, then publishes what we know.
+	///
+	/// PM-01 row 4: idempotent. A second call returns without touching anything — one push
+	/// observer, one seed, one first refresh, no matter how many times the app asks.
 	func start() {
 		lock.lock()
+		guard !didStart else {
+			lock.unlock()
+			return
+		}
+		didStart = true
 		if store.cached == nil {
 			let wasPremium = store.premium
 			store.cached = PremiumState(
@@ -173,6 +186,17 @@ final class PremiumService: PremiumServicing {
 			DispatchQueue.main.async { completion(.failed) }
 			return
 		}
+		// PM-04 row 7: one purchase at a time. A second call while the first is still in flight is
+		// refused here, before the SDK sees it — two payment dialogs stacked on each other is the
+		// defect, and neither Adapty nor StoreKit stops them from being asked for.
+		lock.lock()
+		let wasPurchasing = isPurchasing
+		isPurchasing = true
+		lock.unlock()
+		guard !wasPurchasing else {
+			DispatchQueue.main.async { completion(.failed) }
+			return
+		}
 		Task { [weak self] in
 			let outcome: PurchaseOutcome
 			switch await adapty.buy(productId: productId, placement: placement) {
@@ -190,8 +214,17 @@ final class PremiumService: PremiumServicing {
 					outcome = await self?.apple?.purchase(productId: productId) ?? .failed
 			}
 			await self?.resolveBoth(localPurchase: outcome == .purchased)
+			self?.endPurchase()
 			DispatchQueue.main.async { completion(outcome) }
 		}
+	}
+
+	/// The single exit of `purchase` — bought, cancelled, failed and the StoreKit fallback all come
+	/// through here, so a finished purchase can never leave the next one blocked.
+	private func endPurchase() {
+		lock.lock()
+		isPurchasing = false
+		lock.unlock()
 	}
 
 	// MARK: - PremiumServicing: prices.

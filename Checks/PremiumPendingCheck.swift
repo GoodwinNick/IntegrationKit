@@ -2,16 +2,13 @@
 //  PremiumPendingCheck.swift
 //  IntegrationKit
 //
-//  RED ON PURPOSE. This script pins down two behaviours from `PremiumService`'s risk table that are
-//  decided but not yet implemented — PM-01 row 4 (an idempotency guard on `start()`) and PM-04 row 7
-//  (a guard against concurrent `purchase()` calls). Both assertions encode the DESIRED behaviour per
-//  the explicit decisions of 2026-09-08 ("гард обовʼязковий" and "блокуємо в пакеті"), so both are
-//  EXPECTED TO FAIL today: a failing run with exactly 2 failures is the normal, healthy outcome here.
+//  Pins down two behaviours from `PremiumService`'s risk table — PM-01 row 4 (an idempotency guard on
+//  `start()`) and PM-04 row 7 (a guard against concurrent `purchase()` calls). Both assertions encode
+//  the DESIRED behaviour per the explicit decisions of 2026-09-08 ("гард обовʼязковий" and "блокуємо в
+//  пакеті").
 //
-//  When a guard is eventually implemented in `Sources/`, its case starts passing on its own. At that
-//  point move the case out of here and into the green script it belongs to (`premium-barrier-check.sh`
-//  for both, since both go through the facade), and this file shrinks by one case. When both are done,
-//  the file goes away entirely.
+//  Written red, green since both guards landed in `Sources/PremiumService.swift`: a clean run is now
+//  the expected outcome, and a failure here means one of the two guards was lost.
 //
 //  A third `немає` row is deliberately NOT here: PM-07 row 8 (no "paywalls are loaded" signal exists
 //  anywhere on the public surface). There is no method to call — neither `PremiumServicing` nor
@@ -138,8 +135,7 @@ final class CountingAdapty: AdaptyPremiumProviding {
 enum PremiumPendingCheck {
 	static var failures: [String] = []
 
-	/// Records a failure instead of trapping — every case here is expected red, and case 1 failing
-	/// must not stop case 2 from running.
+	/// Records a failure instead of trapping — case 1 failing must not stop case 2 from running.
 	static func check(_ condition: @autoclosure () -> Bool, _ message: @autoclosure () -> String) {
 		guard !condition() else { return }
 		let text = message()
@@ -161,9 +157,9 @@ enum PremiumPendingCheck {
 
 	static func main() {
 		// 1. PM-01 row 4 — an app that calls `start()` itself on top of the composition root calls it
-		//    twice. Decision 2026-09-08: the second call must be a no-op. There is no guard today, so
-		//    the second `start()` installs a second push observer AND fires a second full refresh —
-		//    a redundant round trip to Adapty and a second recompute of a state nothing changed.
+		//    twice. Decision 2026-09-08: the second call must be a no-op. Without the guard the second
+		//    `start()` installs a second push observer AND fires a second full refresh — a redundant
+		//    round trip to Adapty and a second recompute of a state nothing changed.
 		let startStore = MemoryStore()
 		let startAdapty = CountingAdapty()
 		let startService = PremiumService(store: startStore, adapty: startAdapty, apple: nil, levels: ["premium"], sourceTimeout: 1)
@@ -179,8 +175,8 @@ enum PremiumPendingCheck {
 
 		// 2. PM-04 row 7 — two `purchase()` calls fired without awaiting the first. Decision
 		//    2026-09-08: the second must be rejected in-package with `.failed` so the user is never
-		//    shown two payment dialogs. There is no guard today: each call spawns its own `Task` and
-		//    both reach the SDK. `buyDelay` keeps the first purchase in flight while the second fires.
+		//    shown two payment dialogs. Without the guard each call spawns its own `Task` and both
+		//    reach the SDK. `buyDelay` keeps the first purchase in flight while the second fires.
 		let buyStore = MemoryStore()
 		let buyAdapty = CountingAdapty()
 		buyAdapty.buyResult = .success
@@ -196,9 +192,9 @@ enum PremiumPendingCheck {
 		)
 
 		if failures.isEmpty {
-			print("PremiumService pending guards (PM-01 row 4, PM-04 row 7): 2/2 OK — both guards are implemented, move these cases into premium-barrier-check.sh and delete this script")
+			print("PremiumService guards (PM-01 row 4, PM-04 row 7): 2/2 OK")
 		} else {
-			print("\(failures.count) check(s) failed — expected 2 while both guards are unimplemented:")
+			print("\(failures.count) check(s) failed:")
 			for failure in failures {
 				print("  - \(failure)")
 			}

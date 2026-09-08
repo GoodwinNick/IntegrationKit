@@ -1,8 +1,7 @@
 #!/bin/sh
-# RED ON PURPOSE — pins the two decided-but-unimplemented guards from the PremiumService risk table:
-# PM-01 row 4 (`start()` idempotency) and PM-04 row 7 (no concurrent `purchase()`). A run that reports
-# exactly 2 failures and exits 1 is the expected outcome; a green run means the guards landed in
-# `Sources/` and the cases should move into `premium-barrier-check.sh`.
+# Pins the two guards from the PremiumService risk table: PM-01 row 4 (`start()` idempotency) and
+# PM-04 row 7 (no concurrent `purchase()`). Written red before the guards existed, green since they
+# landed in `Sources/PremiumService.swift` — a failure here means one of the two was lost.
 #
 # Same trick as `premium-barrier-check.sh`: `PremiumService` names exactly one Adapty type
 # (`AdaptyProfile`), so a stub module called `Adapty` is compiled first and linked in its place.
