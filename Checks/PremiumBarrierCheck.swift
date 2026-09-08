@@ -3,7 +3,8 @@
 //  IntegrationKit
 //
 //  PM-02 (the `refresh()` barrier) plus restore/purchase — spec section 6, points 1-5, with a
-//  negative restore and a purchase on top.
+//  negative restore, a purchase, the in-facade StoreKit fallback (spec 3.2) and prices through
+//  the facade (spec 3.4) on top.
 //  Run:  ./Checks/premium-barrier-check.sh
 //
 
@@ -72,6 +73,7 @@ final class FakeAdapty: AdaptyPremiumProviding {
 	var answer: AdaptyProfile?
 	var delay: TimeInterval
 	var buyResult: AdaptyPurchaseResult = .failed
+	var catalogue: [PremiumProduct] = []
 
 	init(answer: AdaptyProfile?, delay: TimeInterval = 0) {
 		self.answer = answer
@@ -85,7 +87,7 @@ final class FakeAdapty: AdaptyPremiumProviding {
 		return answer
 	}
 
-	func products(placement: String) async -> [PremiumProduct] { [] }
+	func products(placement: String) async -> [PremiumProduct] { catalogue }
 	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult { buyResult }
 	func remoteValue<T>(placement: String, key: String) -> T? { nil }
 	func logPaywallOpen(placement: String) {}
@@ -98,6 +100,9 @@ final class FakeApple: AppleSubscribing {
 	var delay: TimeInterval
 	var restoreResult: RestoreOutcome = .nothingToRestore
 	var purchaseResult: PurchaseOutcome = .failed
+	/// Set by `purchase` — case 8 asserts the fallback was actually reached, not just that the
+	/// outcome happened to match.
+	var purchasedProductId: String?
 
 	init(receipt: Bool?, delay: TimeInterval = 0) {
 		self.receipt = receipt
@@ -113,7 +118,10 @@ final class FakeApple: AppleSubscribing {
 
 	func restore() async -> RestoreOutcome { restoreResult }
 
-	func purchase(productId: String) async -> PurchaseOutcome { purchaseResult }
+	func purchase(productId: String) async -> PurchaseOutcome {
+		purchasedProductId = productId
+		return purchaseResult
+	}
 }
 
 @main
@@ -260,6 +268,65 @@ enum PremiumBarrierCheck {
 		assert(buyStore.notified == 1, "case 7: one .premiumDidChange, got \(buyStore.notified)")
 		assert(buyStore.cached?.source == .adapty && buyStore.cached?.isVerified == true, "case 7: Adapty confirmed the purchase in the same round trip")
 
-		print("PremiumService barrier, restore and purchase: 7/7 OK")
+		// 8. Adapty could not run the purchase and asked for the StoreKit fallback. The fallback
+		//    happens INSIDE the facade — `retryWithStoreKit` never reaches the caller, the settled
+		//    result of the Apple purchase does, and the state is resolved the same single way.
+		let fallbackStore = SpyStore()
+		let fallbackAdapty = FakeAdapty(answer: nil)
+		fallbackAdapty.buyResult = .retryWithStoreKit
+		let fallbackApple = FakeApple(receipt: nil)
+		fallbackApple.purchaseResult = .purchased
+		let fallbackService = PremiumService(store: fallbackStore, adapty: fallbackAdapty, apple: fallbackApple, levels: ["premium"], sourceTimeout: 1)
+		var fallbackOutcome: PurchaseOutcome?
+		var premiumInsideFallback: Bool?
+		fallbackService.purchase("year.sub", placement: "main") { outcome in
+			premiumInsideFallback = fallbackService.isPremium
+			fallbackOutcome = outcome
+		}
+		assert(wait { fallbackOutcome != nil }, "case 8: purchase must call back")
+		assert(fallbackApple.purchasedProductId == "year.sub", "case 8: the StoreKit fallback must be called by the package, with the same product")
+		assert(fallbackOutcome == .purchased, "case 8: the caller hears the fallback's result, never a retry request")
+		assert(premiumInsideFallback == true, "case 8: a fallback purchase turns premium on before the completion returns")
+		assert(fallbackStore.writes == 1, "case 8: one write, got \(fallbackStore.writes)")
+		assert(fallbackStore.notified == 1, "case 8: one .premiumDidChange, got \(fallbackStore.notified)")
+		assert(fallbackStore.cached?.source == .apple && fallbackStore.cached?.isVerified == false, "case 8: a local purchase Adapty has not confirmed is unverified premium")
+
+		// 9. Same request, but StoreKit refused too — a failure, and premium stays off. Without
+		//    this the fallback could grant premium on any Adapty hiccup.
+		let deniedStore = SpyStore(cached: .free)
+		let deniedAdapty = FakeAdapty(answer: nil)
+		deniedAdapty.buyResult = .retryWithStoreKit
+		let deniedApple = FakeApple(receipt: nil)
+		deniedApple.purchaseResult = .failed
+		let deniedService = PremiumService(store: deniedStore, adapty: deniedAdapty, apple: deniedApple, levels: ["premium"], sourceTimeout: 1)
+		var deniedOutcome: PurchaseOutcome?
+		deniedService.purchase("year.sub", placement: "main") { deniedOutcome = $0 }
+		assert(wait { deniedOutcome != nil }, "case 9: purchase must call back")
+		assert(deniedOutcome == .failed, "case 9: a failed fallback is a failed purchase")
+		assert(deniedService.isPremium == false, "case 9: a failed fallback must not grant premium")
+		assert(deniedStore.writes == 0, "case 9: nothing changed — nothing to write, got \(deniedStore.writes)")
+
+		// 10. Prices come out of the facade, not out of Adapty (spec 3.4), and `product` picks
+		//     from exactly the same list `products` hands over.
+		let priceAdapty = FakeAdapty(answer: nil)
+		priceAdapty.catalogue = [
+			PremiumProduct(id: "year.sub", localizedTitle: "Year", localizedPrice: "$29.99", price: 29.99, currencyCode: "USD", subscriptionPeriod: PremiumPeriod(unit: .year, numberOfUnits: 1), introductoryOffer: nil),
+			PremiumProduct(id: "week.sub", localizedTitle: "Week", localizedPrice: "$4.99", price: 4.99, currencyCode: "USD", subscriptionPeriod: PremiumPeriod(unit: .week, numberOfUnits: 1), introductoryOffer: nil),
+		]
+		let priceService = PremiumService(store: SpyStore(), adapty: priceAdapty, apple: nil, levels: ["premium"], sourceTimeout: 1)
+		var listed: [PremiumProduct]?
+		priceService.products(placement: "main") { listed = $0 }
+		assert(wait { listed != nil }, "case 10: products must call back")
+		assert(listed?.map(\.id) == ["year.sub", "week.sub"], "case 10: the facade hands over what Adapty loaded")
+		var picked: PremiumProduct??
+		priceService.product("week.sub", placement: "main") { picked = $0 }
+		assert(wait { picked != nil }, "case 10: product must call back")
+		assert(picked??.localizedPrice == "$4.99", "case 10: product picks by id out of the same list")
+		var missing: PremiumProduct??
+		priceService.product("month.sub", placement: "main") { missing = $0 }
+		assert(wait { missing != nil }, "case 10: product must call back for an unknown id too")
+		assert(missing! == nil, "case 10: an id the placement does not carry is nil, not the first product")
+
+		print("PremiumService barrier, restore, purchase fallback and prices: 10/10 OK")
 	}
 }
