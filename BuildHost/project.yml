@@ -1,0 +1,19 @@
+# Мінімальна апка, яка існує рівно для одного: дати xcb що збирати.
+# Сам пакет окремо не збирається: swift build цілиться в macOS, а прямий xcodebuild закритий хуком.
+name: BuildHost
+options:
+  bundleIdPrefix: dev.local
+  deploymentTarget:
+    iOS: "15.6"
+packages:
+  IntegrationKit:
+    path: ..
+targets:
+  BuildHost:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    settings:
+      GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - package: IntegrationKit

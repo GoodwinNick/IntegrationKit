@@ -1,0 +1,9 @@
+#!/bin/sh
+# AppsFlyerAttributionMapping self-check. Pure types only — no SDKs, no test framework.
+set -e
+cd "$(dirname "$0")/.."
+out="${TMPDIR:-/tmp}/appsflyer-attribution-check"
+swiftc -o "$out" \
+	Checks/AppsFlyerAttributionCheck.swift \
+	Sources/IntegrationKit/AppsFlyerAttributionMapping.swift
+exec "$out"
