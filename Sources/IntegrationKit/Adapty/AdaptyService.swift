@@ -6,7 +6,6 @@
 import AppTrackingTransparency
 import Foundation
 import Adapty
-import AdaptyUI
 
 final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 
