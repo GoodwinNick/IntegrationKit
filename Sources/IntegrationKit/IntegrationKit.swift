@@ -38,6 +38,10 @@ public struct IntegrationKit {
 	/// `sharedSecret` is the App Store Connect shared secret used to validate the receipt, and
 	/// `productIds` are the subscriptions to look for inside it. An empty secret simply turns
 	/// receipt validation off — Adapty then decides premium alone.
+	///
+	/// `sourceTimeout` is how long a premium refresh waits for one source — Adapty or the Apple
+	/// receipt — before deciding without it. Five seconds is a number from practice, not one Adapty
+	/// documents; an app on a worse network passes its own instead of patching the package.
 	public static func configure(
 		deviceId: String,
 		amplitudeKey: String,
@@ -49,7 +53,8 @@ public struct IntegrationKit {
 		levels: Set<String> = ["premium"],
 		firstOpenEvent: String? = nil,
 		appsFlyerDevKey: String = "",
-		appsFlyerAppId: String = ""
+		appsFlyerAppId: String = "",
+		sourceTimeout: TimeInterval = 5
 	) -> IntegrationKit {
 		let analytics = AmplitudeAnalytics()
 		analytics.configure(apiKey: amplitudeKey, deviceId: deviceId, firstOpenEvent: firstOpenEvent)
@@ -80,7 +85,16 @@ public struct IntegrationKit {
 		}
 
 		let storeKit = StoreKitService(sharedSecret: sharedSecret, productIds: productIds)
-		let premium = PremiumService(adapty: adapty, apple: storeKit, levels: levels)
+		// `productIds` has to reach here too, not just StoreKit: it is the fallback list `products`
+		// prices directly when Adapty's own listing for a placement comes back empty, and an empty
+		// list would leave an unloaded paywall with no prices at all.
+		let premium = PremiumService(
+			adapty: adapty,
+			apple: storeKit,
+			levels: levels,
+			sourceTimeout: sourceTimeout,
+			productIds: productIds
+		)
 		// Started here on purpose: the seed-cache-then-refresh step is not a decision the app
 		// gets to make differently, and a composition root that leaves it to be forgotten is
 		// the defect this rewrite exists to remove.
