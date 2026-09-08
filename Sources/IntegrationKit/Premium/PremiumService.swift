@@ -195,8 +195,10 @@ final class PremiumService: PremiumServicing {
 	}
 
 	// MARK: - PremiumServicing: prices.
-	// Spec 3.4: products come from Adapty, which the package already loaded — a second SDK for
-	// the same data is a second cache and a second way to go out of sync.
+	// Two sources, one list: Adapty says WHICH products are on the placement (it owns the paywall),
+	// StoreKit says what they cost (it owns the storefront). Adapty's price is what its dashboard
+	// last synced; the store's is what the user is actually charged, so the store wins whenever it
+	// answers.
 
 	func product(_ productId: String, placement: String, completion: @escaping (PremiumProduct?) -> Void) {
 		products(placement: placement) { completion($0.first { $0.id == productId }) }
@@ -207,9 +209,14 @@ final class PremiumService: PremiumServicing {
 			DispatchQueue.main.async { completion([]) }
 			return
 		}
+		let apple = self.apple
 		Task {
-			let list = await adapty.products(placement: placement)
-			DispatchQueue.main.async { completion(list) }
+			let listed = await adapty.products(placement: placement)
+			let priced = await apple?.products(ids: Set(listed.map(\.id))) ?? [:]
+			// A product the store stayed silent about (not approved yet, offline) keeps Adapty's
+			// copy: a slightly staler price beats a paywall with a hole in it.
+			let merged = listed.map { priced[$0.id] ?? $0 }
+			DispatchQueue.main.async { completion(merged) }
 		}
 	}
 }

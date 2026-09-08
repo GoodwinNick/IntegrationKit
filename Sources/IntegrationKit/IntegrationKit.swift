@@ -30,13 +30,18 @@ public struct IntegrationKit {
 	/// `ObfuscatedSecret.reveal` first — the package never guesses where they came from.
 	/// `deviceId` is the app's own stable id, shared by Amplitude, Adapty and AppsFlyer so all
 	/// three describe the same user.
+	///
+	/// `sharedSecret` is the App Store Connect shared secret used to validate the receipt, and
+	/// `productIds` are the subscriptions to look for inside it. An empty secret simply turns
+	/// receipt validation off — Adapty then decides premium alone.
 	public static func configure(
 		deviceId: String,
 		amplitudeKey: String,
 		adaptyKey: String,
 		placements: [String],
 		sessionsCounter: Int,
-		apple: AppleSubscribing? = nil,
+		sharedSecret: String,
+		productIds: Set<String>,
 		levels: Set<String> = ["premium"],
 		firstOpenEvent: String? = nil,
 		appsFlyerDevKey: String = "",
@@ -61,11 +66,17 @@ public struct IntegrationKit {
 			appsFlyer = service
 		}
 
-		let premium = PremiumService(adapty: adapty, apple: apple, levels: levels)
+		let storeKit = StoreKitService(sharedSecret: sharedSecret, productIds: productIds)
+		let premium = PremiumService(adapty: adapty, apple: storeKit, levels: levels)
 		// Started here on purpose: the seed-cache-then-refresh step is not a decision the app
 		// gets to make differently, and a composition root that leaves it to be forgotten is
 		// the defect this rewrite exists to remove.
 		premium.start()
+		// The same argument, one level down: a purchase interrupted mid-flight is delivered by
+		// the payment queue, not by any call above, and it stays stuck in that queue until it is
+		// finished. Re-asking afterwards is what turns it into premium in this launch instead of
+		// the next one.
+		storeKit.completeTransactions { [weak premium] in premium?.refresh() }
 
 		return IntegrationKit(
 			premium: premium,
