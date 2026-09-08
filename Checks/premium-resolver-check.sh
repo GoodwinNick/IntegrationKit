@@ -5,8 +5,8 @@ cd "$(dirname "$0")/.."
 out="${TMPDIR:-/tmp}/premium-resolver-check"
 swiftc -o "$out" \
 	Checks/PremiumResolverCheck.swift \
-	Sources/IntegrationKit/PremiumSource.swift \
-	Sources/IntegrationKit/PremiumState.swift \
-	Sources/IntegrationKit/PremiumAccess.swift \
-	Sources/IntegrationKit/PremiumResolver.swift
+	Sources/IntegrationKit/Premium/PremiumSource.swift \
+	Sources/IntegrationKit/Premium/PremiumState.swift \
+	Sources/IntegrationKit/Premium/PremiumAccess.swift \
+	Sources/IntegrationKit/Premium/PremiumResolver.swift
 exec "$out"

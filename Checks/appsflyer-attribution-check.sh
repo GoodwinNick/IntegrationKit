@@ -5,5 +5,5 @@ cd "$(dirname "$0")/.."
 out="${TMPDIR:-/tmp}/appsflyer-attribution-check"
 swiftc -o "$out" \
 	Checks/AppsFlyerAttributionCheck.swift \
-	Sources/IntegrationKit/AppsFlyerAttributionMapping.swift
+	Sources/IntegrationKit/AppsFlyer/AppsFlyerAttributionMapping.swift
 exec "$out"

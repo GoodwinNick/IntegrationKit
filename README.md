@@ -77,6 +77,21 @@ appsFlyer.configure(devKey: devKey, appId: appId, deviceId: deviceId)
 - Реалізація `AppleReceiptChecking` (StoreKit) і `AppleReceiptChecking`-конформер.
 - Навігація за deep link'ом — пакет тільки логує й атрибутує, не веде юзера на екран.
 
+## Структура
+
+```
+Sources/IntegrationKit/
+├── Firebase/     Core + Crashlytics
+├── Amplitude/    фасад аналітики, IDFA-плагін
+├── Adapty/       активація, пейволи, профіль, покупки
+├── AppsFlyer/    ATT, дип-лінки, атрибуція
+├── Premium/      арбітраж преміуму над Adapty і рецептом
+└── Support/      debugLog, деобфускація ключа
+```
+
+Тека на кожну інтеграцію, `Premium/` окремо — він не належить жодному SDK, а вирішує
+між ними. SPM забирає файли рекурсивно, тому `Package.swift` про теки не знає.
+
 ## Збірка
 
 Пакет сам по собі не збирається (`swift build` цілиться в macOS-хост). `BuildHost/` —
