@@ -21,7 +21,12 @@ let package = Package(
 		.package(url: "https://github.com/adaptyteam/AdaptyUI-iOS", .upToNextMinor(from: "2.1.5")),
 		// AppsFlyer is a binary xcframework — pinned the same way as Adapty, a fresher minor
 		// broke the previous package once already.
-		.package(url: "https://github.com/AppsFlyerSDK/AppsFlyerFramework", .upToNextMinor(from: "7.0.2"))
+		.package(url: "https://github.com/AppsFlyerSDK/AppsFlyerFramework", .upToNextMinor(from: "7.0.2")),
+		// Pinned the same way as Adapty, for the same reason: the receipt/purchase mechanics here
+		// are copied from an app already shipping on 0.16.x, and SwiftyStoreKit has changed
+		// callback shapes inside a minor before. A price or a receipt check is not the place to
+		// find that out from a resolver upgrade.
+		.package(url: "https://github.com/bizz84/SwiftyStoreKit", .upToNextMinor(from: "0.16.4"))
 	],
 	targets: [
 		.target(
@@ -32,7 +37,8 @@ let package = Package(
 				.product(name: "AmplitudeSwift", package: "Amplitude-Swift"),
 				.product(name: "Adapty", package: "AdaptySDK-iOS"),
 				.product(name: "AdaptyUI", package: "AdaptyUI-iOS"),
-				.product(name: "AppsFlyerLib", package: "AppsFlyerFramework")
+				.product(name: "AppsFlyerLib", package: "AppsFlyerFramework"),
+				.product(name: "SwiftyStoreKit", package: "SwiftyStoreKit")
 			]
 		)
 	]
