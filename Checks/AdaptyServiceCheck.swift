@@ -136,8 +136,7 @@ enum AdaptyServiceCheck {
 
 		// T25 — PM-04 row 8: the paywall was never loaded, so the product is not in the cache.
 		// Adapty could not serve this purchase at all — exactly the case the StoreKit fallback
-		// exists for, so the expected result is `.retryWithStoreKit`, not `.failed`. Today
-		// `AdaptyService.buyProduct` (around :160-161) answers `.failed` for a cache miss — RED.
+		// exists for, so the expected result is `.retryWithStoreKit`, not `.failed`.
 		Adapty.reset()
 		let t25Service = AdaptyService()
 		var t25Result: AdaptyPurchaseResult?
@@ -145,8 +144,38 @@ enum AdaptyServiceCheck {
 		check(wait { t25Result != nil }, "PM-04 row 8: buyProduct must call back")
 		check(isRetryWithStoreKit(t25Result), "PM-04 row 8: an uncached product (paywall never loaded) must answer .retryWithStoreKit, not .failed — got \(String(describing: t25Result))")
 
+		// T27 — PM-07 row 1: a placement that was never configured. Every read about it comes back
+		// empty and silent, and opening it logs no impression for a paywall that does not exist.
+		// Already GREEN — it pins that an unknown placement (most often a typo in the app's own
+		// placement name) degrades to "nothing" instead of into a trap.
+		Adapty.reset()
+		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		let t27Service = AdaptyService()
+		t27Service.configure(apiKey: "key", customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics())
+		check(t27Service.hasPaywall(placement: "nope") == false, "PM-07 row 1: an unconfigured placement must report no paywall, got \(t27Service.hasPaywall(placement: "nope"))")
+		check(t27Service.hasProductsForPaywall(placement: "nope") == false, "PM-07 row 1: an unconfigured placement must report no products, got \(t27Service.hasProductsForPaywall(placement: "nope"))")
+		let t27Remote: String? = t27Service.getRemoteValue(placement: "nope", key: "any")
+		check(t27Remote == nil, "PM-07 row 1: an unconfigured placement must have no remote config, got \(String(describing: t27Remote))")
+		let t27Logged = Adapty.logShowPaywallCount
+		t27Service.logPaywallOpen(placement: "nope")
+		check(Adapty.logShowPaywallCount == t27Logged, "PM-07 row 1: opening an unconfigured placement must log no impression — expected the count to stay \(t27Logged), got \(Adapty.logShowPaywallCount)")
+
+		// T28 — PM-07 row 3: the remote config holds a value of a different type than the caller
+		// asks for. The read answers nil rather than crashing on the cast — the package knows none
+		// of the app's keys, so a wrong type is an ordinary outcome, not a programming error. The
+		// right-typed read is asserted beside it, so this row proves the reader actually works
+		// instead of merely never returning anything. Already GREEN.
+		Adapty.reset()
+		Adapty.getPaywallResults = [.success(AdaptyPaywall(remoteConfig: ["count": 42]))]
+		let t28Service = AdaptyService()
+		t28Service.configure(apiKey: "key", customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics())
+		let t28Wrong: String? = t28Service.getRemoteValue(placement: "main", key: "count")
+		check(t28Wrong == nil, "PM-07 row 3: a value read as the wrong type must be nil, got \(String(describing: t28Wrong))")
+		let t28Right: Int? = t28Service.getRemoteValue(placement: "main", key: "count")
+		check(t28Right == 42, "PM-07 row 3: the same value read as Int must be 42, got \(String(describing: t28Right))")
+
 		if failures.isEmpty {
-			print("AdaptyService paywall retry (PM-07) and purchase fallback (PM-04): 6/6 OK")
+			print("AdaptyService paywall retry (PM-07) and purchase fallback (PM-04): 8/8 OK")
 		} else {
 			print("\(failures.count) check(s) failed:")
 			for failure in failures {
