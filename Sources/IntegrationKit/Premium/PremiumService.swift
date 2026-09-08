@@ -102,7 +102,7 @@ final class PremiumService: PremiumServicing {
 		return await withTimeout(sourceTimeout) { await apple.checkReceipt() }.flatMap { $0 }
 	}
 
-	/// PM-04: Adapty answered about the premium access level. The delegate push (`didLoadLatestProfile`)
+	/// PM-06: Adapty answered about the premium access level. The delegate push (`didLoadLatestProfile`)
 	/// comes in here — a one-way entrance that is deliberately not part of the `refresh()` barrier.
 	func apply(adapty: PremiumAccess?) {
 		apply(adapty: adapty, apple: nil)
@@ -118,7 +118,7 @@ final class PremiumService: PremiumServicing {
 			? store.cached.map { PremiumState(isPremium: $0.isPremium, source: $0.source, isVerified: false, expiresAt: $0.expiresAt) }
 			: store.cached
 		let state = PremiumResolver.resolve(adapty: adapty, apple: localPurchase ? true : apple, cached: cached, now: Date())
-		// PM-02 row 2: one store write per refresh. An answer that resolves to the state already
+		// PM-02 rows 2 and 6: one store write per refresh. An answer that resolves to the state already
 		// cached writes nothing, so a receipt landing before Adapty cannot flash an intermediate
 		// value at the UI and be overwritten a moment later.
 		if state != store.cached {

@@ -34,7 +34,7 @@ final class UserDefaultsPremiumStore: PremiumStateStoring {
 		set {
 			guard defaults.bool(forKey: flagKey) != newValue else { return }
 			defaults.set(newValue, forKey: flagKey)
-			// PM-04: the flag is written from Adapty's background queue too, and every observer
+			// PM-06: the flag is written from Adapty's background queue too, and every observer
 			// is a screen — the notification always goes out on the main queue.
 			DispatchQueue.main.async {
 				NotificationCenter.default.post(name: .premiumDidChange, object: nil)
