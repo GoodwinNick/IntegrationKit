@@ -19,6 +19,13 @@ public final class Amplitude {
 	public static private(set) var trackedEvents: [(eventType: String, properties: [String: Any]?)] = []
 	public static private(set) var identifyCalls: [[String: Any]] = []
 	public static private(set) var addedPluginCount = 0
+	/// How many `Amplitude` instances were built. AN-01 row 6 needs this to tell a second
+	/// `configure()` reinitialising the SDK from one that silently did nothing.
+	public static private(set) var initCount = 0
+	/// `lastUserId` snapshotted the instant `track` first runs. AN-01 row 5 needs the order between
+	/// `setUserId` and the first event, and the two land on separate arrays — the end state alone
+	/// (both having happened) can't say which ran first, only a snapshot taken at the moment can.
+	public static private(set) var userIdAtFirstTrack: String?
 
 	/// What `getDeviceId()` answers. Settable so a check can seed it before `configure()` runs.
 	public static var deviceId: String? = "stub-device-id"
@@ -28,10 +35,14 @@ public final class Amplitude {
 		trackedEvents = []
 		identifyCalls = []
 		addedPluginCount = 0
+		initCount = 0
+		userIdAtFirstTrack = nil
 		deviceId = "stub-device-id"
 	}
 
-	public init(configuration: Configuration) {}
+	public init(configuration: Configuration) {
+		Amplitude.initCount += 1
+	}
 
 	public func setUserId(userId: String) {
 		Amplitude.lastUserId = userId
@@ -42,6 +53,9 @@ public final class Amplitude {
 	}
 
 	public func track(eventType: String, eventProperties: [String: Any]? = nil) {
+		if Amplitude.trackedEvents.isEmpty {
+			Amplitude.userIdAtFirstTrack = Amplitude.lastUserId
+		}
 		Amplitude.trackedEvents.append((eventType, eventProperties))
 	}
 

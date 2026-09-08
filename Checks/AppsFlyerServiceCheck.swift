@@ -2,9 +2,10 @@
 //  AppsFlyerServiceCheck.swift
 //  IntegrationKit
 //
-//  Written from the approved schemas AF-01…AF-06, not from the code. Twenty-three asserts carry
-//  seventeen of the twenty-five rows; the eight that carry none say why in a comment above the
-//  block they belong to, rather than being closed by a lookalike assert.
+//  Written from the approved schemas AF-01…AF-06, not from the code. Twenty-four asserts carry
+//  seventeen of the twenty-five rows plus AN-03 row 4, whose code lives here rather than in
+//  Amplitude's; the eight rows that carry none say why in a comment above the block they belong
+//  to, rather than being closed by a lookalike assert.
 //
 //  Red on purpose — the spec for behaviour the wrapper does not have yet:
 //    T4  AF-01 row 2 — the ATT wait limit must be the app's, not the constant 60 at `:38`.
@@ -15,6 +16,7 @@
 //    T15 AF-04 row 1 — the `-` placeholder belongs in the event only, never in a profile.
 //    T21 AF-05 row 1 — the restoration handler must answer even when the SDK never calls back.
 //    T22 AF-05 row 2 — one foreign object must not take the whole restoration array with it.
+//    T24 AN-03 row 4 — the profile properties the package writes must be recognizably its own.
 //  The other fifteen are green and pin behaviour that is already correct — the silence of the
 //  failure callbacks (T23), the fixed eleven-field deep-link payload (T17), last-attribution-wins
 //  (T20) — so a later change cannot loosen any of it silently.
@@ -329,9 +331,9 @@ enum AppsFlyerServiceCheck {
 		// (`updateAppsFlyerAttribution` returns Void). The row waits on an AdaptyService
 		// logicflow, which does not exist yet.
 
-		// AF-03 row 5 (profile property names colliding with the app's own) is NOT covered here —
-		// it is a pointer to AN-03 row 4, and that schema's check owns it. Covering it twice would
-		// hide which one carries it.
+		// AF-03 row 5 (profile property names colliding with the app's own) is a pointer to AN-03
+		// row 4 — and that pointer used to run in a circle, because Amplitude's check pointed back
+		// here. It is asserted once, at the end of this file (T24), where the writing code lives.
 
 		// ── AF-04 row 1 — the `-` placeholder belongs in the event only ──────────────────────
 		// Executes `AppsFlyerService.swift:129-132`. T14 pins the event half (green: the fixed
@@ -524,10 +526,34 @@ enum AppsFlyerServiceCheck {
 				+ "\(t23Adapty.attributionData.count), \(t23Adapty.profileValues.count)"
 		)
 
+		// ── AN-03 row 4 / AF-03 row 5 — the package's profile properties must be its own ────
+		// Executes `AppsFlyerService.swift:84-88`. Neither schema's check was covering this row:
+		// AF-03 row 5 points at AN-03 row 4 and AN-03 row 4 points back here, so the pointer went
+		// in a circle and nobody asserted it. The code that writes the names lives in this file's
+		// subject, so the assert belongs here. RED: all three names go into the shared profile
+		// namespace unprefixed, and the app's own `status` or `campaign_name` and the package's
+		// overwrite each other, last writer winning, with nothing to tell them apart. The `af_`
+		// prefix itself is the implementation's choice — the two events already carry it — and
+		// naming it is the only way to assert "recognizable" precisely.
+		AppsFlyerLib.reset()
+		let propertyNameAnalytics = FakeAnalytics()
+		let propertyNameService = AppsFlyerService(analytics: propertyNameAnalytics, adapty: FakeAdapty())
+		propertyNameService.onConversionDataSuccess([
+			"af_status": "Non-organic",
+			"media_source": "fb",
+			"campaign": "spring",
+		])
+		let writtenPropertyNames = Set((propertyNameAnalytics.userProperties.first ?? [:]).keys)
+		check(
+			writtenPropertyNames == ["af_status", "af_media_source", "af_campaign_name"],
+			"T24 AN-03 row 4: the profile properties the package writes must carry the same af_ "
+				+ "prefix its events do, got \(writtenPropertyNames.sorted())"
+		)
+
 		if failures.isEmpty {
-			print("AppsFlyerService (AF-01…AF-06): 23/23 OK")
+			print("AppsFlyerService (AF-01…AF-06): 24/24 OK")
 		} else {
-			print("\(failures.count) of 23 asserts FAILED:")
+			print("\(failures.count) of 24 asserts FAILED:")
 			for failure in failures {
 				print("  - \(failure)")
 			}

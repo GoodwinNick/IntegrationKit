@@ -1,7 +1,10 @@
 #!/bin/sh
-# AmplitudeAnalytics/AmplitudeIDFAPlugin self-check — compile proof only, no XCTest, no Xcode
-# project. No behavioural asserts yet — those come later, once a schema for this wrapper is
-# approved.
+# AmplitudeAnalytics/AmplitudeIDFAPlugin self-check — 11 rows from the approved schemas AN-01
+# through AN-04. No XCTest, no Xcode project.
+#
+# A non-zero exit here is the expected, healthy outcome until AN-01 rows 1-2 (the first-open gate)
+# and AN-04 rows 1-2 (double-add/pre-configure guard for the IDFA plugin) are implemented. `set -e`
+# still applies to a genuine compile failure, same as every other check.
 set -e
 cd "$(dirname "$0")/.."
 work="${TMPDIR:-/tmp}/amplitude-analytics-check"
