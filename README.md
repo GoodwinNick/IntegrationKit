@@ -1,10 +1,11 @@
 # IntegrationKit
 
-A Swift Package that wraps four third-party SDKs behind one small public surface:
-**Firebase** (Core + Crashlytics), **Amplitude**, **Adapty** (premium/paywalls) and
-**AppsFlyer** (attribution, deep links). The package owns the wiring and the
-premium arbitration between Adapty and Apple's own receipt; the app supplies keys,
-event names, placements and its StoreKit implementation.
+A Swift Package that wraps five third-party SDKs behind one small public surface:
+**Firebase** (Core + Crashlytics), **Amplitude**, **Adapty** (premium/paywalls),
+**AppsFlyer** (attribution, deep links) and **SwiftyStoreKit** (receipt, restore,
+prices). The package owns the wiring and the premium arbitration between Adapty
+and Apple's own receipt; the app supplies keys, event names, placements, its App
+Store shared secret and its product ids — no StoreKit code of its own.
 
 Only three protocols and a handful of models are public — everything else (Adapty,
 AppsFlyer, and the concrete services behind them) is an internal implementation
@@ -30,12 +31,6 @@ In Xcode: File → Add Package Dependencies → the same URL, product `Integrati
 ```swift
 import IntegrationKit
 
-final class AppStoreKit: AppleSubscribing {
-	func checkReceipt() async -> Bool? { /* StoreKit receipt check */ nil }
-	func restore() async -> RestoreOutcome { /* StoreKit restore */ .nothingToRestore }
-	func purchase(productId: String) async -> PurchaseOutcome { /* StoreKit purchase */ .failed }
-}
-
 // Call before IntegrationKit.configure(...).
 FirebaseIntegration.configure()
 
@@ -45,7 +40,8 @@ let kit = IntegrationKit.configure(
 	adaptyKey: adaptyApiKey,
 	placements: ["main", "onboarding"],
 	sessionsCounter: sessionsCounter,
-	apple: AppStoreKit(),
+	sharedSecret: appStoreSharedSecret,
+	productIds: ["year.sub", "week.sub"],
 	levels: ["premium"],
 	firstOpenEvent: "first_open",
 	appsFlyerDevKey: appsFlyerDevKey,
@@ -73,9 +69,10 @@ meaning of every `configure` parameter and the paywall-to-purchase flow.
   does not define an event enum.
 - `GoogleService-Info.plist`, the Crashlytics dSYM Run Script, ATT usage string
   and Associated Domains — everything Xcode-project-side.
-- The `AppleSubscribing` implementation (StoreKit): `checkReceipt`, `restore`,
-  `purchase(productId:)`. The package calls `purchase(productId:)` itself as a
-  fallback whenever Adapty asks to retry a purchase through StoreKit directly.
+- The App Store shared secret and the product ids to look for in the receipt —
+  passed to `configure`, never hardcoded in the package. StoreKit itself is the
+  package's job now: receipt validation, restore, the fallback purchase and the
+  prices shown on the paywall all live inside it.
 - Calling `FirebaseIntegration.configure()` and `IntegrationKit.configure(...)`
   at app launch, and forwarding `application(_:continue:restorationHandler:)` /
   `application(_:open:options:)` through `kit.handleContinue` / `kit.handleOpen`.
@@ -88,6 +85,7 @@ Sources/IntegrationKit/
 ├── Amplitude/    analytics facade, IDFA plugin, AnalyticsTracking
 ├── Adapty/       activation, paywalls, purchases (internal)
 ├── AppsFlyer/    ATT, deep links, attribution (internal)
+├── StoreKit/     receipt, restore, purchase, prices via SwiftyStoreKit (internal)
 ├── Premium/      Adapty/Apple arbitration behind PremiumServicing
 └── Support/      composition-root helpers (obfuscated secrets, timeouts, debug log)
 ```

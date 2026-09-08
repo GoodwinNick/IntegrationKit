@@ -19,7 +19,7 @@ compiler proves the public API is enough on its own.
 - [Analytics](#analytics)
 - [Crash reporting](#crash-reporting)
 - [Premium](#premium)
-- [Implementing `AppleSubscribing`](#implementing-applesubscribing)
+- [The StoreKit side](#the-storekit-side)
 - [Deep links](#deep-links)
 - [Building and checks](#building-and-checks)
 - [Troubleshooting](#troubleshooting)
@@ -105,12 +105,6 @@ root needs. Everything else goes through one call:
 ```swift
 import IntegrationKit
 
-final class AppStoreKit: AppleSubscribing {
-	func checkReceipt() async -> Bool? { /* ... */ nil }
-	func restore() async -> RestoreOutcome { /* ... */ .nothingToRestore }
-	func purchase(productId: String) async -> PurchaseOutcome { /* ... */ .failed }
-}
-
 final class AppDelegate: NSObject, UIApplicationDelegate {
 
 	private var kit: IntegrationKit?
@@ -127,7 +121,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 			adaptyKey: ObfuscatedSecret.reveal(encrypted: SDKKeys.adaptyEncrypted, secret: SDKKeys.secret),
 			placements: ["main", "onboarding"],
 			sessionsCounter: AppDefaults.sessionsCounter,
-			apple: AppStoreKit(),
+			sharedSecret: ObfuscatedSecret.reveal(encrypted: SDKKeys.sharedSecretEncrypted, secret: SDKKeys.secret),
+			productIds: ["year.sub", "week.sub"],
 			levels: ["premium"],
 			firstOpenEvent: "first_open",
 			appsFlyerDevKey: ObfuscatedSecret.reveal(encrypted: SDKKeys.appsFlyerEncrypted, secret: SDKKeys.secret),
@@ -184,7 +179,8 @@ public static func configure(
 	adaptyKey: String,
 	placements: [String],
 	sessionsCounter: Int,
-	apple: AppleSubscribing? = nil,
+	sharedSecret: String,
+	productIds: Set<String>,
 	levels: Set<String> = ["premium"],
 	firstOpenEvent: String? = nil,
 	appsFlyerDevKey: String = "",
@@ -196,10 +192,11 @@ public static func configure(
 |---|---|---|---|
 | `deviceId` | One stable id, shared by Amplitude, Adapty and AppsFlyer so all three describe the same user | An app-generated/stored UUID, stable across launches | Required — no default. Amplitude, Adapty and AppsFlyer end up describing different users. |
 | `amplitudeKey` | Amplitude project API key | Amplitude dashboard, per app | Required — no default. Amplitude never activates. |
-| `adaptyKey` | Adapty public SDK key (`public_live_...`) | Adapty dashboard, per app | Required — no default. Adapty never activates, so premium can only ever come from `apple`. |
+| `adaptyKey` | Adapty public SDK key (`public_live_...`) | Adapty dashboard, per app | Required — no default. Adapty never activates, so premium can only ever come from the App Store receipt. |
 | `placements` | Adapty placement ids to preload paywalls/products for | Adapty dashboard, per app | An empty array means no placement is warmed up — `hasPaywall`/`products` for any placement return empty until Adapty is asked directly through a refresh. |
 | `sessionsCounter` | The app's own session counter, incremented once per launch before this call | App-owned persistent counter | Required — no default. Written into the Adapty profile as-is; passing a stale or constant value just means that field in the profile stops being meaningful. |
-| `apple` | The app's `AppleSubscribing` implementation (StoreKit) | The app itself — the package never touches StoreKit directly | `nil` (default). Premium then relies on Adapty alone; there is no local StoreKit fallback if Adapty cannot be reached. |
+| `sharedSecret` | App Store Connect shared secret, used to validate the receipt against Apple's production endpoint | App Store Connect → Subscriptions → App-Specific Shared Secret | Required — no default, but `""` is legal and means the receipt is never checked (`checkReceipt` answers "not checked"). Premium then relies on Adapty alone. |
+| `productIds` | The subscription product ids to look for in the receipt, and the ids whose prices are read from the store | App Store Connect, same ids as in the Adapty dashboard | Required — no default. An empty set means the receipt is read but nothing is ever found in it, so Apple can never confirm premium. |
 | `levels` | The set of Adapty access level ids that count as "premium" | Adapty dashboard — access level ids configured for the paywall | Defaults to `["premium"]`. Wrong values here mean a real Adapty premium purchase never flips `isPremium` to true. |
 | `firstOpenEvent` | Analytics event name logged exactly once per install | App's own event naming | `nil` (default) — no first-open event is logged at all. |
 | `appsFlyerDevKey` | AppsFlyer dev key | AppsFlyer dashboard, per app | Defaults to `""`. An empty dev key means **AppsFlyer is not created at all** — no attribution, `kit.handleContinue`/`kit.handleOpen` become no-ops. |
@@ -324,8 +321,8 @@ public protocol PremiumServicing: AnyObject {
 
 `start()` is already called once by `IntegrationKit.configure(...)` — the app
 never calls it. `isPremium` is synchronous and reads from cache, no network
-round trip; the source of truth behind it is Adapty first, the app's
-`AppleSubscribing` receipt as a fallback when Adapty has not answered yet.
+round trip; the source of truth behind it is Adapty first, the App Store
+receipt as a fallback when Adapty has not answered yet.
 
 ### The paywall-to-purchase flow
 
@@ -370,17 +367,20 @@ func paywall() {
   cast does not match.
 - **`products(placement:completion:)`** / **`product(_:placement:completion:)`**
   — `PremiumProduct` values for a placement, or a single one by product id.
-  Both complete with an empty result / `nil` if the placement has no paywall
-  or no matching product.
+  Two sources, one list: **Adapty decides which products the placement carries**
+  (it owns the paywall), **StoreKit decides what they cost** (it owns the
+  storefront), so the price, currency, period and introductory offer come from
+  the store whenever it answers. A product the store stays silent about — not
+  approved yet, wrong bundle id, offline — keeps Adapty's own price rather than
+  disappearing from the paywall. Both complete with an empty result / `nil` if
+  the placement has no paywall or no matching product.
 - **`purchase(_:placement:completion:)`** — takes a `PremiumProduct.id`. When
   Adapty's own purchase request fails and asks for a StoreKit retry, the
-  package runs that retry itself through the app's `AppleSubscribing.purchase(productId:)`
-  — the app never sees a "please retry" signal, only the final
-  `PurchaseOutcome`.
-- **`restore(completion:)`** — restores through both sources (Adapty, then
-  the app's `AppleSubscribing.restore()`) and reports one combined
-  `RestoreOutcome`. `isPremium` already reflects `.restored` by the time the
-  completion fires.
+  package runs that retry itself through its own StoreKit layer — the app never
+  sees a "please retry" signal, only the final `PurchaseOutcome`.
+- **`restore(completion:)`** — restores through both sources (StoreKit, then a
+  re-ask of Adapty) and reports one combined `RestoreOutcome`. `isPremium`
+  already reflects `.restored` by the time the completion fires.
 - **`refresh()`** — re-asks both sources and updates the cached state; safe
   to call any time (e.g. on foreground), concurrent calls collapse into one.
 
@@ -446,41 +446,37 @@ NotificationCenter.default.addObserver(
 changes value — never on a write of the same value — always on the main
 queue.
 
-## Implementing `AppleSubscribing`
+## The StoreKit side
 
-```swift
-public protocol AppleSubscribing: AnyObject {
-	func checkReceipt() async -> Bool?
-	func restore() async -> RestoreOutcome
-	func purchase(productId: String) async -> PurchaseOutcome
-}
-```
+There is nothing to implement. StoreKit lives inside the package
+(`Sources/IntegrationKit/StoreKit/`, built on `SwiftyStoreKit`), and the app's
+whole contribution is two `configure` arguments: `sharedSecret` and
+`productIds`. `AppleSubscribing`, which earlier releases asked the app to
+implement, is internal now.
 
-This is the one protocol the app implements rather than only consumes — the
-package has no StoreKit code of its own and does not know your product ids
-or your StoreKit stack (StoreKit 2, `SwiftyStoreKit`, or anything else).
+What the package does with them:
 
-- **`checkReceipt() async -> Bool?`** — return `nil` when the receipt could
-  not be checked at all (offline, sandbox weirdness, a verification error),
-  never `false` for "unknown". `false` must mean "checked, and there is no
-  active subscription". The premium arbiter treats `nil` as "no answer yet",
-  not as "no access" — returning `false` when you mean "couldn't tell" will
-  incorrectly revoke premium.
-- **`restore() async -> RestoreOutcome`** — run the StoreKit-side restore and
-  report its outcome. Turning `isPremium` on afterwards is
-  `PremiumServicing`'s job, not this method's — this only reports what
-  StoreKit found.
-- **`purchase(productId: String) async -> PurchaseOutcome`** — the fallback
-  purchase path. `PremiumServicing.purchase(_:placement:completion:)` calls
-  this itself when Adapty's own purchase attempt asks for a StoreKit retry;
-  the app never calls this method directly, and never buys anything past the
-  `premium` facade, so there is still exactly one purchase verdict for the
-  whole app.
-
-`BuildHost/Sources/App.swift` stubs this out to compile only — `checkReceipt`
-returns `nil`, `restore` returns `.nothingToRestore`, `purchase` returns
-`.failed`. A real implementation replaces all three with actual StoreKit
-calls.
+- **Receipt validation** — `AppleReceiptValidator(service: .production)` with
+  your shared secret, then an auto-renewable check for each of `productIds`.
+  Three answers, and the difference matters: `true` (an active subscription is
+  in the receipt), `false` (the receipt was read and carries none), `nil` (it
+  could not be checked at all). Only `false` can revoke premium.
+  A **sandbox receipt answers `nil` immediately** — the production endpoint can
+  only ever reply 21007 to one, so TestFlight and simulator builds simply lean
+  on Adapty. An empty `sharedSecret` answers `nil` the same way.
+- **Restore** — `restorePurchases(atomically: true)`, unfinished transactions
+  finished. Anything restored is `.restored`, even if some other purchase in
+  the same batch failed.
+- **The fallback purchase** — `purchaseProduct(atomically: true)`, run by
+  `PremiumServicing.purchase(_:placement:completion:)` itself when Adapty's own
+  request asks for a StoreKit retry. The app never sees the retry, only the
+  final `PurchaseOutcome`.
+- **Interrupted transactions** — `completeTransactions(atomically: true)` runs
+  once at `configure` time and finishes whatever was left stuck in the payment
+  queue (app killed mid-payment, ask-to-buy approved later). If something was
+  actually delivered, the premium state is re-asked in the same launch.
+- **Prices** — `retrieveProductsInfo` for the ids Adapty listed on the
+  placement; see the note under `products(placement:)` below.
 
 ## Deep links
 
@@ -553,7 +549,8 @@ with no `expiresAt`; silence everywhere yields `.free`.
 ```
 Compiles `PremiumService` against a stub `Adapty` module (built first as a
 static library so the real SDK is never linked) and checks the `refresh()`
-concurrency barrier plus the StoreKit-fallback and facade-price paths.
+concurrency barrier, the StoreKit-fallback path, and the price merge — the
+store's price winning where it answered, Adapty's kept where it did not.
 
 ```bash
 ./Checks/appsflyer-attribution-check.sh
@@ -602,8 +599,8 @@ empty input stays empty; that a `nil` deep link value becomes `"-"`; that
 - [ ] Associated Domains added, if Universal Links are needed
 - [ ] `AppDelegate` calls `FirebaseIntegration.configure()` before
       `IntegrationKit.configure(...)`
-- [ ] `AppleSubscribing` implemented for real (not the build-host stub) and
-      passed as `apple:`
+- [ ] `sharedSecret` is this app's real App Store Connect shared secret, and
+      `productIds` lists every subscription id the paywall can sell
 - [ ] `handleContinue`/`handleOpen` forwarded through `kit`, not any SDK
       directly
 - [ ] `deviceId` is one stable id, the same value across app launches
