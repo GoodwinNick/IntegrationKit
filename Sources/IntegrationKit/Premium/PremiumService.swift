@@ -9,10 +9,10 @@
 import Adapty
 import Foundation
 
-public final class PremiumService {
+public final class PremiumService: PremiumServicing {
 	private let store: PremiumStateStoring
 	private let adapty: AdaptyPremiumProviding?
-	private let apple: AppleReceiptChecking?
+	private let apple: AppleSubscribing?
 	/// Access level ids as named in the Adapty dashboard — the app decides, not the library.
 	private let levels: Set<String>
 	// Guards the cached state AND its flag mirror together — see `apply`.
@@ -31,7 +31,7 @@ public final class PremiumService {
 	public init(
 		store: PremiumStateStoring = UserDefaultsPremiumStore(),
 		adapty: AdaptyPremiumProviding? = nil,
-		apple: AppleReceiptChecking? = nil,
+		apple: AppleSubscribing? = nil,
 		levels: Set<String> = ["premium"]
 	) {
 		self.store = store
@@ -68,6 +68,10 @@ public final class PremiumService {
 
 	/// PM-02: re-asks both sources. Adapty answers through `premiumObserver`, the receipt through
 	/// `applyReceiptCheck`; those two are also what clear the in-flight flags.
+	///
+	/// TEMPORARY (premium rewrite step 2): the two requests are wrapped in bare `Task`s so this
+	/// still-dual-flag `refresh()` compiles against the now-async `adapty`/`apple` protocols.
+	/// Step 4 replaces this whole method with the `async let` barrier from the spec.
 	public func refresh() {
 		lock.lock()
 		guard !awaitingAdapty, !awaitingApple else {
@@ -78,9 +82,22 @@ public final class PremiumService {
 		awaitingApple = apple != nil
 		lock.unlock()
 
-		adapty?.refreshPremium()
-		apple?.checkReceipt { [weak self] hasReceipt in
-			self?.applyReceiptCheck(hasReceipt)
+		requestAdaptyProfile()
+		if let apple {
+			Task { [weak self] in
+				let hasReceipt = await apple.checkReceipt()
+				self?.applyReceiptCheck(hasReceipt)
+			}
+		}
+	}
+
+	/// TEMPORARY (premium rewrite step 2): see `refresh()`. `nil` (Adapty did not answer) leaves
+	/// `awaitingAdapty` set — matching the current ceiling that step 4 removes, not fixing it here.
+	private func requestAdaptyProfile() {
+		guard let adapty else { return }
+		Task { [weak self] in
+			guard let self, let profile = await adapty.profile() else { return }
+			self.apply(adapty: PremiumAccess(profile: profile, levels: self.levels))
 		}
 	}
 
@@ -101,7 +118,7 @@ public final class PremiumService {
 		}
 		lock.unlock()
 		apply(adapty: nil, apple: true)
-		adapty?.refreshPremium()
+		requestAdaptyProfile()
 	}
 
 	/// Local receipt validation finished. `nil` means it could not run, not "no access".
@@ -127,5 +144,38 @@ public final class PremiumService {
 		// The mirror is assigned every time — its own setter notifies on change only.
 		store.premium = state.isPremium
 		lock.unlock()
+	}
+
+	// MARK: - PremiumServicing: paywalls and remote config, pass straight through to Adapty.
+
+	public func hasPaywall(placement: String) -> Bool {
+		adapty?.hasPaywall(placement: placement) ?? false
+	}
+
+	public func remoteValue<T>(placement: String, key: String) -> T? {
+		adapty?.remoteValue(placement: placement, key: key)
+	}
+
+	public func logPaywallOpen(placement: String) {
+		adapty?.logPaywallOpen(placement: placement)
+	}
+
+	// MARK: - PremiumServicing: stubs. TEMPORARY (premium rewrite step 2) — `restore`/`purchase`
+	// land in step 5, `product`/`products` in step 6. No `fatalError()`, this is a public package.
+
+	public func restore(completion: @escaping (RestoreOutcome) -> Void) {
+		completion(.notImplemented)
+	}
+
+	public func purchase(_ productId: String, placement: String, completion: @escaping (PurchaseOutcome) -> Void) {
+		completion(.notImplemented)
+	}
+
+	public func product(_ productId: String, placement: String, completion: @escaping (PremiumProduct?) -> Void) {
+		completion(nil)
+	}
+
+	public func products(placement: String, completion: @escaping ([PremiumProduct]) -> Void) {
+		completion([])
 	}
 }
