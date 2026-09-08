@@ -8,9 +8,8 @@
 //  `PremiumBarrierCheck`; rows 6-7, PM-07 row 5 and all of PM-08 exercise the real `StoreKitService`
 //  against a stubbed `SwiftyStoreKit`.
 //
-//  PM-08 row 5 is a KNOWN FAILURE — see the comment at that case, near the bottom of `main()`. This
-//  check does not stop at the first failing row: every row runs, every failure is collected, and the
-//  summary at the end reports all of them with a non-zero exit code.
+//  This check does not stop at the first failing row: every row runs, every failure is collected, and
+//  the summary at the end reports all of them with a non-zero exit code.
 //  Run:  ./Checks/premium-storekit-check.sh
 //
 
@@ -120,8 +119,8 @@ enum PremiumStoreKitCheck {
 	static let hour: TimeInterval = 3600
 	static var failures: [String] = []
 
-	/// Records a failure instead of trapping — PM-08 row 5 is expected to fail, and one known-red
-	/// row must not stop every row after it from running.
+	/// Records a failure instead of trapping — one failing row must not stop every row after it
+	/// from running.
 	static func check(_ condition: @autoclosure () -> Bool, _ message: @autoclosure () -> String) {
 		guard !condition() else { return }
 		let text = message()
@@ -291,12 +290,11 @@ enum PremiumStoreKitCheck {
 		check(SwiftyStoreKit.finishTransactionCalls.count == 0, "PM-08 row 6: empty queue — zero finishes, got \(SwiftyStoreKit.finishTransactionCalls.count)")
 		check(emptyQueueCount == 0, "PM-08 row 6: empty queue — onDelivered must not fire, got \(emptyQueueCount)")
 
-		// PM-08 row 5 — KNOWN FAILURE, expected red until PM-08 row 5 is fixed. The composition root
-		// (`IntegrationKit.swift`) wires `storeKit.completeTransactions { premium?.refresh() }` — a
-		// plain `refresh()`, with no mark that what just got delivered was a local purchase. Wired
-		// the same way here: a purchase lands in the queue, Adapty stays silent, and the receipt
-		// still says "no" (the App Store has not caught up yet) — the delivered purchase itself
-		// should be enough to grant premium, but nothing tells `PremiumService` that one happened.
+		// PM-08 row 5: a purchase lands in the queue, Adapty stays silent, and the receipt still says
+		// "no" (the App Store has not caught up yet) — the delivered purchase itself has to be enough.
+		// The composition root (`IntegrationKit.swift`) wires the delivery to `purchaseDelivered()`,
+		// which resolves with the just-purchased mark; wired the same way here, so this row exercises
+		// the call the real root makes.
 		SwiftyStoreKit.reset()
 		let wiredTransaction = StubTransaction(state: .purchased, label: "row5")
 		SwiftyStoreKit.completeTransactionsResult = [Purchase(transaction: wiredTransaction, productId: "year.sub", needsFinishTransaction: true)]
@@ -305,13 +303,29 @@ enum PremiumStoreKitCheck {
 		let wiredStoreKit = StoreKitService(sharedSecret: "shared-secret", productIds: ["year.sub"])
 		let wiredStore = SpyStore()
 		let wiredPremium = PremiumService(store: wiredStore, adapty: nil, apple: wiredStoreKit, levels: ["premium"], sourceTimeout: 1)
-		wiredStoreKit.completeTransactions { [weak wiredPremium] in wiredPremium?.refresh() }
+		wiredStoreKit.completeTransactions { [weak wiredPremium] in wiredPremium?.purchaseDelivered() }
 		check(wait { wiredStore.writes > 0 }, "PM-08 row 5: refresh after a delivered purchase must produce a verdict")
 		check(SwiftyStoreKit.verifyReceiptCallCount == 1, "PM-08 row 5: the receipt must actually be checked, not just left unchecked — verifyReceipt call count got \(SwiftyStoreKit.verifyReceiptCallCount)")
 		check(wiredPremium.isPremium == true, "PM-08 row 5: a purchase delivered from the queue must grant premium even when the receipt says no, got isPremium == \(wiredPremium.isPremium)")
 
+		// PM-08 row 5, the combination the receipt alone can never win: the same delivered purchase,
+		// but the cache already holds a verified "no premium" from an earlier launch and Adapty is
+		// silent now. Resolver step 2 would hand that cache straight back; `purchaseDelivered()` demotes
+		// the copy to `isVerified: false` for this one resolve, so step 2 stops matching and step 3 wins.
+		SwiftyStoreKit.reset()
+		let cachedNoTransaction = StubTransaction(state: .purchased, label: "row5-cached-no")
+		SwiftyStoreKit.completeTransactionsResult = [Purchase(transaction: cachedNoTransaction, productId: "year.sub", needsFinishTransaction: true)]
+		SwiftyStoreKit.verifyReceiptResult = .success([:])
+		SwiftyStoreKit.verifySubscriptionResult = .notPurchased
+		let cachedNoStoreKit = StoreKitService(sharedSecret: "shared-secret", productIds: ["year.sub"])
+		let cachedNoStore = SpyStore(cached: PremiumState(isPremium: false, source: .adapty, isVerified: true))
+		let cachedNoService = PremiumService(store: cachedNoStore, adapty: nil, apple: cachedNoStoreKit, levels: ["premium"], sourceTimeout: 1)
+		cachedNoStoreKit.completeTransactions { [weak cachedNoService] in cachedNoService?.purchaseDelivered() }
+		check(wait { cachedNoStore.writes > 0 }, "PM-08 row 5: a delivered purchase must produce a verdict over a cached verified no")
+		check(cachedNoService.isPremium == true, "PM-08 row 5: a delivered purchase must outrank a cached verified 'no premium' while Adapty stays silent, got isPremium == \(cachedNoService.isPremium)")
+
 		if failures.isEmpty {
-			print("PremiumService restore (PM-05), prices (PM-07) and unfinished transactions (PM-08): 13/13 OK")
+			print("PremiumService restore (PM-05), prices (PM-07) and unfinished transactions (PM-08): 14/14 OK")
 		} else {
 			print("\(failures.count) check(s) failed:")
 			for failure in failures {

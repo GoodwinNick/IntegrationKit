@@ -3,11 +3,8 @@
 # `StoreKitService` names `Adapty` (through `PremiumService`) and `SwiftyStoreKit` directly, so both
 # get a stub module compiled first and linked in their place, same trick as `premium-barrier-check.sh`.
 #
-# PM-08 row 5 is a KNOWN FAILURE, on purpose: a purchase delivered by `completeTransactions` wires
-# straight to `PremiumService.refresh()` (see `IntegrationKit.swift`, composition root) with no mark
-# that it was a local purchase, so a silent Adapty plus a receipt that still says "no" right after the
-# purchase leave `isPremium` false. This check does not stop at that failure — it runs every row,
-# collects every failure, and exits non-zero if any row failed.
+# This check does not stop at the first failing row — it runs every row, collects every failure, and
+# exits non-zero if any row failed.
 set -e
 cd "$(dirname "$0")/.."
 work="${TMPDIR:-/tmp}/premium-storekit-check"

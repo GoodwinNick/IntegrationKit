@@ -76,7 +76,7 @@ public struct IntegrationKit {
 		// the payment queue, not by any call above, and it stays stuck in that queue until it is
 		// finished. Re-asking afterwards is what turns it into premium in this launch instead of
 		// the next one.
-		storeKit.completeTransactions { [weak premium] in premium?.refresh() }
+		storeKit.completeTransactions { [weak premium] in premium?.purchaseDelivered() }
 
 		return IntegrationKit(
 			premium: premium,

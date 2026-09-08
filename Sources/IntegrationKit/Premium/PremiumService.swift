@@ -89,6 +89,13 @@ final class PremiumService: PremiumServicing {
 		Task { [weak self] in await self?.resolveBoth() }
 	}
 
+	/// PM-08 row 5: the payment queue handed over a purchase. The same barrier as `refresh()`,
+	/// marked as a local purchase — Apple's receipt can still be a version behind a transaction
+	/// finished seconds ago, and a cached verified `inactive` must not swallow it either.
+	func purchaseDelivered() {
+		Task { [weak self] in await self?.resolveBoth(localPurchase: true) }
+	}
+
 	/// The barrier itself, awaitable. `refresh()` fires it and forgets; `restore`/`purchase` await
 	/// it, which is what lets their completion run with the verdict already stored.
 	///
