@@ -1,9 +1,13 @@
 #!/bin/sh
-# CrashReporter/FirebaseIntegration self-check — compile proof only, no XCTest, no Xcode project.
-# No behavioural asserts yet — those come later, once a schema for this wrapper is approved.
+# CrashReporter/FirebaseIntegration self-check — 7 rows from the approved schemas CR-01 and CR-02.
+# No XCTest, no Xcode project.
 #
 # `-D DEBUG` on the final build so FirebaseIntegration's `#if DEBUG` block — the one line that
 # calls `setCrashlyticsCollectionEnabled` — is actually type-checked and not silently skipped.
+#
+# A non-zero exit here is the expected, healthy outcome until CR-01 row 3 (a second configure must
+# be a no-op) and CR-02 row 1 (the tag must reach Crashlytics) are implemented. `set -e` still
+# applies to a genuine compile failure, same as every other check.
 set -e
 cd "$(dirname "$0")/.."
 work="${TMPDIR:-/tmp}/crashlytics-check"

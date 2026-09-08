@@ -21,12 +21,14 @@ public final class Crashlytics {
 
 	public static private(set) var recordedErrors: [(domain: String, code: Int, userInfo: [String: Any]?)] = []
 	public static private(set) var recordCallCount = 0
-	public static private(set) var collectionEnabled = true
+	/// `nil` means "never set" — CR-01 row 4 has to tell an explicit `true` from a flag nobody
+	/// touched, and a plain `Bool` cannot say that.
+	public static private(set) var collectionEnabled: Bool?
 
 	public static func reset() {
 		recordedErrors = []
 		recordCallCount = 0
-		collectionEnabled = true
+		collectionEnabled = nil
 	}
 
 	private init() {}
