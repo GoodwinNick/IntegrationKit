@@ -17,6 +17,20 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 
 	private var cachedProducts: [String: [AdaptyPaywallProduct]] = [:]
 
+	/// What `configure` was called with — `refreshPaywalls()` needs the list again later, and
+	/// `configure` only ever had it as a local parameter.
+	private var configuredPlacements: [String] = []
+
+	/// Per-placement delay before `loadPaywall`'s next self-retry. Absent means the starting
+	/// delay. Doubles on every failure up to `maxPaywallBackoff`; `refreshPaywalls()` resets a
+	/// placement's entry back to `initialPaywallBackoff` before retrying it immediately.
+	private var paywallBackoff: [String: TimeInterval] = [:]
+	/// Placements with a self-retry already scheduled. One pending retry per placement, ever —
+	/// see `loadPaywall`.
+	private var pendingPaywallRetry: Set<String> = []
+	private static let initialPaywallBackoff: TimeInterval = 0.5
+	private static let maxPaywallBackoff: TimeInterval = 30
+
 	var observer: (() -> Void)?
 	/// Fires whenever Adapty pushes a fresh profile (activation, any profile change). Callers
 	/// derive their own premium decision from `AdaptyProfile.accessLevels`.
@@ -28,6 +42,7 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	init() {}
 
 	func configure(apiKey: String, customerUserId: String, sessionsCounter: Int, placements: [String], analytics: AnalyticsTracking) {
+		configuredPlacements = placements
 		// Set before activate so the very first profile push is not missed.
 		Adapty.delegate = self
 		Adapty.activate(apiKey, observerMode: false, customerUserId: customerUserId, dispatchQueue: .main, { _ in
@@ -36,16 +51,8 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 			dateFormatter.dateFormat = "dd-MM-yyyy"
 			self.setProfileValue(value: dateFormatter.string(from: .now), key: "lastUsedDay")
 			self.setProfileValue(value: sessionsCounter.description, key: "launchSession")
-			for value in placements {
-				Adapty.getPaywall(placementId: value, { result in
-					switch result {
-						case .success(let paywall):
-							self.paywalls[value] = paywall
-							self.fetchProductsForPaywall(placement: value)
-						case .failure:
-							break
-					}
-				})
+			for placement in placements {
+				self.loadPaywall(placement: placement)
 			}
 		})
 	}
@@ -81,8 +88,56 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		}
 	}
 
+	/// The one paywall-loading path — `configure` and `refreshPaywalls()` both funnel through
+	/// this instead of calling `Adapty.getPaywall` themselves. On failure it keeps retrying
+	/// itself, spaced out with exponential backoff per placement, until it succeeds — the
+	/// approved schema says loading continues until it succeeds. Each scheduled retry re-checks
+	/// `paywalls[placement]` right before it fires, so a retry queued before an explicit
+	/// `refreshPaywalls()` call already succeeded does not turn into a stray extra SDK call.
+	private func loadPaywall(placement: String) {
+		Adapty.getPaywall(placementId: placement, { [weak self] result in
+			guard let self else { return }
+			switch result {
+				case .success(let paywall):
+					self.paywallBackoff[placement] = nil
+					self.paywalls[placement] = paywall
+					self.fetchProductsForPaywall(placement: placement)
+				case .failure:
+					let delay = self.paywallBackoff[placement] ?? Self.initialPaywallBackoff
+					self.paywallBackoff[placement] = min(delay * 2, Self.maxPaywallBackoff)
+					// At most one retry in flight per placement. Without this, every
+					// `refreshPaywalls()` on a still-broken placement starts its own independent
+					// chain: a session that returns to the foreground twenty times ends up with
+					// twenty of them hammering the SDK in parallel, which is exactly the spin the
+					// backoff exists to prevent.
+					guard self.pendingPaywallRetry.insert(placement).inserted else { return }
+					DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+						guard let self else { return }
+						self.pendingPaywallRetry.remove(placement)
+						guard self.paywalls[placement] == nil else { return }
+						self.loadPaywall(placement: placement)
+					}
+			}
+		})
+	}
+
 	func hasPaywall(placement: String) -> Bool {
 		return paywalls[placement] != nil
+	}
+
+	/// Re-attempts every configured placement that is still missing a paywall. Fired by the
+	/// composition root on `UIApplication.didBecomeActiveNotification` — this file stays UIKit-free,
+	/// so the trigger itself lives in `IntegrationKit.swift`.
+	///
+	/// Returning to the foreground is a fresh signal, so this does not wait out a placement's
+	/// pending backoff: it resets that placement's delay back to `initialPaywallBackoff` and calls
+	/// `loadPaywall` immediately. It does not stack a second retry chain on top of the pending one
+	/// — `loadPaywall` keeps at most one scheduled retry per placement.
+	func refreshPaywalls() {
+		for placement in configuredPlacements where paywalls[placement] == nil {
+			paywallBackoff[placement] = Self.initialPaywallBackoff
+			loadPaywall(placement: placement)
+		}
 	}
 
 	func hasProductsForPaywall(placement: String, id: String) -> Bool {
@@ -157,7 +212,10 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 				}
 			}
 		} else {
-			completion?(.failed)
+			// Adapty never cached this product — its paywall was never loaded, so Adapty could
+			// not serve this purchase at all. That is exactly the case the StoreKit fallback
+			// exists for.
+			completion?(.retryWithStoreKit)
 		}
 	}
 

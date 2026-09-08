@@ -23,6 +23,10 @@ public struct IntegrationKit {
 	// optional because an app without a dev key simply has no attribution.
 	private let adapty: AdaptyServicing
 	private let appsFlyer: AppsFlyerServicing?
+	/// Keeps the `didBecomeActive` paywall-retry observer alive: `NotificationCenter` does not
+	/// retain the token the block-based API hands back, so dropping this would silently stop the
+	/// retries after the first launch.
+	private let adaptyRefreshObserver: NSObjectProtocol
 
 	/// Builds and starts the whole layer. Call `FirebaseIntegration.configure()` before this one.
 	///
@@ -58,6 +62,15 @@ public struct IntegrationKit {
 			placements: placements,
 			analytics: analytics
 		)
+		// Adapty's own paywall fetch can lose a race at cold start (flaky network, cold CDN) — retry
+		// every placement that is still missing each time the app comes back to the foreground.
+		let adaptyRefreshObserver = NotificationCenter.default.addObserver(
+			forName: UIApplication.didBecomeActiveNotification,
+			object: nil,
+			queue: .main
+		) { _ in
+			adapty.refreshPaywalls()
+		}
 
 		var appsFlyer: AppsFlyerService?
 		if !appsFlyerDevKey.isEmpty {
@@ -83,7 +96,8 @@ public struct IntegrationKit {
 			analytics: analytics,
 			crashes: CrashReporter(),
 			adapty: adapty,
-			appsFlyer: appsFlyer
+			appsFlyer: appsFlyer,
+			adaptyRefreshObserver: adaptyRefreshObserver
 		)
 	}
 

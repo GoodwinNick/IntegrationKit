@@ -12,6 +12,10 @@ protocol AdaptyServicing: AnyObject {
 	func hasPaywall(placement: String) -> Bool
 	func hasProductsForPaywall(placement: String, id: String) -> Bool
 	func hasProductsForPaywall(placement: String) -> Bool
+	/// Re-attempts `getPaywall` for every configured placement that is still missing. Wired to
+	/// `UIApplication.didBecomeActiveNotification` by the composition root (`IntegrationKit.swift`)
+	/// — this protocol is the app-facing surface that trigger can reach.
+	func refreshPaywalls()
 	func getRemoteValue<Type>(placement: String, key: String) -> Type?
 	func getAbValue(placement: String) -> Int?
 	func getBoolValue(placement: String, key: String) -> Bool
