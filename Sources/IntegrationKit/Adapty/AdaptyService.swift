@@ -165,10 +165,6 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		Adapty.logShowOnboarding(name: "onboarding_\(step)", screenName: nil, screenOrder: UInt(step))
 	}
 
-	func updateAttribution(attribution: [AnyHashable: Any]) {
-		Adapty.updateAttribution(attribution, source: .adjust)
-	}
-
 	func updateAppsFlyerAttribution(_ data: [AnyHashable: Any], networkUserId: String?) {
 		Adapty.updateAttribution(data, source: .appsflyer, networkUserId: networkUserId) { error in
 			if let error {

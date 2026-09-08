@@ -19,7 +19,6 @@ protocol AdaptyServicing: AnyObject {
 	func getRemoteValue<Type>(placement: String, key: String) -> Type?
 	func logPaywallOpen(placement: String)
 	func logOnboardingOpen(step: Int)
-	func updateAttribution(attribution: [AnyHashable: Any])
 	func buyProduct(placement: String, id: String, completion: ((AdaptyPurchaseResult) -> Void)?)
 	func integrateFirebase(appInstanceId: String)
 	func integrateFacebook(id: String)
