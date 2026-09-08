@@ -103,6 +103,11 @@ final class FakeApple: AppleSubscribing {
 	/// Set by `purchase` — case 8 asserts the fallback was actually reached, not just that the
 	/// outcome happened to match.
 	var purchasedProductId: String?
+	/// What the store answers about prices. An id missing from here is the store staying silent.
+	var catalogue: [String: PremiumProduct] = [:]
+	/// The ids the facade actually asked the store about — case 11 checks it asks for the ones
+	/// Adapty listed, not for some list of its own.
+	var askedForIds: Set<String>?
 
 	init(receipt: Bool?, delay: TimeInterval = 0) {
 		self.receipt = receipt
@@ -121,6 +126,11 @@ final class FakeApple: AppleSubscribing {
 	func purchase(productId: String) async -> PurchaseOutcome {
 		purchasedProductId = productId
 		return purchaseResult
+	}
+
+	func products(ids: Set<String>) async -> [String: PremiumProduct] {
+		askedForIds = ids
+		return catalogue.filter { ids.contains($0.key) }
 	}
 }
 
@@ -327,6 +337,30 @@ enum PremiumBarrierCheck {
 		assert(wait { missing != nil }, "case 10: product must call back for an unknown id too")
 		assert(missing! == nil, "case 10: an id the placement does not carry is nil, not the first product")
 
-		print("PremiumService barrier, restore, purchase fallback and prices: 10/10 OK")
+		// 11. Two sources for one list: Adapty says which products the placement carries, the
+		//     store says what they cost. The store's price wins where it answered; an id it stayed
+		//     silent about keeps Adapty's copy instead of falling out of the paywall.
+		let mixedAdapty = FakeAdapty(answer: nil)
+		mixedAdapty.catalogue = [
+			PremiumProduct(id: "year.sub", localizedTitle: "Year", localizedPrice: "$29.99", price: 29.99, currencyCode: "USD", subscriptionPeriod: PremiumPeriod(unit: .year, numberOfUnits: 1), introductoryOffer: nil),
+			PremiumProduct(id: "week.sub", localizedTitle: "Week", localizedPrice: "$4.99", price: 4.99, currencyCode: "USD", subscriptionPeriod: PremiumPeriod(unit: .week, numberOfUnits: 1), introductoryOffer: nil),
+		]
+		let storeApple = FakeApple(receipt: nil)
+		storeApple.catalogue = [
+			// The store knows this one, and knows it costs something else in this storefront.
+			"year.sub": PremiumProduct(id: "year.sub", localizedTitle: "Year", localizedPrice: "€34,99", price: 34.99, currencyCode: "EUR", subscriptionPeriod: PremiumPeriod(unit: .year, numberOfUnits: 1), introductoryOffer: nil),
+			// Never asked for: not on this placement.
+			"month.sub": PremiumProduct(id: "month.sub", localizedTitle: "Month", localizedPrice: "€9,99", price: 9.99, currencyCode: "EUR", subscriptionPeriod: PremiumPeriod(unit: .month, numberOfUnits: 1), introductoryOffer: nil),
+		]
+		let mixedService = PremiumService(store: SpyStore(), adapty: mixedAdapty, apple: storeApple, levels: ["premium"], sourceTimeout: 1)
+		var mixed: [PremiumProduct]?
+		mixedService.products(placement: "main") { mixed = $0 }
+		assert(wait { mixed != nil }, "case 11: products must call back")
+		assert(storeApple.askedForIds == ["year.sub", "week.sub"], "case 11: the store is asked exactly about the placement's ids, got \(storeApple.askedForIds.map(String.init(describing:)) ?? "nil")")
+		assert(mixed?.map(\.id) == ["year.sub", "week.sub"], "case 11: Adapty decides the composition and its order")
+		assert(mixed?.first?.localizedPrice == "€34,99" && mixed?.first?.currencyCode == "EUR", "case 11: the store's price wins where the store answered")
+		assert(mixed?.last?.localizedPrice == "$4.99", "case 11: an id the store stayed silent about keeps Adapty's price")
+
+		print("PremiumService barrier, restore, purchase fallback and prices: 11/11 OK")
 	}
 }
