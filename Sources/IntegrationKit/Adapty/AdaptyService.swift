@@ -8,7 +8,7 @@ import Foundation
 import Adapty
 import AdaptyUI
 
-public final class AdaptyService: AdaptyServicing {
+public final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 
 	private var paywalls: [String: AdaptyPaywall] = [:] {
 		didSet {
@@ -16,7 +16,7 @@ public final class AdaptyService: AdaptyServicing {
 		}
 	}
 
-	private var products: [String: [AdaptyPaywallProduct]] = [:]
+	private var cachedProducts: [String: [AdaptyPaywallProduct]] = [:]
 
 	public var observer: (() -> Void)?
 	/// Fires whenever Adapty pushes a fresh profile (activation, any profile change). Callers
@@ -74,7 +74,7 @@ public final class AdaptyService: AdaptyServicing {
 				guard let self else { return }
 				switch result {
 					case .success(let p):
-						self.products[placement] = p
+						self.cachedProducts[placement] = p
 					case .failure:
 						break
 				}
@@ -87,11 +87,11 @@ public final class AdaptyService: AdaptyServicing {
 	}
 
 	public func hasProductsForPaywall(placement: String, id: String) -> Bool {
-		return products[placement]?.contains(where: {$0.vendorProductId == id}) ?? false
+		return cachedProducts[placement]?.contains(where: {$0.vendorProductId == id}) ?? false
 	}
 
 	public func hasProductsForPaywall(placement: String) -> Bool {
-		return products[placement]?.first != nil
+		return cachedProducts[placement]?.first != nil
 	}
 
 	public func getRemoteValue<Type>(placement: String, key: String) -> Type? {
@@ -139,7 +139,7 @@ public final class AdaptyService: AdaptyServicing {
 	}
 
 	public func buyProduct(placement: String, id: String, completion: ((AdaptyPurchaseResult) -> Void)?) {
-		if let product = products[placement]?.first(where: { $0.vendorProductId == id }) {
+		if let product = cachedProducts[placement]?.first(where: { $0.vendorProductId == id }) {
 			Adapty.makePurchase(product: product) { result in
 				switch result {
 					case .success:
@@ -199,11 +199,71 @@ public final class AdaptyService: AdaptyServicing {
 		}
 	}
 
-	public func refreshPremium() {
-		Adapty.getProfile { [weak self] result in
-			guard let self, case .success(let profile) = result else { return }
-			self.premiumObserver?(profile)
+	// MARK: - AdaptyPremiumProviding: async over Adapty's own callbacks.
+	// Every wrapper here goes through `withSingleResume`, never `withCheckedContinuation`
+	// directly — see the note there on Adapty calling a completion twice.
+
+	/// `nil` means Adapty did not answer — never "no premium".
+	///
+	/// On the SDK side (2.10.x) `getProfile` performs a network fetch and falls back to the
+	/// stored profile when that request fails, so `.failure` here means the SDK is not activated
+	/// or the profile was swapped mid-flight — being offline still answers, from the cache.
+	public func profile() async -> AdaptyProfile? {
+		await withSingleResume { resume in
+			Adapty.getProfile { result in
+				switch result {
+					case .success(let profile):
+						resume(profile)
+					case .failure:
+						resume(nil)
+				}
+			}
 		}
+	}
+
+	/// Products of a placement, already wrapped so the caller never sees an Adapty type.
+	/// Uses the cache `configure` filled; fetches only when it is still empty, which is the
+	/// normal case for a paywall opened right after launch.
+	public func products(placement: String) async -> [PremiumProduct] {
+		if let cached = cachedProducts[placement], !cached.isEmpty {
+			return cached.map(PremiumProduct.init(product:))
+		}
+		guard let paywall = paywalls[placement] else { return [] }
+		let fetched: [AdaptyPaywallProduct] = await withSingleResume { resume in
+			Adapty.getPaywallProducts(paywall: paywall, { result in
+				switch result {
+					case .success(let products):
+						resume(products)
+					case .failure:
+						resume([])
+				}
+			})
+		}
+		// Same cache `fetchProductsForPaywall` writes; Adapty was activated with
+		// `dispatchQueue: .main`, so both writers land on the main queue.
+		cachedProducts[placement] = fetched
+		return fetched.map(PremiumProduct.init(product:))
+	}
+
+	public func buy(productId: String, placement: String) async -> PurchaseOutcome {
+		await withSingleResume { resume in
+			self.buyProduct(placement: placement, id: productId) { result in
+				switch result {
+					case .success:
+						resume(.purchased)
+					case .cancelled:
+						resume(.cancelled)
+					case .retryWithStoreKit:
+						resume(.retryWithStoreKit)
+					case .failed:
+						resume(.failed)
+				}
+			}
+		}
+	}
+
+	public func remoteValue<T>(placement: String, key: String) -> T? {
+		getRemoteValue(placement: placement, key: key)
 	}
 }
 
