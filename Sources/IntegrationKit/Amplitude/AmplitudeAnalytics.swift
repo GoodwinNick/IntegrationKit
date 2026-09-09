@@ -21,7 +21,15 @@ final class AmplitudeAnalytics: AnalyticsTracking {
 	/// actually works on this pin.
 	private var didAddIDFAPlugin = false
 
-	init() {}
+	/// The app's own `#if DEBUG`, the same value the composition root hands every other SDK. Taken
+	/// at build time rather than at `configure`, because it cannot change for the life of the
+	/// object — and taken from the app, because a package's own `#if DEBUG` answers about the
+	/// package's build, not the app's. Defaults only so the checks' own call sites stay short.
+	private let isDebug: Bool
+
+	init(isDebug: Bool = false) {
+		self.isDebug = isDebug
+	}
 
 	/// `isTestsRunning` defaults only so the checks' own call sites stay short — the composition
 	/// root always passes the app's answer, and the app always computes it.
