@@ -727,6 +727,47 @@ enum PremiumBarrierCheck {
 		assert(provenanceStore.cached == PremiumState(isPremium: false, source: .adapty, isVerified: true, expiresAt: nil), "case 30: expected Adapty's own verified denial, got \(String(describing: provenanceStore.cached))")
 		assert(provenanceStore.notified == 1, "case 30: exactly 1 .premiumDidChange, got \(provenanceStore.notified)")
 
-		print("PremiumService barrier, restore, purchase fallback and prices: 30/30 OK")
+		// 31. PM-07 row 11 (AD-02 row 5 through the facade): `hasPaywall` answers `false` both while a
+		//     placement is still loading and when nothing is ever coming, and a screen cannot choose
+		//     between a spinner and an empty state out of one boolean. `paywallState` is the answer, and
+		//     the facade has to hand Adapty's own verdict over untouched. `AdaptyServiceCheck` T10/T10b
+		//     pin the three values where they are decided; what is pinned here is that the facade neither
+		//     flattens them nor synthesizes them out of `hasPaywall` — the fake keeps `hasPaywall` at
+		//     `false` throughout, so a facade deriving one from the other could never report `.ready`.
+		let stateAdapty = StatefulPaywallAdapty()
+		let stateService = PremiumService(store: SpyStore(), adapty: stateAdapty, apple: nil, levels: ["premium"], sourceTimeout: 1)
+		stateAdapty.paywallStateAnswer = .loading
+		assert(stateService.paywallState(placement: "main") == .loading, "case 31: an attempt still in flight must reach the app as .loading, got \(stateService.paywallState(placement: "main"))")
+		assert(stateService.hasPaywall(placement: "main") == false, "case 31: hasPaywall stays false while loading — the two answers are independent, got \(stateService.hasPaywall(placement: "main"))")
+		stateAdapty.paywallStateAnswer = .unavailable
+		assert(stateService.paywallState(placement: "main") == .unavailable, "case 31: a placement that is never coming must reach the app as .unavailable, got \(stateService.paywallState(placement: "main"))")
+		stateAdapty.paywallStateAnswer = .ready
+		assert(stateService.paywallState(placement: "main") == .ready, "case 31: a loaded paywall must reach the app as .ready, got \(stateService.paywallState(placement: "main"))")
+		// No Adapty wired at all: nothing is in flight and nothing will arrive. `.unavailable`, never
+		// `.loading`, or a screen spins forever waiting on a source the package does not have.
+		let noSourceService = PremiumService(store: SpyStore(), adapty: nil, apple: nil, levels: ["premium"], sourceTimeout: 1)
+		assert(noSourceService.paywallState(placement: "main") == .unavailable, "case 31: with no Adapty source the state must be .unavailable, never .loading, got \(noSourceService.paywallState(placement: "main"))")
+
+		print("PremiumService barrier, restore, purchase fallback and prices: 31/31 OK")
 	}
+}
+
+/// Case 31's Adapty. A separate fake rather than one more field on `FakeAdapty` on purpose: the risk
+/// tables of PM-01…PM-06 quote `PremiumBarrierCheck.swift` line numbers, and a line added up there
+/// moves every one of them. Appending at the bottom moves nothing.
+final class StatefulPaywallAdapty: AdaptyPremiumProviding {
+	var premiumObserver: ((AdaptyProfile, Bool) -> Void)?
+	/// What Adapty says about the placement's paywall — case 31 moves it through all three values.
+	var paywallStateAnswer: PaywallState = .unavailable
+
+	func profile() async -> AdaptyProfile? { nil }
+	func products(placement: String) async -> AdaptyProductsAnswer { .notReady }
+	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult { .failed }
+	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> { .notReady }
+	func logPaywallOpen(placement: String) {}
+	/// Pinned at `false` on purpose — case 31 asserts the facade does not derive one answer from the
+	/// other, and it could not tell if this moved with `paywallStateAnswer`.
+	func hasPaywall(placement: String) -> Bool { false }
+	func paywallState(placement: String) -> PaywallState { paywallStateAnswer }
+	func syncReceipt() {}
 }
