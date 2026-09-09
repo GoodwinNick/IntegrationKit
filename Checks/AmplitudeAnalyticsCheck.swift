@@ -430,14 +430,14 @@ enum AmplitudeAnalyticsCheck {
 				+ "status, got \(Amplitude.addedPluginCount)"
 		)
 
-		// ── AN-01 row 10 — `environment` is tied to the gate, not to the first-open event ──
-		// Executes `AmplitudeAnalytics.swift:89` ahead of the `guard let event` at `:94`. The
-		// side-effect table used to say the property is written "only on the first install"; it is
-		// not — it sits inside the gate but before the event-name check, so an app that ships
-		// without naming its first-open event still gets an `environment` on the profile, on every
-		// launch, for as long as the gate stays open. Moving the write below the guard would leave
-		// that app with no environment at all, and T12 would not notice: T12 always passes an event
-		// name. Two configures, gate never closed, so both halves are pinned at once.
+		// ── AN-01 row 10 — `environment` does not depend on the first-open event name ──
+		// Executes `AmplitudeAnalytics.swift:67`, which since row 11 sits in `configure` itself
+		// rather than inside the first-open gate. The row was written when the write lived in the
+		// gate but ahead of the `guard let event`, and this assert pinned that placement; what it
+		// pins now is the half that survived the move and was always the point — an app that never
+		// names its first-open event still gets an `environment` on the profile, on every launch.
+		// T12 would not notice a regression here: T12 always passes an event name. Row 11 owns the
+		// rest, including the launches this one cannot see, with the gate already spent.
 		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
 		Amplitude.reset()
 		let row10First = AmplitudeAnalytics()
