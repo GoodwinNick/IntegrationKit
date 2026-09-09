@@ -81,8 +81,6 @@ final class FakeAdapty: AdaptyPremiumProviding {
 	var delay: TimeInterval
 	var buyResult: AdaptyPurchaseResult = .failed
 	var catalogue: [PremiumProduct] = []
-	/// What Adapty says about the placement's paywall — case 31 moves it through all three values.
-	var paywallStateAnswer: PaywallState = .unavailable
 
 	init(answer: AdaptyProfile?, delay: TimeInterval = 0) {
 		self.answer = answer
@@ -104,7 +102,7 @@ final class FakeAdapty: AdaptyPremiumProviding {
 	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> { .notReady }
 	func logPaywallOpen(placement: String) {}
 	func hasPaywall(placement: String) -> Bool { false }
-	func paywallState(placement: String) -> PaywallState { paywallStateAnswer }
+	func paywallState(placement: String) -> PaywallState { .unavailable }
 	func syncReceipt() {}
 }
 
@@ -736,7 +734,7 @@ enum PremiumBarrierCheck {
 		//     pin the three values where they are decided; what is pinned here is that the facade neither
 		//     flattens them nor synthesizes them out of `hasPaywall` — the fake keeps `hasPaywall` at
 		//     `false` throughout, so a facade deriving one from the other could never report `.ready`.
-		let stateAdapty = FakeAdapty(answer: nil)
+		let stateAdapty = StatefulPaywallAdapty()
 		let stateService = PremiumService(store: SpyStore(), adapty: stateAdapty, apple: nil, levels: ["premium"], sourceTimeout: 1)
 		stateAdapty.paywallStateAnswer = .loading
 		assert(stateService.paywallState(placement: "main") == .loading, "case 31: an attempt still in flight must reach the app as .loading, got \(stateService.paywallState(placement: "main"))")
@@ -752,4 +750,24 @@ enum PremiumBarrierCheck {
 
 		print("PremiumService barrier, restore, purchase fallback and prices: 31/31 OK")
 	}
+}
+
+/// Case 31's Adapty. A separate fake rather than one more field on `FakeAdapty` on purpose: the risk
+/// tables of PM-01…PM-06 quote `PremiumBarrierCheck.swift` line numbers, and a line added up there
+/// moves every one of them. Appending at the bottom moves nothing.
+final class StatefulPaywallAdapty: AdaptyPremiumProviding {
+	var premiumObserver: ((AdaptyProfile, Bool) -> Void)?
+	/// What Adapty says about the placement's paywall — case 31 moves it through all three values.
+	var paywallStateAnswer: PaywallState = .unavailable
+
+	func profile() async -> AdaptyProfile? { nil }
+	func products(placement: String) async -> AdaptyProductsAnswer { .notReady }
+	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult { .failed }
+	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> { .notReady }
+	func logPaywallOpen(placement: String) {}
+	/// Pinned at `false` on purpose — case 31 asserts the facade does not derive one answer from the
+	/// other, and it could not tell if this moved with `paywallStateAnswer`.
+	func hasPaywall(placement: String) -> Bool { false }
+	func paywallState(placement: String) -> PaywallState { paywallStateAnswer }
+	func syncReceipt() {}
 }
