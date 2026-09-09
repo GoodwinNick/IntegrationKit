@@ -626,8 +626,21 @@ func paywall() {
   "your subscription is already active"; keep "no active purchases found" for
   `.nothingToRestore` with `isPremium == false`. Telling a paying user that
   nothing was found is how a support ticket or a refund request starts.
-- **`refresh()`** — re-asks both sources and updates the cached state; safe
-  to call any time (e.g. on foreground), concurrent calls collapse into one.
+- **`refresh()`** — re-asks both sources and updates the cached state. **There
+  is no de-duplication**: every call starts a pass of its own, and two
+  overlapping calls run two of them. That is a deliberate limit of the
+  contract, not a defect — the store write and the `.premiumDidChange`
+  notification stay one per actual change, so the extra passes cost network
+  rather than correctness. The network is the part that matters: each pass
+  validates the receipt against Apple's production endpoint, so a `refresh()`
+  wired to every `viewWillAppear` is a storm Apple throttles. A throttled
+  receipt answers "could not be checked", which removes the offline reserve at
+  exactly the moment it was there for. Call it where the state can really have
+  changed behind the app's back — returning to the foreground, opening the
+  paywall or the settings screen, coming back from a subscription managed in
+  Settings. Most apps need it nowhere else: `configure` runs the first pass,
+  `purchase` and `restore` re-ask on their own, and Adapty pushes profile
+  updates in by itself.
 
 ### Models
 
