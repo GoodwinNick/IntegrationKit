@@ -4,7 +4,7 @@ set -e
 cd "$(dirname "$0")/.."
 out="${TMPDIR:-/tmp}/premium-resolver-check"
 swiftc -o "$out" \
-	Checks/PremiumResolverCheck.swift \
+	Checks/Cases/PremiumResolverCheck.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumSource.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumState.swift \
 	Sources/IntegrationKit/Premium/Models/ReceiptAnswer.swift \

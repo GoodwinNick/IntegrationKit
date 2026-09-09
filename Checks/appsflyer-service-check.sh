@@ -36,7 +36,7 @@ swiftc -emit-module -emit-library -static \
 	Checks/Stubs/AppsFlyerLib/AppsFlyerDeepLinkDelegate.swift \
 	Checks/Stubs/AppsFlyerLib/AppsFlyerLib.swift
 swiftc -o "$work/check" -I "$work" -L "$work" -lAppsFlyerLib -lUIKit \
-	Checks/AppsFlyerServiceCheck.swift \
+	Checks/Cases/AppsFlyerServiceCheck.swift \
 	Sources/IntegrationKit/Support/LogLevel.swift \
 	Sources/IntegrationKit/Support/DebugLog.swift \
 	Sources/IntegrationKit/Support/ConfigurationIssues.swift \

@@ -7,7 +7,7 @@ import Foundation
 
 /// The Apple side of the premium state. `StoreKitService` is the only implementation that ships;
 /// the protocol stays because the premium logic has to be checkable with Apple's answers under
-/// control (`Checks/PremiumBarrierCheck.swift`), which a hard-wired SDK call is not. Internal on
+/// control (`Checks/Cases/PremiumBarrierCheck.swift`), which a hard-wired SDK call is not. Internal on
 /// purpose — the app no longer supplies a StoreKit layer, it hands over a shared secret and its
 /// product ids.
 protocol AppleSubscribing: AnyObject {

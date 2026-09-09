@@ -21,7 +21,7 @@ swiftc -emit-module -emit-library -static \
 	-o "$work/libSwiftyStoreKit.a" \
 	Checks/Stubs/SwiftyStoreKit.swift
 swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty -lSwiftyStoreKit \
-	Checks/PremiumStoreKitCheck.swift \
+	Checks/Cases/PremiumStoreKitCheck.swift \
 	Sources/IntegrationKit/Support/LogLevel.swift \
 	Sources/IntegrationKit/Support/DebugLog.swift \
 	Sources/IntegrationKit/Support/ConfigurationIssues.swift \

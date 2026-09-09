@@ -27,7 +27,7 @@ swiftc -emit-module -emit-library -static \
 	Checks/Stubs/AdaptyAttributionSource.swift \
 	Checks/Stubs/Adapty.swift
 swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty \
-	Checks/AdaptyServiceCheck.swift \
+	Checks/Cases/AdaptyServiceCheck.swift \
 	Sources/IntegrationKit/Support/LogLevel.swift \
 	Sources/IntegrationKit/Support/DebugLog.swift \
 	Sources/IntegrationKit/Support/ConfigurationIssues.swift \

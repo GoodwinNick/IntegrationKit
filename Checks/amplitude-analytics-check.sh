@@ -22,7 +22,7 @@ swiftc -emit-module -emit-library -static \
 	Checks/Stubs/AmplitudeSwift/EnrichmentPlugin.swift \
 	Checks/Stubs/AmplitudeSwift/Amplitude.swift
 swiftc -o "$work/check" -I "$work" -L "$work" -lAmplitudeSwift \
-	Checks/AmplitudeAnalyticsCheck.swift \
+	Checks/Cases/AmplitudeAnalyticsCheck.swift \
 	Sources/IntegrationKit/Support/LogLevel.swift \
 	Sources/IntegrationKit/Support/DebugLog.swift \
 	Sources/IntegrationKit/Support/ConfigurationIssues.swift \

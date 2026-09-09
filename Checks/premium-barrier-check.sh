@@ -13,7 +13,7 @@ swiftc -emit-module -emit-library -static \
 	-o "$work/libAdapty.a" \
 	Checks/Stubs/AdaptyProfile.swift
 swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty \
-	Checks/PremiumBarrierCheck.swift \
+	Checks/Cases/PremiumBarrierCheck.swift \
 	Sources/IntegrationKit/Support/LogLevel.swift \
 	Sources/IntegrationKit/Support/DebugLog.swift \
 	Sources/IntegrationKit/Support/ConfigurationIssues.swift \

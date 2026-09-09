@@ -74,7 +74,7 @@ swiftc -emit-module -emit-library -static \
 	Checks/Stubs/SwiftyStoreKit.swift
 swiftc -o "$work/check" -I "$work" -L "$work" \
 	-lUIKit -lAppsFlyerLib -lAdapty -lAmplitudeSwift -lFirebaseCore -lFirebaseCrashlytics -lSwiftyStoreKit \
-	Checks/IntegrationKitCheck.swift \
+	Checks/Cases/IntegrationKitCheck.swift \
 	Sources/IntegrationKit/*.swift \
 	Sources/IntegrationKit/*/*.swift \
 	Sources/IntegrationKit/*/*/*.swift

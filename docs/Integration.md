@@ -937,7 +937,7 @@ func application(_ app: UIApplication, open url: URL, options: [UIApplication.Op
   belongs to UIKit, and an app that leaves it uncalled sits on its launch screen
   for the whole universal-link open. So forward both unconditionally and never
   answer `restorationHandler` yourself as a fallback: calling it twice is a
-  UIKit contract violation, and `Checks/IntegrationKitCheck.swift` pins the
+  UIKit contract violation, and `Checks/Cases/IntegrationKitCheck.swift` pins the
   "exactly once" from the package's side.
 
 **What the package does with a resolved deep link:** logs an
