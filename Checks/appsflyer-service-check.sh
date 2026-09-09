@@ -1,5 +1,5 @@
 #!/bin/sh
-# AppsFlyerService self-check — 30 asserts over 22 of the 25 rows of the approved schemas
+# AppsFlyerService self-check — 36 asserts over 24 of the 32 rows of the approved schemas
 # AF-01…AF-06. No XCTest, no Xcode project.
 #
 # `AppsFlyerService` also names `AnalyticsTracking` and `AdaptyServicing`, so both come straight
@@ -9,11 +9,9 @@
 # Built WITHOUT `-D DEBUG` on purpose, unlike crashlytics-check.sh: four rows ask for a trace that
 # survives outside Xcode, and that claim is only meaningful against the build the user gets.
 #
-# A non-zero exit here is the expected, healthy outcome — nine asserts state spec the wrapper does
-# not implement yet (the ATT limit and the debug key as parameters, the second-configure guard, the
-# empty AppsFlyer UID, one source for event and profile, the attribution retry, the `-` placeholder
-# leaking into profiles, and both halves of the restoration answer). `set -e` still applies to a
-# genuine compile failure, same as every other check.
+# A non-zero exit is a regression, not the expected outcome: every assert has been green since the
+# wrapper grew the behaviour the schemas asked for. `set -e` still applies to a genuine compile
+# failure, same as every other check.
 set -e
 cd "$(dirname "$0")/.."
 work="${TMPDIR:-/tmp}/appsflyer-service-check"

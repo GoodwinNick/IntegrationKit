@@ -10,7 +10,8 @@
 //  `shared()` always answers the same instance — same as the real SDK's process-wide singleton —
 //  so a check can read what was set (`customerUserID`, `isDebug`, `delegate`, ...) straight off
 //  it. Calls that don't already land on a settable property are recorded on static vars instead:
-//  `initialize`'s arguments, the ATT wait limit, and how many times
+//  `initialize`'s arguments, the ATT wait limit, the URL `handleOpen` was handed, the
+//  `customerUserID` that was in place when `start` ran, and how many times
 //  `initialize`/`start`/`continue`/`handleOpen` ran. Two knobs steer what the SDK answers back:
 //  `appsFlyerUID` (AF-03 row 2 needs an empty one) and `continueBehaviour` (AF-05 needs a block
 //  that is never called, and one that answers a mixed array). `reset()` clears every recording,
@@ -34,6 +35,13 @@ public final class AppsFlyerLib {
 	public static private(set) var startCallCount = 0
 	public static private(set) var continueCallCount = 0
 	public static private(set) var handleOpenCallCount = 0
+	/// AF-05 row 4: "forward it as it is" is a claim about the URL, not about a call happening, and a
+	/// counter cannot tell a forwarded link from a different one.
+	public static private(set) var lastOpenedURL: URL?
+	/// AF-01: what `customerUserID` held at the moment `start()` ran. The docs are explicit that a
+	/// CUID set after `start` is not associated with the install event, so the ordering is the
+	/// requirement — and reading the property afterwards cannot say which came first.
+	public static private(set) var customerUserIDAtStart: String?
 	/// `nil` means "never asked" — AF-01 row 2 has to tell a limit nobody set from the hardwired
 	/// one, and a plain `Double` cannot say that.
 	public static private(set) var lastATTTimeout: Double?
@@ -52,6 +60,8 @@ public final class AppsFlyerLib {
 		startCallCount = 0
 		continueCallCount = 0
 		handleOpenCallCount = 0
+		lastOpenedURL = nil
+		customerUserIDAtStart = nil
 		lastATTTimeout = nil
 		appsFlyerUID = "stub-appsflyer-uid"
 		continueBehaviour = .callsWithNil
@@ -92,10 +102,12 @@ public final class AppsFlyerLib {
 
 	public func handleOpen(_ url: URL, options: [UIApplication.OpenURLOptionsKey: Any]?) {
 		AppsFlyerLib.handleOpenCallCount += 1
+		AppsFlyerLib.lastOpenedURL = url
 	}
 
 	public func start() {
 		AppsFlyerLib.startCallCount += 1
+		AppsFlyerLib.customerUserIDAtStart = customerUserID
 	}
 
 	public func getAppsFlyerUID() -> String {
