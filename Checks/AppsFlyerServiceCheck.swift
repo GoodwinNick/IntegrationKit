@@ -100,6 +100,7 @@ final class FakeAdapty: AdaptyServicing {
 	func refreshPaywalls() {}
 	func getRemoteValue<Type>(placement: String, key: String) -> RemoteValue<Type> { .notReady }
 	func logPaywallOpen(placement: String) {}
+	func logOnboardingOpen(step: Int) {}
 	func buyProduct(placement: String, id: String, completion: ((AdaptyPurchaseResult) -> Void)?) {}
 	func updateAppTrackingTransparencyStatus(_ status: ATTrackingManager.AuthorizationStatus) {}
 

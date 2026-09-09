@@ -150,6 +150,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 			self?.kit?.updateTrackingAuthorization(status)
 		}
 	}
+
+	/// The onboarding screen and the purchase, from the facade alone — the two places an app writes
+	/// to the Adapty profile in its own words rather than the package's.
+	func onboarding(step: Int) {
+		// Numbered from ONE: Adapty refuses screen order 0, and a screen counted from zero is simply
+		// missing from the funnel. A screen index taken from an array is off by one on purpose.
+		kit?.logOnboardingOpen(step: step + 1)
+	}
+
+	func didPurchase(from place: String) {
+		// The app's own attribute. `lastUsedDay`, `launchSession` and `deep_link_value` are the
+		// package's and are never passed in from here.
+		kit?.setProfileValue(value: place, key: "purchasePlace")
+	}
 }
 
 @main
