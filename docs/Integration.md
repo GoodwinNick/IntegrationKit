@@ -887,12 +887,13 @@ for s in Checks/*.sh; do "./$s"; done
 | `amplitude-analytics-check.sh` | First-open gating, the IDFA plugin attached exactly once, the environment property, the test-run guard. |
 | `appsflyer-service-check.sh` | Session start, attribution mapping, the ATT wait limit, deep-link values. |
 | `appsflyer-attribution-check.sh` | `cleanedAttributionData`: `NSNull`/non-scalar values and non-string keys dropped, an empty input staying empty, a `nil` deep link value becoming `"-"`, `clickEvent` fields flowing through. |
+| `buildhost-check.sh` | That the package still compiles the way an app compiles it. The ten above hand `swiftc` a chosen set of files and stub modules; none of them compiles `IntegrationKit.swift`, so all ten can be green while the public composition root does not build at all. This one runs `xcb app-sim --path BuildHost` and closes that gap. |
 
 A test written from an approved schema goes in before the code that satisfies
 it, so an assert can be red for a while by design — a specification waiting to
-be met rather than a regression. All ten scripts are green as of this commit;
-a red assert names its row, and that row's "Стан у коді" column says where it
-stands.
+be met rather than a regression. All eleven scripts are green as of this
+commit; a red assert names its row, and that row's "Стан у коді" column says
+where it stands.
 
 ## Troubleshooting
 
@@ -1015,5 +1016,9 @@ dashboard entry.
       `kit.crashes.droppedReports` and `kit.droppedDeepLinks` are zero (all
       three are readable in release — print them, or ship them as a
       Crashlytics non-fatal)
-- [ ] `for s in Checks/*.sh; do "./$s"; done` — all ten green
-- [ ] `cd BuildHost && xcb app-sim` builds
+- [ ] The `IntegrationKit` returned by `configure` is stored for the lifetime
+      of the process, not discarded — the `private var kit` in the AppDelegate
+      example is a requirement, and the paragraph under it says what goes when
+      it is dropped
+- [ ] `for s in Checks/*.sh; do "./$s"; done` — all eleven green (the eleventh
+      is the BuildHost build, so there is nothing to run separately)
