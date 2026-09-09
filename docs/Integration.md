@@ -1062,6 +1062,11 @@ dashboard entry.
       paywall
 - [ ] `kit.premium.purchase(...)` handles all five `PurchaseOutcome` cases —
       `.pending` shows waiting, `.unavailable` hides the button
+- [ ] Every screen that gates content on premium observes `.premiumDidChange`
+      rather than reading `isPremium` once. The flag moves without the app
+      asking — an Adapty profile push, a purchase the payment queue delivers at
+      the next launch — and a screen that only read it at `viewDidLoad` keeps
+      paywalling a user who has already paid
 - [ ] `kit.configurationIssues` is empty on a real launch, and
       `kit.crashes.droppedReports` and `kit.droppedDeepLinks` are zero (all
       three are readable in release — print them, or ship them as a
@@ -1070,5 +1075,5 @@ dashboard entry.
       of the process, not discarded — the `private var kit` in the AppDelegate
       example is a requirement, and the paragraph under it says what goes when
       it is dropped
-- [ ] `for s in Checks/*.sh; do "./$s"; done` — all eleven green (the eleventh
+- [ ] `for s in Checks/*.sh; do "./$s"; done` — all twelve green (the twelfth
       is the BuildHost build, so there is nothing to run separately)
