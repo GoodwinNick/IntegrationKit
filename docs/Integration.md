@@ -357,7 +357,6 @@ they are not public types.
 
 ```swift
 public protocol AnalyticsTracking: AnyObject {
-	func configure(apiKey: String, deviceId: String, firstOpenEvent: String?, isTestsRunning: Bool)
 	func logEvent(_ event: String, properties: [String: Any]?)
 	func setUserProperties(_ properties: [String: Any])
 	func setUserId(_ userId: String)
@@ -366,9 +365,14 @@ public protocol AnalyticsTracking: AnyObject {
 }
 ```
 
-`configure` is already called for you inside `IntegrationKit.configure(...)`
-— the app never calls it itself. `logEvent(_:)` without properties is
-available through a protocol extension:
+There is no `configure` on this protocol, by design. The composition root owns
+that call and makes it against the concrete layer, which is internal, so the app
+can neither reach it nor re-run it. Re-running it is what the removal prevents:
+a second call replaces the `Amplitude` instance, and the "add the IDFA plugin
+once" flag lives on the layer rather than on the instance — so the *new*
+Amplitude never gets the plugin and every event after that point silently loses
+the IDFA. `logEvent(_:)` without properties is available through a protocol
+extension:
 
 ```swift
 public extension AnalyticsTracking {
