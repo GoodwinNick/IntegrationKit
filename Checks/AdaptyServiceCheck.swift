@@ -927,5 +927,38 @@ enum AdaptyServiceCheck {
 		t44b.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined, isTestsRunning: false)
 		check(Adapty.activateCallCount == 1, "AD-01 r1: isTestsRunning false must still activate the layer — got \(Adapty.activateCallCount) activation(s)")
 		check(t44b.isActive, "AD-01 r1: isTestsRunning false must leave the layer active")
+
+		attributionRetry()
+	}
+
+	// MARK: - AD-06 row 7: the attribution queue's second exit.
+
+	/// Appended after `testRun()` for the same reason `testRun()` is appended after `amendments()`:
+	/// every assert coordinate the AD-01…AD-07 risk tables quote sits above this line.
+	static func attributionRetry() {
+		// T45 — AD-06 row 7: a write the ALREADY ACTIVE SDK refused. It goes back on the queue
+		// (`updateAppsFlyerAttribution`'s failure branch), and `flushPendingAttribution` used to have
+		// exactly one caller — the `activate` completion, which by then has already run and will not
+		// run again in this process. Install data arrives once per install and Adapty locks the
+		// attribution source on the first write that lands, so that queue entry stayed where it was
+		// until the process died: this payer's campaign is counted organic, and the ROAS the campaign
+		// is switched off by is the one with its real payers cut out of it.
+		//
+		// The assert names the JOURNAL GROWING after the failure, not the queueing — the queueing is
+		// there without the fix too (T28 already pins it) and on its own proves nothing. The trigger
+		// is `refreshPaywalls()` because that is the method the composition root's
+		// `didBecomeActive` observer calls (`IntegrationKit.swift`); this check compiles no UIKit, so
+		// the notification itself cannot be posted here.
+		reset("T45")
+		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		let t45 = AdaptyService()
+		t45.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		Adapty.updateAttributionError = AdaptyError(.networkFailed)
+		t45.updateAppsFlyerAttribution(["af_status": "Non-organic"], networkUserId: "af-uid-2")
+		check(Adapty.updateAttributionJournal.isEmpty, "AD-06 r7 setup: a write the SDK refused must not be journalled — got \(Adapty.updateAttributionJournal.count)")
+		Adapty.updateAttributionError = nil
+		t45.refreshPaywalls()
+		let t45Ids = Adapty.updateAttributionJournal.map { $0.networkUserId ?? "nil" }
+		check(t45Ids == ["af-uid-2"], "AD-06 r7: a write the already-active SDK refused must be repeated at the next foreground pass, with the same networkUserId — got \(t45Ids)")
 	}
 }

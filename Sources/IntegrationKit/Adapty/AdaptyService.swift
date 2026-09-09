@@ -447,7 +447,17 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	/// dashboard mid-session used to survive until the process died. This refreshes the paywall and
 	/// its remote configuration; the `SKProduct` behind a price is pinned inside the SDK for the
 	/// life of the process and no lever here reaches it — see AD-03 row 4 for that boundary.
+	///
+	/// AD-06 row 7: the attribution queue drains here too. It needs a second exit — the first one is
+	/// the `activate` completion, which runs once per process, so a write the *already active* SDK
+	/// refused had nobody left to retry it and sat in the queue until the process died. This is the
+	/// cheaper of the two exits the schema allows: returning to the foreground is already wired
+	/// (`IntegrationKit.swift` holds the `didBecomeActive` observer that calls this), it is the
+	/// moment a dropped network is most likely to be back, and it costs one line instead of a second
+	/// observer. Hanging the flush off the next successful SDK answer would cost more and fire less
+	/// often — nothing here is guaranteed to talk to the SDK again after a failed attribution write.
 	func refreshPaywalls() {
+		flushPendingAttribution()
 		for placement in configuredPlacements {
 			if let loadedAt = paywallLoadedAt[placement], Date().timeIntervalSince(loadedAt) < deadlines.paywallTTL {
 				continue

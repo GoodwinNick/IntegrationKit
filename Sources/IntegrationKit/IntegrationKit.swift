@@ -78,7 +78,7 @@ public struct IntegrationKit {
 		sourceTimeout: TimeInterval = 5,
 		attTimeout: TimeInterval = 60
 	) -> IntegrationKit {
-		let analytics = AmplitudeAnalytics()
+		let analytics = AmplitudeAnalytics(isDebug: isDebug)
 		analytics.configure(apiKey: amplitudeKey, deviceId: deviceId, firstOpenEvent: firstOpenEvent, isTestsRunning: isTestsRunning)
 
 		let adapty = AdaptyService()

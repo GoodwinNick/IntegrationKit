@@ -430,14 +430,14 @@ enum AmplitudeAnalyticsCheck {
 				+ "status, got \(Amplitude.addedPluginCount)"
 		)
 
-		// ── AN-01 row 10 — `environment` is tied to the gate, not to the first-open event ──
-		// Executes `AmplitudeAnalytics.swift:89` ahead of the `guard let event` at `:94`. The
-		// side-effect table used to say the property is written "only on the first install"; it is
-		// not — it sits inside the gate but before the event-name check, so an app that ships
-		// without naming its first-open event still gets an `environment` on the profile, on every
-		// launch, for as long as the gate stays open. Moving the write below the guard would leave
-		// that app with no environment at all, and T12 would not notice: T12 always passes an event
-		// name. Two configures, gate never closed, so both halves are pinned at once.
+		// ── AN-01 row 10 — `environment` does not depend on the first-open event name ──
+		// Executes `AmplitudeAnalytics.swift:67`, which since row 11 sits in `configure` itself
+		// rather than inside the first-open gate. The row was written when the write lived in the
+		// gate but ahead of the `guard let event`, and this assert pinned that placement; what it
+		// pins now is the half that survived the move and was always the point — an app that never
+		// names its first-open event still gets an `environment` on the profile, on every launch.
+		// T12 would not notice a regression here: T12 always passes an event name. Row 11 owns the
+		// rest, including the launches this one cannot see, with the gate already spent.
 		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
 		Amplitude.reset()
 		let row10First = AmplitudeAnalytics()
@@ -483,10 +483,48 @@ enum AmplitudeAnalyticsCheck {
 				+ "\(ConfigurationIssues.shared.all)"
 		)
 
+		// ── AN-01 row 11 — `environment` belongs to the launch, not to the first-open gate ──
+		// Two defects in one write, and the gate is what hid both. Sitting inside
+		// `trackFirstOpenOnce`, the property was written at most once per install for an app that
+		// names its first-open event — and a fresh App Store install has no receipt until the first
+		// purchase, so that one write said "unknown" and the profile kept "unknown" for the life of
+		// the install, long after the receipt appeared. The same line was written on every single
+		// launch for an app that does NOT name the event, so the property's behaviour was decided by
+		// an unrelated parameter. And `isDebug` never reached it at all, so an Xcode build arrived in
+		// the dashboard as `production`.
+		//
+		// The gate is deliberately CLOSED before both halves — that is the state the old code wrote
+		// nothing in, and neither T12 nor T18 can see it: both start from an open gate.
+		UserDefaults.standard.set(true, forKey: firstOpenTrackedKey)
+		Amplitude.reset()
+		let row11Spent = AmplitudeAnalytics()
+		row11Spent.configure(apiKey: "amp-key", deviceId: "device-20a", firstOpenEvent: "first_open")
+		check(
+			Amplitude.identifyCalls.compactMap { $0["environment"] as? String } == ["unknown"],
+			"T20 AN-01 row 11: `environment` must be written on every configure(), including one "
+				+ "whose first-open gate is already spent, got "
+				+ "\(Amplitude.identifyCalls.map { $0["environment"] ?? "none" })"
+		)
+
+		// The same launch from Xcode. The receipt is not the question here: dev traffic that cannot
+		// be told apart from production traffic poisons every number the business reads, and sorting
+		// it out is worth more than knowing which receipt the debug build happened to carry.
+		UserDefaults.standard.set(true, forKey: firstOpenTrackedKey)
+		Amplitude.reset()
+		let row11Debug = AmplitudeAnalytics(isDebug: true)
+		row11Debug.configure(apiKey: "amp-key", deviceId: "device-20b", firstOpenEvent: "first_open")
+		check(
+			Amplitude.identifyCalls.compactMap { $0["environment"] as? String } == ["debug"],
+			"T20 AN-01 row 11: a debug build must report itself as \"debug\" rather than as the "
+				+ "environment its receipt implies, got "
+				+ "\(Amplitude.identifyCalls.map { $0["environment"] ?? "none" })"
+		)
+		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
+
 		if failures.isEmpty {
-			print("AmplitudeAnalytics (AN-01..AN-04): 20/20 OK")
+			print("AmplitudeAnalytics (AN-01..AN-04): 22/22 OK")
 		} else {
-			print("\(failures.count) of 20 asserts FAILED")
+			print("\(failures.count) of 22 asserts FAILED")
 			exit(1)
 		}
 	}
