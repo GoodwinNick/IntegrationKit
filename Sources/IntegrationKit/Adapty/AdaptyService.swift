@@ -7,6 +7,14 @@
 //  arrives is not the same as "no". Every call here therefore has a deadline, every silent branch
 //  leaves a trace, and every cause that a retry cannot fix lands in `ConfigurationIssues`.
 //
+//  Written against Adapty 4.1.3. What the migration off 2.10.x moved, and where it is handled:
+//  `getPaywall` → `getFlow`; one `remoteConfig` → an array of them, one per locale (AD-07 row 6);
+//  `makePurchase` answering `Result<Void, _>` → `AdaptyPurchaseResult`, so a cancel and an
+//  Ask-to-Buy are outcomes rather than error codes (AD-04); `updateAttribution` → the pair
+//  `updateExternalAttribution` + `setIntegrationIdentifier`, which can fail apart (AD-06 row 10);
+//  and an activation that hangs instead of failing, which took the retry queue's feeder with it
+//  (AD-06 row 9).
+//
 
 import AppTrackingTransparency
 import Foundation
@@ -28,65 +36,79 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	/// `configurationIssues` looking for a key that is perfectly fine.
 	private static let testRunIssue = "The Adapty layer is inactive (the app reported a test run) — every Adapty call is a no-op for this run"
 
-	private static let initialPaywallBackoff: TimeInterval = 0.5
-	private static let maxPaywallBackoff: TimeInterval = 30
-
-	/// AD-05 row 3: `Adapty.delegate` is `weak`, and the only strong reference to this service is a
-	/// field of the struct `IntegrationKit.configure` returns. An app that does not keep that struct
-	/// alive loses every profile push for the rest of the process, silently — nothing logs it and
-	/// nothing can. One retained service per process is the cheapest honest fix.
-	private static var retained: AdaptyService?
+	private static let initialBackoff: TimeInterval = 0.5
+	private static let maxBackoff: TimeInterval = 30
 
 	/// How long this layer waits for the SDK before deciding without it — see `AdaptyDeadlines`.
 	private let deadlines: AdaptyDeadlines
 
-	private var paywalls: [String: AdaptyPaywall] = [:] {
+	private var flows: [String: AdaptyFlow] = [:] {
 		didSet {
 			self.observer?()
 		}
 	}
-	private var paywallLoadedAt: [String: Date] = [:]
+	private var flowLoadedAt: [String: Date] = [:]
 
 	private var cachedProducts: [String: [AdaptyPaywallProduct]] = [:]
-	/// The paywall's remote config, parsed once per loaded paywall. `AdaptyPaywall.remoteConfig` is
-	/// a computed property that re-runs `JSONSerialization` on every single access, and a paywall
-	/// screen reads a handful of keys while it lays itself out (AD-07 row 5).
-	private var remoteConfigs: [String: [String: Any]] = [:]
+	/// The flow's remote configs, parsed once per loaded flow and keyed by locale.
+	/// `AdaptyRemoteConfig.dictionary` is a computed property that re-runs `JSONSerialization` on
+	/// every single access, and a paywall screen reads a handful of keys while it lays itself out
+	/// (AD-07 row 5).
+	private var remoteConfigs: [String: [String: [String: Any]]] = [:]
+	/// The locales of `remoteConfigs[placement]`, in the order the dashboard listed them. Only the
+	/// fallback needs the order — see `remoteConfig(placement:locale:)`.
+	private var remoteConfigLocales: [String: [String]] = [:]
 
 	/// What `configure` was called with — `refreshPaywalls()` needs the list again later.
 	private var configuredPlacements: [String] = []
 
-	/// Per-placement delay before the next self-retry of `loadPaywall`. Doubles on every failure up
-	/// to `maxPaywallBackoff`; a foreground trigger resets it.
-	private var paywallBackoff: [String: TimeInterval] = [:]
+	/// Per-placement delay before the next self-retry of `loadFlow`. Doubles on every failure up
+	/// to `maxBackoff`; a foreground trigger resets it.
+	private var flowBackoff: [String: TimeInterval] = [:]
 	/// Placements with a self-retry already scheduled — one pending retry per placement, ever.
-	private var pendingPaywallRetry: Set<String> = []
-	/// Placements with a `getPaywall` call in flight right now. Without it the foreground trigger
+	private var pendingFlowRetry: Set<String> = []
+	/// Placements with a `getFlow` call in flight right now. Without it the foreground trigger
 	/// fires a second request straight through the first: the SDK does not de-duplicate concurrent
 	/// requests either, it opens a new task per call (AD-01 row 4, AD-02 row 3).
-	private var loadingPaywalls: Set<String> = []
+	private var loadingFlows: Set<String> = []
 	/// Placements Adapty answered `badRequest` about — a placement that does not exist in the
 	/// dashboard. Retrying those forever is what a typo used to buy (AD-02 row 1).
-	private var unavailablePaywalls: Set<String> = []
+	private var unavailableFlows: Set<String> = []
 	/// Placements whose product list failed to load. Kept apart from "no paywall": a purchase of an
 	/// id nobody could list is a fallback case, a purchase of an id the paywall does not sell is a
 	/// configuration mistake (AD-04 row 4).
 	private var failedProductPlacements: Set<String> = []
+	/// The same pair as `flowBackoff`/`pendingFlowRetry`, for the product listing. New in 0.3.0:
+	/// 2.10.x's `ProductsManager` spent three attempts of its own before answering, which is why the
+	/// old schema said there was nothing left to retry. 4.1.3's fetcher makes ONE pass, so the retry
+	/// is ours or there is none (AD-03).
+	private var productBackoff: [String: TimeInterval] = [:]
+	private var pendingProductRetry: Set<String> = []
 
 	/// `configure` ran with a non-empty key. Everything that talks to the SDK checks this first: an
 	/// empty key (a test run, an app shipped without Adapty) must not reach the SDK at all —
-	/// `Adapty.activate` asserts on the key's shape and takes a DEBUG build down with it
+	/// `AdaptyConfiguration.Builder` asserts on the key's shape and takes a DEBUG build down with it
 	/// (AD-01 rows 1 and 7, AD-06 row 5).
 	private(set) var isActive = false
+	/// `Adapty.activate` came back. Distinct from `isActive`, and the distinction is AD-06 row 9: on
+	/// 2.10.x a call made in the window between the two failed immediately with `.notActivated`, and
+	/// that error is what put the write on the retry queue. On 4.1.3 `Adapty.activatedSDK` AWAITS an
+	/// activation that is in flight, so the same call does not fail — it hangs, with no error and no
+	/// queue entry. Everything sent inside this window therefore gets a deadline of its own.
+	private var didActivate = false
 	/// A profile has arrived in this process after activation. Until then a delegate push carries
 	/// what the SDK had on disk from the last launch, and a stale "no premium" from disk must not
 	/// close access for a user whose subscription is alive (AD-05 row 2).
 	private var didLoadNetworkProfile = false
-	/// Attribution writes that have not landed yet. Install data arrives once per install: a write
-	/// that happens before activation is lost forever. The repeat is safe by construction — the
-	/// source is always `.appsflyer`, and Adapty locks the attribution source on the first write
-	/// that lands, so a second one can only confirm what is already there (AD-06 row 1).
-	private var pendingAttribution: [(data: [AnyHashable: Any], networkUserId: String?)] = []
+	/// Attribution payloads that have not landed yet, and the AppsFlyer ids that go with them —
+	/// two queues, because on 4.1.3 they are two SDK calls that fail apart (AD-06 row 10). Install
+	/// data arrives once per install: a write that happens before activation is lost forever, and a
+	/// half-written one leaves the dashboard with campaign data it cannot attach to a user.
+	///
+	/// The repeat is safe by construction — the provider is always `.appsflyer` and the id is always
+	/// the same one — so a second write can only confirm what is already there (AD-06 row 1).
+	private var pendingAttributionPayloads: [[AnyHashable: Any]] = []
+	private var pendingAppsFlyerIds: [String] = []
 	/// How many product loads failed. A screen can say "try again later" instead of showing an
 	/// empty list with no reason anywhere (AD-02 row 2, AD-03 row 2 — the same event, two paths).
 	private(set) var failedProductLoads = 0
@@ -114,7 +136,11 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		attStatus: ATTrackingManager.AuthorizationStatus,
 		// Defaults only so the checks' own call sites stay short: the composition root always
 		// passes the app's answer, and the app always computes it.
-		isTestsRunning: Bool = false
+		isTestsRunning: Bool = false,
+		// AD-01, new on 4.x: Adapty's own attribution service. Off unless asked for — an app that
+		// already runs AppsFlyer would otherwise send a second, independent install signal nobody
+		// asked for, and the SDK's own default is off too.
+		adaptyAttributionEnabled: Bool = false
 	) {
 		// AD-01 row 1: the app decides what a test run is and says so; the package never guesses.
 		// First of all the guards, because everything below it talks to a live SDK with a live key
@@ -128,7 +154,7 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 			// An empty key is a legal configuration, not an error to swallow: the layer stays inactive
 			// for the whole run and every operation becomes a safe no-op. It is also the only way to
 			// keep Adapty quiet under test, the same way an empty key silences Amplitude and an empty
-			// dev key silences AppsFlyer — and it is what keeps `Adapty.activate`'s own
+			// dev key silences AppsFlyer — and it is what keeps the builder's own
 			// `assert(apiKey.count >= 41 && apiKey.starts(with: "public_live"))` from taking a DEBUG
 			// build down on the same stack frame.
 			recordInactive(operation: "configure")
@@ -152,13 +178,26 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 			)
 		}
 		isActive = true
-		// See `retained`: without this the delegate dies with the app's last reference to the kit.
-		Self.retained = self
 		debugLog(tag: Self.tag, "configure: customerUserId \(customerUserId), placements \(placements)")
-		// Set before activate so the very first profile push is not missed.
+		// Set before activate so the very first profile push is not missed. 4.1.3 holds the delegate
+		// STRONGLY (`AdaptyDelegate.swift:39`), which is why the service no longer keeps a static
+		// reference to itself the way it did on 2.10.x — the SDK is the owner now.
 		Adapty.delegate = self
-		Adapty.activate(apiKey, observerMode: false, customerUserId: customerUserId, dispatchQueue: .main, { [weak self] error in
+		let configuration = AdaptyConfiguration
+			.builder(withAPIKey: apiKey)
+			.with(customerUserId: customerUserId)
+			// Observer mode off is what keeps the SDK watching the transaction queue. It is the
+			// default too, and it is spelled out because turning it on silently would stop every
+			// purchase this package makes from ever reaching the Adapty dashboard.
+			.with(observerMode: false)
+			.with(adaptyAttributionEnabled: adaptyAttributionEnabled)
+			// Everything in this file assumes callbacks land on main — the caches, the flags and the
+			// watchdogs are all touched from one queue and from no other.
+			.with(callbackDispatchQueue: .main)
+			.build()
+		Adapty.activate(with: configuration) { [weak self] error in
 			guard let self else { return }
+			self.didActivate = true
 			if let error {
 				// The only failure `activate` reports is its own double-activation guard (3005):
 				// network and key errors never reach this completion at all. Repeating the rest would
@@ -180,11 +219,11 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 			// on the old status forever. Sending the current value on every launch costs one write.
 			self.updateAppTrackingTransparencyStatus(attStatus)
 			for placement in placements {
-				self.loadPaywall(placement: placement)
+				self.loadFlow(placement: placement)
 			}
 			self.flushPendingAttribution()
 			self.watchForFirstProfile()
-		})
+		}
 	}
 
 	/// AD-01 row 5: an invalid key, or a network that never comes back, surfaces as an error
@@ -203,21 +242,27 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 
 	/// Puts our own device id on the Adapty side so an Adapty event and an analytics event describe
 	/// the same user.
+	///
+	/// On 4.1.3 these ids no longer travel on the profile builder — `with(amplitudeUserId:)` and
+	/// `with(amplitudeDeviceId:)` are gone and the ids go through `setIntegrationIdentifier`, which
+	/// is a different call with a failure of its own.
 	private func linkAmplitudeUserId(deviceId: String, analytics: AnalyticsTracking) {
-		let builder = AdaptyProfileParameters.Builder()
-			.with(amplitudeUserId: deviceId)
-		if let amplitudeDeviceId = analytics.deviceId {
-			builder.with(amplitudeDeviceId: amplitudeDeviceId)
-			debugLog(tag: Self.tag, "linking Adapty profile: amplitudeUserId \(deviceId), amplitudeDeviceId \(amplitudeDeviceId)")
-		} else {
+		guard let amplitudeDeviceId = analytics.deviceId, !amplitudeDeviceId.isEmpty else {
 			// An empty string is not "no id" — it is an id that looks real and joins this profile to
 			// nothing, forever, with no repeat. Leave the field unset and say why (AD-01 row 2).
 			ConfigurationIssues.shared.record(
 				"Analytics had no device id when the Adapty profile was linked — amplitudeDeviceId was left unset",
 				tag: Self.tag
 			)
+			send("amplitude link") { completion in
+				Adapty.setIntegrationIdentifier(.amplitudeUserId(deviceId), completion: completion)
+			}
+			return
 		}
-		updateProfile(builder.build(), operation: "amplitude link")
+		debugLog(tag: Self.tag, "linking Adapty profile: amplitudeUserId \(deviceId), amplitudeDeviceId \(amplitudeDeviceId)")
+		send("amplitude link") { completion in
+			Adapty.setIntegrationIdentifier(.amplitudeUserId(deviceId), .amplitudeDeviceId(amplitudeDeviceId), completion: completion)
+		}
 	}
 
 	// MARK: - AD-06: identity and attribution.
@@ -277,28 +322,16 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 
 	/// Every profile write goes through here, so every one of them has a deadline and a trace.
 	///
-	/// `Adapty.updateProfile` waits for a profile to exist (`waitCreatingProfile: true`), and when
-	/// the profile cannot be created the SDK wakes only its *other* bucket of handlers — ours is
-	/// never called, not even to report failure. On a cold offline first launch that means the write
-	/// silently does not happen and nothing anywhere says so (AD-06 row 2).
+	/// `Adapty.updateProfile` waits for a profile to exist, and when the profile cannot be created
+	/// the SDK wakes only its *other* bucket of handlers — ours is never called, not even to report
+	/// failure. On a cold offline first launch that means the write silently does not happen and
+	/// nothing anywhere says so (AD-06 row 2).
 	private func updateProfile(_ params: AdaptyProfileParameters, operation: String) {
-		// Adapty is activated with `dispatchQueue: .main` and the watchdog below is scheduled on
-		// main, so this flag is only ever touched from one queue.
-		var answered = false
-		Adapty.updateProfile(params: params) { error in
-			answered = true
-			if let error {
-				debugLog(tag: Self.tag, level: .error, "\(operation) failed: \(error)")
-			} else {
-				debugLog(tag: Self.tag, "\(operation) ok")
-			}
-		}
-		DispatchQueue.main.asyncAfter(deadline: .now() + deadlines.write) { [weak self] in
-			guard let self, !answered else { return }
-			ConfigurationIssues.shared.record(
-				"Adapty never answered a profile write (\(operation)) within \(Int(self.deadlines.write))s — the profile could not be created",
-				tag: Self.tag
-			)
+		send(
+			operation,
+			timeoutIssue: "Adapty never answered a profile write (\(operation)) within \(Int(deadlines.write))s — the profile could not be created"
+		) { completion in
+			Adapty.updateProfile(params: params, completion)
 		}
 	}
 
@@ -309,71 +342,183 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 			// empty key activation never happens, so the queue is never flushed and the SDK is never
 			// touched — which is what AD-06 row 5 requires.
 			recordInactive(operation: "updateAppsFlyerAttribution")
-			pendingAttribution.append((data: data, networkUserId: networkUserId))
+			pendingAttributionPayloads.append(data)
+			if let id = Self.usableNetworkUserId(networkUserId) {
+				pendingAppsFlyerIds.append(id)
+			}
 			return
 		}
-		Adapty.updateAttribution(data, source: .appsflyer, networkUserId: networkUserId) { [weak self] error in
-			if let error {
-				// Losing this write means this user's campaign never pays back on any dashboard, and
-				// nothing anywhere says so.
-				debugLog(tag: Self.tag, level: .error, "updateAttribution failed: \(error) — queued for retry")
-				self?.pendingAttribution.append((data: data, networkUserId: networkUserId))
-			} else {
-				debugLog(tag: Self.tag, "updateAttribution ok, networkUserId \(networkUserId ?? "nil")")
+		sendAttributionPayload(data)
+		sendAppsFlyerId(networkUserId)
+	}
+
+	/// The campaign data itself. AD-06 row 11: `updateExternalAttribution` serialises the payload
+	/// BEFORE it does anything asynchronous and answers `.wrongParam` on the caller's own stack when
+	/// it will not serialise (`Adapty+Completion.swift:137-144`). A queue that re-queues on any
+	/// failure therefore re-queues from inside its own drain, and does it again on every foreground
+	/// pass, forever — the payload will never serialise, because it is the payload that is wrong.
+	/// The check is made here instead, once, and the answer is a line nobody has to retry.
+	private func sendAttributionPayload(_ data: [AnyHashable: Any]) {
+		guard JSONSerialization.isValidJSONObject(data) else {
+			ConfigurationIssues.shared.record(
+				"AppsFlyer conversion data could not be encoded as JSON — Adapty refuses it and no retry can change that; check the values of \(data.keys.map { "\($0)" }.sorted())",
+				tag: Self.tag
+			)
+			return
+		}
+		send("attribution payload") { completion in
+			Adapty.updateExternalAttribution(data, provider: .appsflyer, completion)
+		} onError: { [weak self] error in
+			guard error.adaptyErrorCode != .wrongParam else {
+				// Belt and braces for the guard above: the SDK's rules for what serialises are the
+				// SDK's, and a payload that passes ours and fails theirs must still not come back.
+				ConfigurationIssues.shared.record(
+					"Adapty could not encode the AppsFlyer conversion data (wrongParam) — it is not retried, because the payload will not change",
+					tag: Self.tag
+				)
+				return
 			}
+			// Losing this write means this user's campaign never pays back on any dashboard, and
+			// nothing anywhere says so.
+			debugLog(tag: Self.tag, level: .error, "retrying attribution payload at the next foreground pass")
+			self?.pendingAttributionPayloads.append(data)
 		}
 	}
 
+	/// The join key. Without it the dashboard has campaign data it cannot attach to a user, which is
+	/// the half of AD-06 row 10 that is easiest to lose: it is a second call now, and it fails on its
+	/// own.
+	private func sendAppsFlyerId(_ networkUserId: String?) {
+		guard let id = Self.usableNetworkUserId(networkUserId) else {
+			// `AdaptyIntegrationIdentifier` trims its value and does not check for empty, so an empty
+			// id is stored and matches nothing on the dashboard, permanently. The old
+			// `updateAttribution` took the id as part of one call and this could not happen.
+			ConfigurationIssues.shared.record(
+				"The AppsFlyer id was empty — an empty join key matches nothing on the Adapty dashboard, so it was not written",
+				tag: Self.tag
+			)
+			return
+		}
+		send("attribution id") { completion in
+			Adapty.setIntegrationIdentifier(.appsflyerId(id), completion: completion)
+		} onError: { [weak self] error in
+			ConfigurationIssues.shared.record(
+				"Adapty refused the AppsFlyer attribution id (\(error.adaptyErrorCode)) — the campaign data has no user to attach to until the write is repeated",
+				tag: Self.tag
+			)
+			self?.pendingAppsFlyerIds.append(id)
+		}
+	}
+
+	/// `nil` for an id that would be worse than none. Adapty trims the value itself, so whitespace is
+	/// an empty id by the time it lands.
+	private static func usableNetworkUserId(_ networkUserId: String?) -> String? {
+		guard let trimmed = networkUserId?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+			return nil
+		}
+		return trimmed
+	}
+
+	/// AD-06 row 9, in one place. Every SDK call that answers with an optional error goes through
+	/// here, so each of them leaves a trace whether it succeeds, fails, or never comes back at all:
+	/// if nothing answered inside `deadlines.write`, that is recorded. The call itself may still be
+	/// legitimately outstanding — what must not happen is that nobody is told.
+	///
+	/// This is the row's whole point. On 2.10.x a write made before activation finished failed
+	/// immediately with `.notActivated`, and the failure is what put it on the retry queue. 4.1.3
+	/// AWAITS an activation in flight instead, so the same call does not fail — it hangs, silently,
+	/// with no error and no queue entry. An activation that never finishes therefore swallows every
+	/// write made in that window, and this deadline is the only thing that notices.
+	/// `timeoutIssue` is the line recorded when nothing answers at all. It has a default because most
+	/// callers are row 9's case — a write parked behind an activation still in flight — but a profile
+	/// write has a cause of its own (row 2), and naming the wrong one sends whoever reads
+	/// `configurationIssues` looking in the wrong place.
+	private func send(
+		_ operation: String,
+		timeoutIssue: String? = nil,
+		call: (@escaping (AdaptyError?) -> Void) -> Void,
+		onError: ((AdaptyError) -> Void)? = nil
+	) {
+		// An escaping completion cannot capture an `inout` flag, and the watchdog has to read what
+		// the completion wrote — one box the two share. Adapty is activated with
+		// `callbackDispatchQueue: .main` and the watchdog is scheduled on main, so it is only ever
+		// touched from one queue.
+		let answer = AnswerBox()
+		call { error in
+			answer.answered = true
+			guard let error else {
+				debugLog(tag: Self.tag, "\(operation) ok")
+				return
+			}
+			debugLog(tag: Self.tag, level: .error, "\(operation) failed: \(error)")
+			onError?(error)
+		}
+		DispatchQueue.main.asyncAfter(deadline: .now() + deadlines.write) { [weak self] in
+			guard let self, !answer.answered else { return }
+			ConfigurationIssues.shared.record(
+				timeoutIssue ?? "Adapty never answered the \(operation) write within \(Int(self.deadlines.write))s — activation may still be in flight",
+				tag: Self.tag
+			)
+		}
+	}
+
+	private final class AnswerBox {
+		var answered = false
+	}
+
+	/// Both halves drain independently: one that failed does not hold the other back, and one that
+	/// succeeded is not sent twice (AD-06 row 10).
 	private func flushPendingAttribution() {
-		guard !pendingAttribution.isEmpty else { return }
-		let queued = pendingAttribution
-		pendingAttribution = []
-		debugLog(tag: Self.tag, "flushing \(queued.count) queued attribution write(s)")
-		for item in queued {
-			updateAppsFlyerAttribution(item.data, networkUserId: item.networkUserId)
+		let payloads = pendingAttributionPayloads
+		let ids = pendingAppsFlyerIds
+		guard !payloads.isEmpty || !ids.isEmpty else { return }
+		pendingAttributionPayloads = []
+		pendingAppsFlyerIds = []
+		debugLog(tag: Self.tag, "flushing \(payloads.count) attribution payload(s) and \(ids.count) id(s)")
+		for payload in payloads {
+			sendAttributionPayload(payload)
+		}
+		for id in ids {
+			sendAppsFlyerId(id)
 		}
 	}
 
-	// MARK: - AD-02: paywalls and products.
+	// MARK: - AD-02: placements and products.
 
-	/// The one paywall-loading path — `configure` and `refreshPaywalls()` both funnel through here.
+	/// The one flow-loading path — `configure` and `refreshPaywalls()` both funnel through here.
 	/// On a retryable failure it keeps re-attempting itself, spaced out with per-placement
 	/// exponential backoff, until it succeeds: the approved schema says loading continues until it
 	/// does.
-	private func loadPaywall(placement: String) {
+	private func loadFlow(placement: String) {
 		guard isActive else {
-			recordInactive(operation: "loadPaywall")
+			recordInactive(operation: "loadFlow")
 			return
 		}
 		// A placement Adapty rejected as unknown is not coming back — see the `badRequest` branch.
-		guard !unavailablePaywalls.contains(placement) else { return }
+		guard !unavailableFlows.contains(placement) else { return }
 		// One request per placement at a time. The SDK opens a new task per call and de-duplicates
 		// nothing, so without this the foreground trigger fires straight through a request already
 		// in flight.
-		guard loadingPaywalls.insert(placement).inserted else { return }
-		Adapty.getPaywall(placementId: placement, { [weak self] result in
+		guard loadingFlows.insert(placement).inserted else { return }
+		Adapty.getFlow(placementId: placement) { [weak self] result in
 			guard let self else { return }
-			self.loadingPaywalls.remove(placement)
+			self.loadingFlows.remove(placement)
 			switch result {
-				case .success(let paywall):
-					self.paywallBackoff[placement] = nil
-					self.paywallLoadedAt[placement] = Date()
+				case .success(let flow):
+					self.flowBackoff[placement] = nil
+					self.flowLoadedAt[placement] = Date()
 					// Parsed once, here — see `remoteConfigs`.
-					let config = paywall.remoteConfig
-					self.remoteConfigs[placement] = config
-					if config == nil {
-						debugLog(tag: Self.tag, "paywall '\(placement)' carries no remote config")
-					}
-					self.paywalls[placement] = paywall
-					debugLog(tag: Self.tag, "paywall loaded for '\(placement)'")
-					self.fetchProductsForPaywall(placement: placement)
+					self.storeRemoteConfigs(flow.remoteConfigs, placement: placement)
+					self.flows[placement] = flow
+					debugLog(tag: Self.tag, "flow loaded for '\(placement)'")
+					self.fetchProductsForFlow(placement: placement)
 				case .failure(let error):
 					// A placement that does not exist in the dashboard answers `badRequest` (2003) and
 					// will answer it forever: retrying is a typo burning battery for the life of the
 					// process. A network failure is the opposite — that is what the backoff is for
 					// (AD-02 row 1).
 					if error.adaptyErrorCode == .badRequest {
-						self.unavailablePaywalls.insert(placement)
+						self.unavailableFlows.insert(placement)
 						ConfigurationIssues.shared.record(
 							"Adapty has no placement '\(placement)' (badRequest) — check the placement id against the dashboard",
 							tag: Self.tag
@@ -381,89 +526,131 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 						self.observer?()
 						return
 					}
-					let delay = self.paywallBackoff[placement] ?? Self.initialPaywallBackoff
-					self.paywallBackoff[placement] = min(delay * 2, Self.maxPaywallBackoff)
-					debugLog(tag: Self.tag, level: .error, "paywall load failed for '\(placement)': \(error.adaptyErrorCode); next attempt in \(delay)s")
+					let delay = self.flowBackoff[placement] ?? Self.initialBackoff
+					self.flowBackoff[placement] = min(delay * 2, Self.maxBackoff)
+					debugLog(tag: Self.tag, level: .error, "flow load failed for '\(placement)': \(error.adaptyErrorCode); next attempt in \(delay)s")
 					// At most one retry in flight per placement. Without this, every foreground
 					// trigger on a still-broken placement starts its own independent chain: a session
 					// that foregrounds twenty times ends up with twenty of them hammering the SDK in
 					// parallel, which is the spin the backoff exists to prevent.
-					guard self.pendingPaywallRetry.insert(placement).inserted else { return }
+					guard self.pendingFlowRetry.insert(placement).inserted else { return }
 					DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
 						guard let self else { return }
-						self.pendingPaywallRetry.remove(placement)
-						guard self.paywalls[placement] == nil else { return }
-						self.loadPaywall(placement: placement)
+						self.pendingFlowRetry.remove(placement)
+						guard self.flows[placement] == nil else { return }
+						self.loadFlow(placement: placement)
 					}
 			}
-		})
+		}
 	}
 
-	private func fetchProductsForPaywall(placement: String) {
-		guard let paywall = paywalls[placement] else { return }
-		Adapty.getPaywallProducts(paywall: paywall, { [weak self] result in
+	/// One dictionary per locale, parsed once. AD-07 rows 5 and 6.
+	private func storeRemoteConfigs(_ configs: [AdaptyRemoteConfig], placement: String) {
+		var byLocale: [String: [String: Any]] = [:]
+		var order: [String] = []
+		for config in configs {
+			let locale = Self.normalised(config.locale)
+			guard let dictionary = config.dictionary else {
+				ConfigurationIssues.shared.record(
+					"The remote config of '\(placement)' for locale '\(config.locale)' is not a JSON object — it is ignored",
+					tag: Self.tag
+				)
+				continue
+			}
+			// A dashboard with the same locale twice is a dashboard mistake; the first row wins, and
+			// the order below keeps the fallback deterministic either way.
+			if byLocale[locale] == nil {
+				order.append(locale)
+			}
+			byLocale[locale] = dictionary
+		}
+		remoteConfigs[placement] = byLocale
+		remoteConfigLocales[placement] = order
+		if byLocale.isEmpty {
+			debugLog(tag: Self.tag, "flow '\(placement)' carries no remote config")
+		}
+	}
+
+	private func fetchProductsForFlow(placement: String) {
+		guard let flow = flows[placement] else { return }
+		Adapty.getPaywallProducts(flow: flow) { [weak self] result in
 			guard let self else { return }
 			switch result {
 				case .success(let products):
+					self.productBackoff[placement] = nil
 					self.failedProductPlacements.remove(placement)
 					self.cachedProducts[placement] = products
 				case .failure(let error):
-					// The SDK has already spent its own three attempts and two seconds by now, so there
-					// is nothing left to retry — but silence here is what left a purchase screen empty
-					// with no reason anywhere (AD-02 row 2, AD-03 row 2). Code 1000 covers two causes
-					// the SDK itself cannot separate — a paywall with no products, and products the
-					// store does not know — so it goes into the line verbatim: one of them is fixed in
-					// the dashboard, the other in App Store Connect (AD-02 row 6).
+					// Silence here is what left a purchase screen empty with no reason anywhere
+					// (AD-02 row 2, AD-03 row 2). Code 1000 covers two causes the SDK itself cannot
+					// separate — a paywall with no products, and products the store does not know — so
+					// it goes into the line verbatim: one of them is fixed in the dashboard, the other
+					// in App Store Connect (AD-02 row 6).
 					self.failedProductPlacements.insert(placement)
 					self.failedProductLoads += 1
 					debugLog(tag: Self.tag, level: .error, "getPaywallProducts failed for '\(placement)': \(error.adaptyErrorCode)")
+					self.scheduleProductRetry(placement: placement, after: error.adaptyErrorCode)
 			}
-		})
+		}
+	}
+
+	/// AD-03: 4.1.3's product fetcher makes one pass and stops, so a listing lost to a flaky network
+	/// stays lost unless we ask again. `noProductIDsFound` is not asked again — it is the dashboard
+	/// or App Store Connect answering, and both answer the same way every time.
+	private func scheduleProductRetry(placement: String, after code: AdaptyError.ErrorCode) {
+		guard code != .noProductIDsFound, code != .badRequest else { return }
+		let delay = productBackoff[placement] ?? Self.initialBackoff
+		productBackoff[placement] = min(delay * 2, Self.maxBackoff)
+		guard pendingProductRetry.insert(placement).inserted else { return }
+		DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+			guard let self else { return }
+			self.pendingProductRetry.remove(placement)
+			guard self.cachedProducts[placement] == nil else { return }
+			self.fetchProductsForFlow(placement: placement)
+		}
 	}
 
 	func hasPaywall(placement: String) -> Bool {
-		return paywalls[placement] != nil
+		return flows[placement] != nil
 	}
 
 	/// AD-02 row 5: `hasPaywall` cannot tell a screen whether to show a spinner or an empty state.
 	/// This can.
 	func paywallState(placement: String) -> PaywallState {
-		if paywalls[placement] != nil { return .ready }
-		if unavailablePaywalls.contains(placement) { return .unavailable }
+		if flows[placement] != nil { return .ready }
+		if unavailableFlows.contains(placement) { return .unavailable }
 		guard isActive, configuredPlacements.contains(placement) else { return .unavailable }
 		return .loading
 	}
 
-	/// Re-attempts every configured placement that is missing or stale. Fired by the composition
-	/// root on `UIApplication.didBecomeActiveNotification` — this file stays UIKit-free, so the
-	/// trigger itself lives in `IntegrationKit.swift`.
+	/// Re-attempts `getFlow` for every configured placement that is missing or stale. Fired by the
+	/// composition root on `UIApplication.didBecomeActiveNotification` — this file stays UIKit-free,
+	/// so the trigger itself lives in `IntegrationKit.swift`.
 	///
 	/// Returning to the foreground is a fresh signal, so a placement's pending backoff is not waited
 	/// out: its delay is reset and the attempt is made immediately. It does not stack a second retry
 	/// chain on the pending one, and it cannot start a second request for a placement already in
-	/// flight — `loadPaywall` holds both guards.
+	/// flight — `loadFlow` holds both guards.
 	///
-	/// AD-02 row 4: a paywall older than `deadlines.paywallTTL` is reloaded too. A price edited in the
-	/// dashboard mid-session used to survive until the process died. This refreshes the paywall and
-	/// its remote configuration; the `SKProduct` behind a price is pinned inside the SDK for the
-	/// life of the process and no lever here reaches it — see AD-03 row 4 for that boundary.
+	/// AD-02 row 4: a flow older than `deadlines.paywallTTL` is reloaded too. A price edited in the
+	/// dashboard mid-session used to survive until the process died. This refreshes the flow and its
+	/// remote configuration; the store product behind a price is pinned inside the SDK for the life
+	/// of the process and no lever here reaches it — see AD-03 row 4 for that boundary.
 	///
-	/// AD-06 row 7: the attribution queue drains here too. It needs a second exit — the first one is
-	/// the `activate` completion, which runs once per process, so a write the *already active* SDK
-	/// refused had nobody left to retry it and sat in the queue until the process died. This is the
-	/// cheaper of the two exits the schema allows: returning to the foreground is already wired
-	/// (`IntegrationKit.swift` holds the `didBecomeActive` observer that calls this), it is the
-	/// moment a dropped network is most likely to be back, and it costs one line instead of a second
-	/// observer. Hanging the flush off the next successful SDK answer would cost more and fire less
-	/// often — nothing here is guaranteed to talk to the SDK again after a failed attribution write.
+	/// AD-06 rows 7 and 10: the attribution queues drain here too. They need a second exit — the
+	/// first one is the `activate` completion, which runs once per process, so a write the *already
+	/// active* SDK refused had nobody left to retry it and sat in the queue until the process died.
+	/// This is the cheaper of the two exits the schema allows: returning to the foreground is
+	/// already wired, it is the moment a dropped network is most likely to be back, and it costs one
+	/// line instead of a second observer.
 	func refreshPaywalls() {
 		flushPendingAttribution()
 		for placement in configuredPlacements {
-			if let loadedAt = paywallLoadedAt[placement], Date().timeIntervalSince(loadedAt) < deadlines.paywallTTL {
+			if let loadedAt = flowLoadedAt[placement], Date().timeIntervalSince(loadedAt) < deadlines.paywallTTL {
 				continue
 			}
-			paywallBackoff[placement] = Self.initialPaywallBackoff
-			loadPaywall(placement: placement)
+			flowBackoff[placement] = Self.initialBackoff
+			loadFlow(placement: placement)
 		}
 	}
 
@@ -477,9 +664,9 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 
 	// MARK: - AD-07: remote values and impressions.
 
-	func getRemoteValue<Type>(placement: String, key: String) -> RemoteValue<Type> {
-		guard paywalls[placement] != nil else { return .notReady }
-		guard let config = remoteConfigs[placement] else { return .noConfig }
+	func getRemoteValue<Type>(placement: String, key: String, locale: String) -> RemoteValue<Type> {
+		guard flows[placement] != nil else { return .notReady }
+		guard let config = remoteConfig(placement: placement, locale: locale) else { return .noConfig }
 		guard let raw = config[key] else { return .notSet }
 		guard let value = raw as? Type else {
 			// The value is there and is of another type — a dashboard mistake, not a missing key. It
@@ -493,65 +680,62 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		return .value(value)
 	}
 
-	func logPaywallOpen(placement: String) {
-		guard let paywall = paywalls[placement] else {
-			// No paywall means no `variationId`, so there is nothing to send — but a purchase can
-			// still happen through the StoreKit fallback, and an impression that never fires makes
-			// that paywall's conversion look better than it is (AD-07 row 2).
-			debugLog(tag: Self.tag, level: .error, "paywall shown for '\(placement)' with no Adapty paywall loaded — impression not counted")
-			return
+	/// AD-07 row 6. 4.1.3 hands over one remote config PER LOCALE and `getFlow` takes no locale to
+	/// narrow them with — `getOnboarding` does, `getFlow` does not — so the choice is this layer's.
+	/// Taking the first entry would put the dashboard's row order in charge of which language a
+	/// paywall speaks, and reordering two rows in a web UI would silently reconfigure the app.
+	///
+	/// Exact locale first, then the language alone (`en-GB` is served by an `en` config), then the
+	/// dashboard's first row — and that last one says so, because a paywall quietly rendering in the
+	/// wrong language is a bug nobody reports and everybody sees.
+	private func remoteConfig(placement: String, locale: String) -> [String: Any]? {
+		guard let byLocale = remoteConfigs[placement], !byLocale.isEmpty else { return nil }
+		let wanted = Self.normalised(locale)
+		if let exact = byLocale[wanted] { return exact }
+		let language = Self.language(of: wanted)
+		if let order = remoteConfigLocales[placement],
+		   let match = order.first(where: { Self.language(of: $0) == language }) {
+			return byLocale[match]
 		}
-		Adapty.logShowPaywall(paywall) { error in
-			if let error {
-				// AD-07 row 4: a dropped impression must not look exactly like a sent one.
-				debugLog(tag: Self.tag, level: .error, "logShowPaywall failed for '\(placement)': \(error)")
-			} else {
-				debugLog(tag: Self.tag, "logShowPaywall ok for '\(placement)'")
-			}
-		}
+		let fallback = remoteConfigLocales[placement]?.first
+		ConfigurationIssues.shared.record(
+			"Adapty has no remote config for locale '\(locale)' on '\(placement)' — falling back to '\(fallback ?? "?")', so the paywall speaks the wrong language",
+			tag: Self.tag
+		)
+		return fallback.flatMap { byLocale[$0] }
 	}
 
-	func logOnboardingOpen(step: Int) {
-		// `isActive` first, like every other operation that touches the SDK: the inactive layer has
-		// one shared reason for all of them (AD-06 row 5), and a second, different line for this one
-		// would break the "exactly one" that row is about.
-		guard isActive else {
-			recordInactive(operation: "logOnboardingOpen")
+	/// Adapty stores locales as the dashboard spells them (`en`, `en-US`, sometimes `en_US`), and the
+	/// device spells them its own way. Comparing raw strings makes `en_US` and `en-US` two languages.
+	private static func normalised(_ locale: String) -> String {
+		locale.replacingOccurrences(of: "_", with: "-").lowercased()
+	}
+
+	private static func language(of normalisedLocale: String) -> String {
+		String(normalisedLocale.prefix(while: { $0 != "-" }))
+	}
+
+	func logPaywallOpen(placement: String) {
+		guard let flow = flows[placement] else {
+			// No flow means no `variationId`, so there is nothing to send — but a purchase can
+			// still happen through the StoreKit fallback, and an impression that never fires makes
+			// that paywall's conversion look better than it is (AD-07 row 2).
+			debugLog(tag: Self.tag, level: .error, "paywall shown for '\(placement)' with no Adapty flow loaded — impression not counted")
 			return
 		}
-		// AD-07 row 3. Adapty numbers onboarding screens from one and refuses `screenOrder == 0`
-		// outright (`Adapty+Events.swift:63-69`), so an app counting from zero loses its FIRST screen
-		// from the funnel and the dashboard just shows a funnel that starts at step two.
-		//
-		// The guard has to sit before `UInt(step)` below, and not merely before the call: converting a
-		// negative number traps on the caller's own stack, so a miscounted step would take the app
-		// down rather than cost a metric. The cause goes to `ConfigurationIssues` rather than the log
-		// because no retry fixes an integration counting from the wrong number.
-		guard step >= 1 else {
-			ConfigurationIssues.shared.record(
-				"Adapty onboarding step was not sent: steps are numbered from one (got \(step))",
-				tag: Self.tag
-			)
-			return
-		}
-		// The name and order the apps already send to Adapty directly. Changing either would split one
-		// funnel into two on the dashboard the moment an app migrates onto the package, with nothing
-		// to say the halves are the same event.
-		let name = "onboarding_\(step)"
-		Adapty.logShowOnboarding(name: name, screenName: nil, screenOrder: UInt(step)) { error in
+		Adapty.logShowFlow(flow) { error in
 			if let error {
-				// AD-07 row 4's rule, applied to the second event: a dropped one must not look exactly
-				// like a sent one.
-				debugLog(tag: Self.tag, level: .error, "logShowOnboarding failed for '\(name)': \(error)")
+				// AD-07 row 4: a dropped impression must not look exactly like a sent one.
+				debugLog(tag: Self.tag, level: .error, "logShowFlow failed for '\(placement)': \(error)")
 			} else {
-				debugLog(tag: Self.tag, "logShowOnboarding ok for '\(name)'")
+				debugLog(tag: Self.tag, "logShowFlow ok for '\(placement)'")
 			}
 		}
 	}
 
 	// MARK: - AD-04: purchase.
 
-	func buyProduct(placement: String, id: String, completion: ((AdaptyPurchaseResult) -> Void)?) {
+	func buyProduct(placement: String, id: String, completion: ((PurchaseVerdict) -> Void)?) {
 		// Three causes used to share one `retryWithStoreKit`, and one of them was "the layer is off",
 		// where a silent fallback means taking money through a side door the app never asked for
 		// (AD-04 row 4).
@@ -560,8 +744,8 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 			completion?(.failed)
 			return
 		}
-		guard paywalls[placement] != nil else {
-			// Adapty never got the paywall, so it cannot serve this purchase at all — exactly the
+		guard flows[placement] != nil else {
+			// Adapty never got the flow, so it cannot serve this purchase at all — exactly the
 			// case the StoreKit fallback exists for.
 			debugLog(tag: Self.tag, level: .error, "'\(placement)' has no paywall loaded → retryWithStoreKit for \(id)")
 			completion?(.retryWithStoreKit)
@@ -589,9 +773,23 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		}
 		Adapty.makePurchase(product: product) { result in
 			switch result {
-				case .success:
-					debugLog(tag: Self.tag, "purchase of \(id) succeeded")
-					completion?(.success)
+				case .success(let purchase):
+					// The three outcomes of one completed call. Read through the accessors on purpose:
+					// the success case carries a `VerificationResult<Transaction>` this package has no
+					// use for, and destructuring it would tie us to a payload we never read.
+					if purchase.isPurchaseCancelled {
+						debugLog(tag: Self.tag, "purchase of \(id) was cancelled by the user")
+						completion?(.cancelled)
+					} else if purchase.isPurchasePending {
+						// Ask to Buy waiting for a parent, or SCA. Neither bought nor refused: mapping
+						// it to a failure invites a second attempt, mapping it to a success unlocks
+						// premium for a purchase not yet made.
+						debugLog(tag: Self.tag, "purchase of \(id) is pending approval")
+						completion?(.pending)
+					} else {
+						debugLog(tag: Self.tag, "purchase of \(id) succeeded")
+						completion?(.success)
+					}
 				case let .failure(error):
 					let verdict = Self.verdict(for: error.adaptyErrorCode)
 					// The one line an incident starts from: which product, what the SDK said in its own
@@ -615,20 +813,16 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		}
 	}
 
-	/// The whole of AD-04 in one place. Codes 0…14 are raw `SKError` values passed straight through,
-	/// 1000+ are Adapty's own.
-	static func verdict(for code: AdaptyError.ErrorCode) -> AdaptyPurchaseResult {
+	/// The failure half of AD-04 in one place. Codes 0…14 are raw `SKError` values passed straight
+	/// through, 1000+ are Adapty's own. The three outcomes that are NOT failures — bought, cancelled,
+	/// pending — no longer come through here at all: 4.1.3 answers them inside a successful result.
+	static func verdict(for code: AdaptyError.ErrorCode) -> PurchaseVerdict {
 		switch code {
 			case .paymentCancelled:
-				// A user cancel arrives as the raw SKError (2), not wrapped in a purchase failure —
-				// verified in the SDK's own error mapping, so this branch is right as it stands.
+				// A cancel now arrives as `AdaptyPurchaseResult.userCancelled`, but the raw SKError can
+				// still surface from the StoreKit layer, and answering `.failed` to it would offer a
+				// retry for something the user just refused.
 				return .cancelled
-			case .serverError, .networkFailed:
-				// Adapty only reaches its own validation after StoreKit reports the transaction as
-				// purchased, so these two mean "Apple charged, we could not confirm". Sending them to
-				// the StoreKit fallback is how a paid user used to be asked to pay twice
-				// (AD-04 row 2).
-				return .paidUnconfirmed
 			case .invalidOfferIdentifier, .invalidSignature, .missingOfferParams, .invalidOfferPrice:
 				// A promotional offer the store refuses to sign. This fails BEFORE any payment is
 				// queued, and the fallback would buy the same product at full price, silently, right
@@ -643,8 +837,33 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 				return .retryWithStoreKit
 			default:
 				// Temporary, or ours to fix but not the user's to work around: a later retry is fine.
+				//
+				// `serverError` (2004) and `networkFailed` (2005) land here now, and that is AD-04
+				// row 9. They used to answer `paidUnconfirmed`, which GRANTED premium on the theory
+				// that Apple had charged and Adapty could not confirm it — but 2005 is equally what a
+				// request that never left the device answers with, and nothing in the error tells the
+				// two apart. A purchase that completed is `AdaptyPurchaseResult.success` now, and that
+				// is the only thing this layer accepts as "paid". A real payer whose confirmation was
+				// lost is picked up by the profile push and by `syncReceipt` — the paths that KNOW.
 				return .failed
 		}
+	}
+
+	/// AD-04, and the one method here that exists to do NOTHING.
+	///
+	/// `AdaptyDelegate` ships a default implementation of this that calls `Adapty.makePurchase`
+	/// straight away (`AdaptyDelegate.swift:23-29`). Conforming to the protocol and staying silent is
+	/// therefore not neutral — it signs the app up to buy whatever the App Store product page
+	/// promoted: outside `PremiumService`'s single-purchase guard, with no paywall shown, no
+	/// impression logged, and no `PurchaseOutcome` delivered to anybody.
+	///
+	/// The package has no way to ask the app whether it wants that, so it declines and says so. An
+	/// app that wants promoted purchases can offer the product through its own paywall.
+	func didReceivePromotedPurchase(_ product: AdaptyPromotedProduct) {
+		debugLog(
+			tag: Self.tag,
+			"App Store promoted purchase of \(product.vendorProductId) was not started — the package never buys without a paywall"
+		)
 	}
 
 	// MARK: - AdaptyPremiumProviding: async over Adapty's own callbacks.
@@ -697,33 +916,33 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		}
 		// AD-03 row 1: "the paywall has not arrived" and "listing its products failed" are different
 		// answers, and the caller has to choose between a spinner and an error message.
-		guard let paywall = paywalls[placement] else { return .notReady }
+		guard let flow = flows[placement] else { return .notReady }
 		let fetched: [AdaptyPaywallProduct]?? = await withTimeout(deadlines.call) {
 			await withSingleResume { resume in
-				Adapty.getPaywallProducts(paywall: paywall, { [weak self] result in
+				Adapty.getPaywallProducts(flow: flow) { [weak self] result in
 					switch result {
 						case .success(let products):
 							resume(products)
 						case .failure(let error):
-							// The same event as `fetchProductsForPaywall`'s failure, on the other code
+							// The same event as `fetchProductsForFlow`'s failure, on the other code
 							// path, so it shares the counter (AD-02 row 2 / AD-03 row 2).
 							self?.failedProductPlacements.insert(placement)
 							self?.failedProductLoads += 1
 							debugLog(tag: Self.tag, level: .error, "getPaywallProducts failed for '\(placement)': \(error.adaptyErrorCode)")
 							resume(nil)
 					}
-				})
+				}
 			}
 		}
 		guard let products = fetched.flatMap({ $0 }) else { return .failed }
-		// The same cache `fetchProductsForPaywall` writes; Adapty is activated with
-		// `dispatchQueue: .main`, so both writers land on the main queue.
+		// The same cache `fetchProductsForFlow` writes; Adapty is activated with
+		// `callbackDispatchQueue: .main`, so both writers land on the main queue.
 		cachedProducts[placement] = products
 		return .products(products.map(PremiumProduct.init(product:)))
 	}
 
-	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult {
-		let answer: AdaptyPurchaseResult? = await withTimeout(deadlines.purchase) {
+	func buy(productId: String, placement: String) async -> PurchaseVerdict {
+		let answer: PurchaseVerdict? = await withTimeout(deadlines.purchase) {
 			await withSingleResume { resume in
 				self.buyProduct(placement: placement, id: productId) { resume($0) }
 			}
@@ -749,8 +968,8 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	/// `PremiumService` right after a StoreKit fallback purchase succeeds, to close the window the
 	/// local-purchase mark exists to cover.
 	///
-	/// Not a receipt refresh despite the name: on iOS 15+ this goes down the StoreKit 2 path and
-	/// syncs transactions, so it never shows an App Store password prompt.
+	/// Not a receipt refresh despite the name: 4.1.3 is StoreKit 2 throughout, so this syncs
+	/// transactions and never shows an App Store password prompt.
 	func syncReceipt() {
 		guard isActive else {
 			recordInactive(operation: "syncReceipt")
@@ -793,3 +1012,11 @@ extension AdaptyService: AdaptyDelegate {
 		premiumObserver?(profile, isVerified)
 	}
 }
+
+/// 4.1.3 requires `AdaptyDelegate` to be `Sendable`, and this service is not one: it is a class full
+/// of mutable caches. It is safe all the same, and unchecked rather than proven because the reason
+/// is a runtime fact the compiler cannot see — the SDK is activated with
+/// `callbackDispatchQueue: .main`, every delegate call and every completion therefore arrives on the
+/// main queue, and the only other entrances (`configure`, the app-facing forwards) are called from
+/// the app's own main thread.
+extension AdaptyService: @unchecked Sendable {}

@@ -7,9 +7,10 @@ import Adapty
 import Foundation
 
 extension PremiumPeriod {
-	/// One-to-one with `AdaptyProductSubscriptionPeriod` (Adapty 2.10.x) — the enum below has the
-	/// same five cases as `AdaptyPeriodUnit`, so nothing can be lost in the mapping.
-	init(period: AdaptyProductSubscriptionPeriod) {
+	/// One-to-one with `AdaptySubscriptionPeriod` (Adapty 4.1.3, renamed from 2.10.x's
+	/// `AdaptyProductSubscriptionPeriod`) — the enum below has the same five cases as its `Unit`, so
+	/// nothing can be lost in the mapping.
+	init(period: AdaptySubscriptionPeriod) {
 		let unit: Unit
 		switch period.unit {
 			case .day:

@@ -42,7 +42,7 @@ protocol AdaptyPremiumProviding: AnyObject {
 
 	/// Adapty's own answer, `retryWithStoreKit` included — the fallback it asks for is run by
 	/// `PremiumService`, so the app only ever sees a settled `PurchaseOutcome`.
-	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult
+	func buy(productId: String, placement: String) async -> PurchaseVerdict
 
 	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T>
 	func logPaywallOpen(placement: String)

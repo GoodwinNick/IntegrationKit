@@ -25,9 +25,15 @@ let package = Package(
 		// lands on Crashlytics collection and on Amplitude batching — never on money.
 		.package(url: "https://github.com/firebase/firebase-ios-sdk.git", from: "12.0.0"),
 		.package(url: "https://github.com/amplitude/Amplitude-Swift.git", from: "1.18.7"),
-		// Adapty змінює API всередині мінорних версій (2.11 переробила remoteConfig),
-		// тому діапазон вужчий за решту: обидві апки сидять на 2.10.x.
-		.package(url: "https://github.com/adaptyteam/AdaptySDK-iOS", .upToNextMinor(from: "2.10.4")),
+		// Adapty змінює API всередині мінорних версій (2.11 переробила remoteConfig, 4.1 —
+		// getPaywall на getFlow), тому діапазон вужчий за решту.
+		//
+		// 4.1.3 піднімає планку тулчейна для ВСІХ, хто підключає пакет: власний маніфест Adapty
+		// оголошує `swift-tools-version: 6.2` і використовує `traits`, тож SwiftPM старший за 6.1
+		// його навіть не розбере. Практично це Xcode 26.0+. Наш маніфест лишається на 5.9 — це
+		// наша власна нижня межа, і піднімати її нема потреби: обмеження приходить з графа
+		// залежностей, а не звідси. `docs/Integration.md` називає цю вимогу явно.
+		.package(url: "https://github.com/adaptyteam/AdaptySDK-iOS", .upToNextMinor(from: "4.1.3")),
 		// AppsFlyer is a binary xcframework — pinned the same way as Adapty, a fresher minor
 		// broke the previous package once already.
 		.package(url: "https://github.com/AppsFlyerSDK/AppsFlyerFramework", .upToNextMinor(from: "7.0.2")),

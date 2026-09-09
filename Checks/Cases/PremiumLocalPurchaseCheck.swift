@@ -77,7 +77,7 @@ final class SpyStore: PremiumStateStoring {
 final class FakeAdapty: AdaptyPremiumProviding {
 	var premiumObserver: ((AdaptyProfile, Bool) -> Void)?
 	var answer: AdaptyProfile?
-	var buyResult: AdaptyPurchaseResult = .failed
+	var buyResult: PurchaseVerdict = .failed
 	private let lock = NSLock()
 	private var syncCalls = 0
 
@@ -93,7 +93,7 @@ final class FakeAdapty: AdaptyPremiumProviding {
 
 	func profile() async -> AdaptyProfile? { answer }
 	func products(placement: String) async -> AdaptyProductsAnswer { .notReady }
-	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult { buyResult }
+	func buy(productId: String, placement: String) async -> PurchaseVerdict { buyResult }
 	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> { .notReady }
 	func logPaywallOpen(placement: String) {}
 	func hasPaywall(placement: String) -> Bool { false }

@@ -79,7 +79,7 @@ final class FakeAdapty: AdaptyPremiumProviding {
 	var onObserverSet: (() -> Void)?
 	var answer: AdaptyProfile?
 	var delay: TimeInterval
-	var buyResult: AdaptyPurchaseResult = .failed
+	var buyResult: PurchaseVerdict = .failed
 	var catalogue: [PremiumProduct] = []
 
 	init(answer: AdaptyProfile?, delay: TimeInterval = 0) {
@@ -98,7 +98,7 @@ final class FakeAdapty: AdaptyPremiumProviding {
 		catalogue.isEmpty ? .notReady : .products(catalogue)
 	}
 
-	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult { buyResult }
+	func buy(productId: String, placement: String) async -> PurchaseVerdict { buyResult }
 	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> { .notReady }
 	func logPaywallOpen(placement: String) {}
 	func hasPaywall(placement: String) -> Bool { false }
@@ -634,23 +634,31 @@ enum PremiumBarrierCheck {
 		assert(grantStore.premium == true, "case 25: the flag mirror must move with it, got \(grantStore.premium)")
 		assert(grantStore.notified == 1, "case 25: exactly 1 .premiumDidChange, got \(grantStore.notified)")
 
-		// 26. PM-04 row 11: Apple took the money and Adapty could not confirm it. Both halves matter and
-		//     both live in the facade, not in `AdaptyService`: the app must see `.pending` rather than a
-		//     failure it would offer to retry, and the StoreKit fallback must NOT run — it would ask a
-		//     user who has already paid to pay a second time. Access is granted on the strength of the
-		//     payment, through the same local-purchase mark a normal purchase uses.
+		// 26. PM-04 row 15 (rewritten for 0.3.0; row 11 is what it replaces). Adapty answered with an
+		//     error, and the facade must read that as "not paid" — no premium, no local-purchase mark.
+		//
+		//     Row 11 read the same error the opposite way: on 2.10.x `makePurchase` answered
+		//     `Result<Void, AdaptyError>`, so a purchase that completed and one that never started were
+		//     told apart only by an error code, and codes 2004/2005 were taken to mean "Apple charged,
+		//     Adapty could not confirm" — `.pending` WITH access. On 4.1.3 a completed purchase comes
+		//     back as `AdaptyPurchaseResult.success`, so an error means the opposite of what it used to
+		//     (AD-04 row 9): the verdict `paidUnconfirmed` is gone and this branch grants nothing.
+		//
+		//     What survives from row 11 is the half that was never about the verdict: a failure still
+		//     must NOT run the StoreKit fallback. Only `retryWithStoreKit` does.
 		let paidStore = SpyStore(cached: .free)
 		let paidAdapty = FakeAdapty(answer: nil)
-		paidAdapty.buyResult = .paidUnconfirmed
+		paidAdapty.buyResult = .failed
 		let paidApple = FakeApple(receipt: nil)
 		let paidService = PremiumService(store: paidStore, adapty: paidAdapty, apple: paidApple, levels: ["premium"], sourceTimeout: 1)
 		var paidOutcome: PurchaseOutcome?
 		paidService.purchase("year.sub", placement: "main") { paidOutcome = $0 }
 		assert(wait { paidOutcome != nil }, "case 26: purchase must call back")
-		assert(paidOutcome == .pending, "case 26: money taken and unconfirmed maps to exactly .pending, never .failed, got \(String(describing: paidOutcome))")
-		assert(paidApple.purchasedProductId == nil, "case 26: the StoreKit fallback must NOT run after a paid-but-unconfirmed purchase — that is a second charge; it was asked to buy \(String(describing: paidApple.purchasedProductId))")
-		assert(paidService.isPremium == true, "case 26: a purchase Apple already charged for must grant access, got \(paidService.isPremium)")
-		assert(paidStore.cached?.localPurchase == true, "case 26: it must carry the local-purchase mark like any other payment on this device, got \(String(describing: paidStore.cached))")
+		assert(paidOutcome == .failed, "case 26: an error from Adapty is a purchase that did not happen — exactly .failed, got \(String(describing: paidOutcome))")
+		assert(paidApple.purchasedProductId == nil, "case 26: a failed purchase must not fall back to StoreKit — only .retryWithStoreKit does; it was asked to buy \(String(describing: paidApple.purchasedProductId))")
+		assert(paidService.isPremium == false, "case 26: nothing was paid — premium must stay off, got \(paidService.isPremium)")
+		assert(paidStore.cached?.localPurchase == false, "case 26: no payment, no local-purchase mark, got \(String(describing: paidStore.cached))")
+		assert(paidStore.writes == 0, "case 26: nothing changed — expected 0 writes, got \(paidStore.writes)")
 
 		// 27. PM-04 row 12: Ask to Buy waiting for a parent, or an SDK call that never came back. Neither
 		//     bought nor refused — no access, no error, and no fallback: buying through StoreKit would
@@ -845,7 +853,7 @@ final class StatefulPaywallAdapty: AdaptyPremiumProviding {
 
 	func profile() async -> AdaptyProfile? { nil }
 	func products(placement: String) async -> AdaptyProductsAnswer { .notReady }
-	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult { .failed }
+	func buy(productId: String, placement: String) async -> PurchaseVerdict { .failed }
 	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> { .notReady }
 	func logPaywallOpen(placement: String) {}
 	/// Pinned at `false` on purpose — case 31 asserts the facade does not derive one answer from the
@@ -877,7 +885,7 @@ final class InactiveLayerAdapty: AdaptyPremiumProviding {
 
 	func profile() async -> AdaptyProfile? { nil }
 	func products(placement: String) async -> AdaptyProductsAnswer { .notReady }
-	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult { .failed }
+	func buy(productId: String, placement: String) async -> PurchaseVerdict { .failed }
 	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> { .notReady }
 	func logPaywallOpen(placement: String) {}
 	func hasPaywall(placement: String) -> Bool { false }

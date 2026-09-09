@@ -22,7 +22,7 @@ swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty \
 	Sources/IntegrationKit/Premium/PremiumService.swift \
 	Sources/IntegrationKit/Premium/Protocols/PremiumServicing.swift \
 	Sources/IntegrationKit/Premium/Protocols/AdaptyPremiumProviding.swift \
-	Sources/IntegrationKit/Adapty/AdaptyPurchaseResult.swift \
+	Sources/IntegrationKit/Adapty/PurchaseVerdict.swift \
 	Sources/IntegrationKit/Adapty/AdaptyProductsAnswer.swift \
 	Sources/IntegrationKit/Premium/Models/PaywallState.swift \
 	Sources/IntegrationKit/Premium/Models/RemoteValue.swift \

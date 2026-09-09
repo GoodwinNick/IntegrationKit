@@ -74,7 +74,7 @@ final class CountingAdapty: AdaptyPremiumProviding {
 		}
 	}
 	var answer: AdaptyProfile?
-	var buyResult: AdaptyPurchaseResult = .success
+	var buyResult: PurchaseVerdict = .success
 	/// How long `buy` takes to come back — case 2 needs the first purchase still in flight when the
 	/// second one is fired.
 	var buyDelay: TimeInterval = 0
@@ -117,7 +117,7 @@ final class CountingAdapty: AdaptyPremiumProviding {
 		return answer
 	}
 
-	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult {
+	func buy(productId: String, placement: String) async -> PurchaseVerdict {
 		countBuyCall()
 		if buyDelay > 0 {
 			try? await Task.sleep(nanoseconds: UInt64(buyDelay * 1_000_000_000))

@@ -90,6 +90,12 @@ public struct IntegrationKit {
 	///   AppsFlyer down for the whole run, each recording its own reason. Firebase stays up: a test
 	///   run that was meant to catch crashes must not be the run that loses them. StoreKit is not
 	///   restricted by either key.
+	///
+	/// `adaptyAttributionEnabled` switches on Adapty's own attribution service, new in Adapty 4.x.
+	/// It is off unless asked for, and that is the one default here that has to be argued rather than
+	/// inherited: an app that already runs AppsFlyer would otherwise start sending a second,
+	/// independent install signal nobody wired up, competing with the attribution this package
+	/// forwards by hand. Adapty's own default is off too.
 	public static func configure(
 		deviceId: String,
 		amplitudeKey: String,
@@ -105,7 +111,8 @@ public struct IntegrationKit {
 		appsFlyerDevKey: String = "",
 		appsFlyerAppId: String = "",
 		sourceTimeout: TimeInterval = 5,
-		attTimeout: TimeInterval = 60
+		attTimeout: TimeInterval = 60,
+		adaptyAttributionEnabled: Bool = false
 	) -> IntegrationKit {
 		if let built {
 			ConfigurationIssues.shared.record(
@@ -129,7 +136,8 @@ public struct IntegrationKit {
 			// `updateTrackingAuthorization(_:)`, and the read itself is a system call the service
 			// has no business making on its own.
 			attStatus: ATTrackingManager.trackingAuthorizationStatus,
-			isTestsRunning: isTestsRunning
+			isTestsRunning: isTestsRunning,
+			adaptyAttributionEnabled: adaptyAttributionEnabled
 		)
 		// Adapty's own paywall fetch can lose a race at cold start (flaky network, cold CDN) — retry
 		// every placement that is still missing each time the app comes back to the foreground.
@@ -246,14 +254,20 @@ public struct IntegrationKit {
 		adapty.setProfileValue(value: value, key: key)
 	}
 
-	/// Reports one onboarding screen to Adapty, as `onboarding_<step>`.
+	/// Did nothing since 0.3.0, and does nothing now.
 	///
-	/// `step` is numbered from ONE. Adapty refuses `screenOrder == 0`, so a screen counted from zero
-	/// is simply missing from the funnel; a step below one is therefore not sent, and the value
-	/// received lands in ``configurationIssues``.
-	public func logOnboardingOpen(step: Int) {
-		adapty.logOnboardingOpen(step: step)
-	}
+	/// It used to report one onboarding screen to Adapty as `onboarding_<step>`, through
+	/// `logShowOnboarding(name:screenName:screenOrder:)`. Adapty 4.x deleted that call: onboardings
+	/// are a rendered flow of their own there, fetched with `getOnboarding` and reported by the view
+	/// that draws them — there is no longer any way to report a screen the app drew itself, and the
+	/// package does not draw screens.
+	///
+	/// Kept as a deprecated no-op rather than removed so an app on 0.2.x still builds against 0.3.0
+	/// and gets a warning at the call site instead of an error. It will be deleted in a later
+	/// release; delete the call. Onboarding funnels belong in Amplitude — `analytics.log(_:)` — which
+	/// is where every other screen event in an app using this package already goes.
+	@available(*, deprecated, message: "Adapty 4.x removed onboarding reporting; log onboarding steps through analytics instead. This call does nothing.")
+	public func logOnboardingOpen(step: Int) {}
 
 	/// AF-04 row 2: how many times AppsFlyer answered "deep link found" and handed over nothing.
 	/// A deep link the campaign was paid for disappears each time, and the only other trace is a

@@ -86,7 +86,8 @@ final class FakeAdapty: AdaptyServicing {
 		sessionsCounter: Int,
 		placements: [String],
 		analytics: AnalyticsTracking,
-		attStatus: ATTrackingManager.AuthorizationStatus, isTestsRunning: Bool
+		attStatus: ATTrackingManager.AuthorizationStatus, isTestsRunning: Bool,
+		adaptyAttributionEnabled: Bool
 	) {}
 
 	func setProfileValue(value: String, key: String) {
@@ -98,10 +99,9 @@ final class FakeAdapty: AdaptyServicing {
 	func hasProductsForPaywall(placement: String, id: String) -> Bool { false }
 	func hasProductsForPaywall(placement: String) -> Bool { false }
 	func refreshPaywalls() {}
-	func getRemoteValue<Type>(placement: String, key: String) -> RemoteValue<Type> { .notReady }
+	func getRemoteValue<Type>(placement: String, key: String, locale: String) -> RemoteValue<Type> { .notReady }
 	func logPaywallOpen(placement: String) {}
-	func logOnboardingOpen(step: Int) {}
-	func buyProduct(placement: String, id: String, completion: ((AdaptyPurchaseResult) -> Void)?) {}
+	func buyProduct(placement: String, id: String, completion: ((PurchaseVerdict) -> Void)?) {}
 	func updateAppTrackingTransparencyStatus(_ status: ATTrackingManager.AuthorizationStatus) {}
 
 	func updateAppsFlyerAttribution(_ data: [AnyHashable: Any], networkUserId: String?) {

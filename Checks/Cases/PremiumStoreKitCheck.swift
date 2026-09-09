@@ -84,7 +84,7 @@ final class FakeAdapty: AdaptyPremiumProviding {
 
 	func profile() async -> AdaptyProfile? { answer }
 	func products(placement: String) async -> AdaptyProductsAnswer { .notReady }
-	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult { .failed }
+	func buy(productId: String, placement: String) async -> PurchaseVerdict { .failed }
 	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> { .notReady }
 	func logPaywallOpen(placement: String) {}
 	func hasPaywall(placement: String) -> Bool { false }

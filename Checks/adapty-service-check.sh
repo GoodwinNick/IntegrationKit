@@ -42,7 +42,7 @@ swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty \
 	Sources/IntegrationKit/Support/SingleResume.swift \
 	Sources/IntegrationKit/Support/WithTimeout.swift \
 	Sources/IntegrationKit/Amplitude/AnalyticsTracking.swift \
-	Sources/IntegrationKit/Adapty/AdaptyPurchaseResult.swift \
+	Sources/IntegrationKit/Adapty/PurchaseVerdict.swift \
 	Sources/IntegrationKit/Adapty/AdaptyProductsAnswer.swift \
 	Sources/IntegrationKit/Adapty/AdaptyDeadlines.swift \
 	Sources/IntegrationKit/Adapty/AdaptyServicing.swift \

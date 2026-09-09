@@ -232,14 +232,6 @@ final class PremiumService: PremiumServicing {
 					// attempt offered — the answer arrives on its own through the payment queue and
 					// the profile push (AD-04 row 1).
 					outcome = .pending
-				case .paidUnconfirmed:
-					// Apple took the money and Adapty could not confirm it. The one thing that must
-					// never happen here is the StoreKit fallback: it would ask a user who has already
-					// paid to pay again (AD-04 row 2). Access is granted on the strength of the
-					// payment itself — the unfinished transaction comes back through
-					// `completeTransactions` and settles the record.
-					outcome = .pending
-					didPay = true
 				case .unavailable:
 					// Permanent for this device, this storefront, or this product: parental controls,
 					// a product missing from the store, a promotional offer the store refuses to sign.
