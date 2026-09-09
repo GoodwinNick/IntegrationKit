@@ -686,6 +686,25 @@ enum PremiumBarrierCheck {
 		assert(unavailableService.isPremium == false, "case 28: nothing was paid — premium must stay off, got \(unavailableService.isPremium)")
 		assert(unavailableStore.writes == 0, "case 28: nothing changed — expected 0 writes, got \(unavailableStore.writes)")
 
-		print("PremiumService barrier, restore, purchase fallback and prices: 28/28 OK")
+		// 29. PM-01 row 6: publishing the cache is a full resolve with every source silent, not a
+		//     verbatim write-back. A cached premium whose expiry has passed is closed right there, on a
+		//     device that may never reach the network — otherwise an expired subscription would read as
+		//     premium forever offline. The resolver's own arithmetic is pinned by
+		//     `premium-resolver-check.sh` case 6; what this case adds is that `start()` actually routes
+		//     the cache through it before anyone can read `isPremium`.
+		let lapsedStore = SpyStore(cached: PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: now - hour), premium: true)
+		let lapsedService = PremiumService(store: lapsedStore, adapty: nil, apple: nil, levels: ["premium"], sourceTimeout: 1)
+		lapsedService.start()
+		assert(lapsedService.isPremium == false, "case 29: an expired cached premium must be closed by start() itself, before any network answer, got \(lapsedService.isPremium)")
+		// Spelled out: `?.source == .none` binds to `Optional.none` and silently asserts "the cache is nil".
+		assert(lapsedStore.cached?.source == PremiumSource.none, "case 29: nobody granted it — expected source .none, got \(String(describing: lapsedStore.cached?.source))")
+		assert(lapsedStore.cached?.expiresAt == now - hour, "case 29: the expiry is carried through so the app can still see it, expected \(now - hour), got \(String(describing: lapsedStore.cached?.expiresAt))")
+		assert(lapsedStore.premium == false, "case 29: the flag mirror must move with it, got \(lapsedStore.premium)")
+		assert(lapsedStore.notified == 1, "case 29: the flag went true-false — exactly 1 .premiumDidChange, got \(lapsedStore.notified)")
+		// start()'s own refresh resolves the same verdict from the state just written, so it adds nothing.
+		Thread.sleep(forTimeInterval: 0.3)
+		assert(lapsedStore.writes == 1, "case 29: publish writes once and the refresh behind it changes nothing — expected exactly 1 write, got \(lapsedStore.writes)")
+
+		print("PremiumService barrier, restore, purchase fallback and prices: 29/29 OK")
 	}
 }
