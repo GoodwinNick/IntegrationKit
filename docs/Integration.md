@@ -704,7 +704,7 @@ Three of the five need a UI decision that `failed` would get wrong:
 |---|---|
 | `.pending` | "Waiting for approval" — no error, no second buy button. The real answer arrives through `.premiumDidChange`. Treating it as a failure is how a paid user gets charged twice. |
 | `.unavailable` | Hide or disable the button. A retry fails identically every time. |
-| `.failed` | Show an error and let the user try again — this one really is temporary. |
+| `.failed` | Show an error and let the user try again — this one really is temporary. **It is also what a second tap on the buy button gets while the first purchase is still in flight.** The package refuses the second call before the SDK ever sees it, so two payment sheets can never stack; the app is not expected to disable the button itself. Do not turn that into an alert — a purchase is already running, so the screen should be waiting, and the outcome of the first call is the one to react to. |
 
 ### Reacting to premium changes
 
