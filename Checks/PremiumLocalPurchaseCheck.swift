@@ -355,3 +355,10 @@ enum PremiumLocalPurchaseCheck {
 extension FakeAdapty {
 	var isActive: Bool { true }
 }
+
+// PM-04 row 14 added `setProfileValue` to `AdaptyPremiumProviding`. Nothing here reads it — the
+// placement write is asserted in `PremiumBarrierCheck` case 33 — so this is conformance only, and
+// it is appended rather than folded into the fake so no quoted line number moves.
+extension FakeAdapty {
+	func setProfileValue(value: String, key: String) {}
+}

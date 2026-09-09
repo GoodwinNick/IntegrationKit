@@ -783,7 +783,55 @@ enum PremiumBarrierCheck {
 			"case 32: a live layer whose paywall has not arrived must still fall back to the configured ids (PM-07 row 9), expected both, got \(liveLayerProducts?.map(\.id).sorted() ?? [])"
 		)
 
-		print("PremiumService barrier, restore, purchase fallback and prices: 32/32 OK")
+		// 33. PM-04 row 14: the placement the money came from. The app used to write `purchasePlace`
+		//     itself after every purchase, which made every migration one more chance to forget it —
+		//     and a forgotten attribute reads on the dashboard like a paywall that stopped selling.
+		//     The placement is already in the call, so the package writes it. Condition: `didPay`,
+		//     the same flag the local-purchase mark hangs on — one condition, not two that drift.
+		fakeAdaptyProfileWrites = []
+		let placeAdapty = FakeAdapty(answer: nil)
+		placeAdapty.buyResult = .success
+		let placeService = PremiumService(store: SpyStore(cached: .free), adapty: placeAdapty, apple: FakeApple(receipt: nil), levels: ["premium"], sourceTimeout: 1)
+		var placeOutcome: PurchaseOutcome?
+		placeService.purchase("year.sub", placement: "main") { placeOutcome = $0 }
+		assert(wait { placeOutcome != nil }, "case 33: purchase must call back")
+		assert(
+			fakeAdaptyProfileWrites == ["purchasePlace=main"],
+			"case 33: a paid purchase must write the placement it was paid from — expected [\"purchasePlace=main\"], got \(fakeAdaptyProfileWrites)"
+		)
+
+		// The fallback pays for the same placement by the other road. Money is money: which side of
+		// the facade took it is not something the dashboard can see or should care about.
+		fakeAdaptyProfileWrites = []
+		let placeFallbackAdapty = FakeAdapty(answer: nil)
+		placeFallbackAdapty.buyResult = .retryWithStoreKit
+		let placeFallbackApple = FakeApple(receipt: nil)
+		placeFallbackApple.purchaseResult = .purchased
+		let placeFallbackService = PremiumService(store: SpyStore(cached: .free), adapty: placeFallbackAdapty, apple: placeFallbackApple, levels: ["premium"], sourceTimeout: 1)
+		var placeFallbackOutcome: PurchaseOutcome?
+		placeFallbackService.purchase("year.sub", placement: "onboarding") { placeFallbackOutcome = $0 }
+		assert(wait { placeFallbackOutcome != nil }, "case 33: the fallback purchase must call back")
+		assert(
+			fakeAdaptyProfileWrites == ["purchasePlace=onboarding"],
+			"case 33: a StoreKit-fallback purchase must write the placement too — expected [\"purchasePlace=onboarding\"], got \(fakeAdaptyProfileWrites)"
+		)
+
+		// And the half the other two are worthless without: nobody paid, so nothing is written. A
+		// write that always runs would stamp the profile with a placement the user never paid from —
+		// worse than a missing attribute, because it reads as true.
+		fakeAdaptyProfileWrites = []
+		let placeCancelAdapty = FakeAdapty(answer: nil)
+		placeCancelAdapty.buyResult = .cancelled
+		let placeCancelService = PremiumService(store: SpyStore(cached: .free), adapty: placeCancelAdapty, apple: FakeApple(receipt: nil), levels: ["premium"], sourceTimeout: 1)
+		var placeCancelOutcome: PurchaseOutcome?
+		placeCancelService.purchase("year.sub", placement: "main") { placeCancelOutcome = $0 }
+		assert(wait { placeCancelOutcome != nil }, "case 33: the cancelled purchase must call back")
+		assert(
+			fakeAdaptyProfileWrites.isEmpty,
+			"case 33: a purchase nobody paid for must write no placement — got \(fakeAdaptyProfileWrites)"
+		)
+
+		print("PremiumService barrier, restore, purchase fallback and prices: 33/33 OK")
 	}
 }
 
@@ -835,4 +883,23 @@ final class InactiveLayerAdapty: AdaptyPremiumProviding {
 	func hasPaywall(placement: String) -> Bool { false }
 	func paywallState(placement: String) -> PaywallState { .unavailable }
 	func syncReceipt() {}
+}
+
+/// Case 33's journal of profile writes. A file-scope global rather than a property on `FakeAdapty`
+/// for the same reason `isActive` arrives as an extension: a member added inside either fake moves
+/// every line number the PM-01…PM-08 risk tables quote. Case 33 clears it before each of its runs.
+var fakeAdaptyProfileWrites: [String] = []
+
+extension FakeAdapty {
+	func setProfileValue(value: String, key: String) {
+		fakeAdaptyProfileWrites.append("\(key)=\(value)")
+	}
+}
+
+extension StatefulPaywallAdapty {
+	func setProfileValue(value: String, key: String) {}
+}
+
+extension InactiveLayerAdapty {
+	func setProfileValue(value: String, key: String) {}
 }

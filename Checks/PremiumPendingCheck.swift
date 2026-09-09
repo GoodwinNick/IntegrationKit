@@ -211,3 +211,9 @@ enum PremiumPendingCheck {
 extension CountingAdapty {
 	var isActive: Bool { true }
 }
+
+// PM-04 row 14 added `setProfileValue` to `AdaptyPremiumProviding`. Neither case here counts profile
+// writes, so this is conformance only, appended so no quoted line number moves.
+extension CountingAdapty {
+	func setProfileValue(value: String, key: String) {}
+}
