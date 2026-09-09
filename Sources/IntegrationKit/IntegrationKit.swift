@@ -65,7 +65,12 @@ public struct IntegrationKit {
 			customerUserId: deviceId,
 			sessionsCounter: sessionsCounter,
 			placements: placements,
-			analytics: analytics
+			analytics: analytics,
+			// AD-06 row 6: the current answer, on every launch. Read here rather than inside the
+			// service — the app already owns this value and forwards it through
+			// `updateTrackingAuthorization(_:)`, and the read itself is a system call the service
+			// has no business making on its own.
+			attStatus: ATTrackingManager.trackingAuthorizationStatus
 		)
 		// Adapty's own paywall fetch can lose a race at cold start (flaky network, cold CDN) — retry
 		// every placement that is still missing each time the app comes back to the foreground.

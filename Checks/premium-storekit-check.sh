@@ -22,7 +22,9 @@ swiftc -emit-module -emit-library -static \
 	Checks/Stubs/SwiftyStoreKit.swift
 swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty -lSwiftyStoreKit \
 	Checks/PremiumStoreKitCheck.swift \
+	Sources/IntegrationKit/Support/LogLevel.swift \
 	Sources/IntegrationKit/Support/DebugLog.swift \
+	Sources/IntegrationKit/Support/ConfigurationIssues.swift \
 	Sources/IntegrationKit/Support/SingleResume.swift \
 	Sources/IntegrationKit/Support/WithTimeout.swift \
 	Sources/IntegrationKit/StoreKit/StoreKitService.swift \
@@ -30,6 +32,9 @@ swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty -lSwiftyStoreKit \
 	Sources/IntegrationKit/Premium/Protocols/PremiumServicing.swift \
 	Sources/IntegrationKit/Premium/Protocols/AdaptyPremiumProviding.swift \
 	Sources/IntegrationKit/Adapty/AdaptyPurchaseResult.swift \
+	Sources/IntegrationKit/Adapty/AdaptyProductsAnswer.swift \
+	Sources/IntegrationKit/Premium/Models/PaywallState.swift \
+	Sources/IntegrationKit/Premium/Models/RemoteValue.swift \
 	Sources/IntegrationKit/Premium/Protocols/AppleSubscribing.swift \
 	Sources/IntegrationKit/Premium/Protocols/PremiumStateStoring.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumState.swift \

@@ -69,7 +69,9 @@ final class SpyStore: PremiumStateStoring {
 
 /// An Adapty that answers whatever it is told, after however long it is told.
 final class FakeAdapty: AdaptyPremiumProviding {
-	var premiumObserver: ((AdaptyProfile) -> Void)? {
+	/// The `Bool` is provenance — `false` for the SDK's first, disk-cached push (AD-05 row 2). Every
+	/// push in this file passes `true`: these rows are about the barrier, not about provenance.
+	var premiumObserver: ((AdaptyProfile, Bool) -> Void)? {
 		didSet { onObserverSet?() }
 	}
 	/// Fires the moment `start()` installs its observer — case 14 reads the store from inside it to
@@ -92,11 +94,15 @@ final class FakeAdapty: AdaptyPremiumProviding {
 		return answer
 	}
 
-	func products(placement: String) async -> [PremiumProduct] { catalogue }
+	func products(placement: String) async -> AdaptyProductsAnswer {
+		catalogue.isEmpty ? .notReady : .products(catalogue)
+	}
+
 	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult { buyResult }
-	func remoteValue<T>(placement: String, key: String) -> T? { nil }
+	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> { .notReady }
 	func logPaywallOpen(placement: String) {}
 	func hasPaywall(placement: String) -> Bool { false }
+	func paywallState(placement: String) -> PaywallState { .unavailable }
 	func syncReceipt() {}
 }
 
@@ -415,7 +421,7 @@ enum PremiumBarrierCheck {
 			cachedAtSubscription = orderStore.cached
 			writesAtSubscription = orderStore.writes
 			// The nastiest timing there is: the push lands inside the assignment itself.
-			orderAdapty?.premiumObserver?(profile(active: true, expiresAt: pushedExpiry))
+			orderAdapty?.premiumObserver?(profile(active: true, expiresAt: pushedExpiry), true)
 		}
 		orderService.start()
 		assert(cachedAtSubscription != nil, "case 14: the observer must be installed at all")
@@ -582,7 +588,7 @@ enum PremiumBarrierCheck {
 		raceService.refresh()
 		Thread.sleep(forTimeInterval: 0.1)
 		// The fresher truth, arriving 0.2s BEFORE the refresh that started before it.
-		raceAdapty.premiumObserver?(profile(active: true, expiresAt: now + hour))
+		raceAdapty.premiumObserver?(profile(active: true, expiresAt: now + hour), true)
 		assert(raceStore.cached?.isPremium == true, "case 23: the push must land first, expected isPremium true right after it, got \(String(describing: raceStore.cached?.isPremium))")
 		assert(wait { raceStore.cached?.isPremium == false }, "case 23: the older, slower refresh must land last and overwrite the fresher push")
 		assert(
@@ -601,10 +607,10 @@ enum PremiumBarrierCheck {
 		Thread.sleep(forTimeInterval: 0.3)
 		assert(idempotentStore.writes == 1, "case 24: a silent start writes only the seed, expected exactly 1, got \(idempotentStore.writes)")
 		let repeatedProfile = profile(active: true, expiresAt: now + hour)
-		idempotentAdapty.premiumObserver?(repeatedProfile)
+		idempotentAdapty.premiumObserver?(repeatedProfile, true)
 		assert(idempotentStore.writes == 2, "case 24: the first push must write, expected exactly 2 writes total, got \(idempotentStore.writes)")
 		assert(idempotentStore.notified == 1, "case 24: the first push must notify, expected exactly 1, got \(idempotentStore.notified)")
-		idempotentAdapty.premiumObserver?(repeatedProfile)
+		idempotentAdapty.premiumObserver?(repeatedProfile, true)
 		assert(idempotentStore.writes == 2, "case 24: an identical push must add 0 writes — still exactly 2, got \(idempotentStore.writes)")
 		assert(idempotentStore.notified == 1, "case 24: an identical push must add 0 notifications — still exactly 1, got \(idempotentStore.notified)")
 
@@ -619,7 +625,7 @@ enum PremiumBarrierCheck {
 		Thread.sleep(forTimeInterval: 0.3)
 		assert(grantService.isPremium == false, "case 25: nothing has granted premium yet, got \(grantService.isPremium)")
 		let grantedUntil = now + hour
-		grantAdapty.premiumObserver?(profile(active: true, expiresAt: grantedUntil))
+		grantAdapty.premiumObserver?(profile(active: true, expiresAt: grantedUntil), true)
 		assert(
 			grantStore.cached == PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: grantedUntil),
 			"case 25: a dashboard grant must land as verified Adapty premium with the profile's expiry, got \(String(describing: grantStore.cached))"

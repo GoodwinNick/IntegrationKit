@@ -76,7 +76,7 @@ final class SpyStore: PremiumStateStoring {
 /// An Adapty that answers whatever it is told. `syncReceiptCount` counts calls to the new
 /// `syncReceipt()` — nothing in `PremiumService` calls it yet, so it must stay 0 everywhere (T15).
 final class FakeAdapty: AdaptyPremiumProviding {
-	var premiumObserver: ((AdaptyProfile) -> Void)?
+	var premiumObserver: ((AdaptyProfile, Bool) -> Void)?
 	var answer: AdaptyProfile?
 	var buyResult: AdaptyPurchaseResult = .failed
 	private let lock = NSLock()
@@ -93,11 +93,12 @@ final class FakeAdapty: AdaptyPremiumProviding {
 	}
 
 	func profile() async -> AdaptyProfile? { answer }
-	func products(placement: String) async -> [PremiumProduct] { [] }
+	func products(placement: String) async -> AdaptyProductsAnswer { .notReady }
 	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult { buyResult }
-	func remoteValue<T>(placement: String, key: String) -> T? { nil }
+	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> { .notReady }
 	func logPaywallOpen(placement: String) {}
 	func hasPaywall(placement: String) -> Bool { false }
+	func paywallState(placement: String) -> PaywallState { .unavailable }
 
 	func syncReceipt() {
 		lock.lock()

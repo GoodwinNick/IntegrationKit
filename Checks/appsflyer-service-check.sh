@@ -39,10 +39,13 @@ swiftc -emit-module -emit-library -static \
 	Checks/Stubs/AppsFlyerLib/AppsFlyerLib.swift
 swiftc -o "$work/check" -I "$work" -L "$work" -lAppsFlyerLib -lUIKit \
 	Checks/AppsFlyerServiceCheck.swift \
+	Sources/IntegrationKit/Support/LogLevel.swift \
 	Sources/IntegrationKit/Support/DebugLog.swift \
 	Sources/IntegrationKit/Amplitude/AnalyticsTracking.swift \
 	Sources/IntegrationKit/Adapty/AdaptyPurchaseResult.swift \
 	Sources/IntegrationKit/Adapty/AdaptyServicing.swift \
+	Sources/IntegrationKit/Premium/Models/PaywallState.swift \
+	Sources/IntegrationKit/Premium/Models/RemoteValue.swift \
 	Sources/IntegrationKit/AppsFlyer/AppsFlyerAttributionMapping.swift \
 	Sources/IntegrationKit/AppsFlyer/AppsFlyerServicing.swift \
 	Sources/IntegrationKit/AppsFlyer/AppsFlyerService.swift

@@ -28,13 +28,20 @@ swiftc -emit-module -emit-library -static \
 	Checks/Stubs/Adapty.swift
 swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty \
 	Checks/AdaptyServiceCheck.swift \
+	Sources/IntegrationKit/Support/LogLevel.swift \
 	Sources/IntegrationKit/Support/DebugLog.swift \
+	Sources/IntegrationKit/Support/ConfigurationIssues.swift \
 	Sources/IntegrationKit/Support/SingleResume.swift \
+	Sources/IntegrationKit/Support/WithTimeout.swift \
 	Sources/IntegrationKit/Amplitude/AnalyticsTracking.swift \
 	Sources/IntegrationKit/Adapty/AdaptyPurchaseResult.swift \
+	Sources/IntegrationKit/Adapty/AdaptyProductsAnswer.swift \
+	Sources/IntegrationKit/Adapty/AdaptyDeadlines.swift \
 	Sources/IntegrationKit/Adapty/AdaptyServicing.swift \
 	Sources/IntegrationKit/Adapty/AdaptyService.swift \
 	Sources/IntegrationKit/Premium/Protocols/AdaptyPremiumProviding.swift \
+	Sources/IntegrationKit/Premium/Models/PaywallState.swift \
+	Sources/IntegrationKit/Premium/Models/RemoteValue.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumProduct.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumProduct+Adapty.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumPeriod.swift \

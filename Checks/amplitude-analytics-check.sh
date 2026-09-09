@@ -20,6 +20,7 @@ swiftc -emit-module -emit-library -static \
 	Checks/Stubs/AmplitudeSwift/Amplitude.swift
 swiftc -o "$work/check" -I "$work" -L "$work" -lAmplitudeSwift \
 	Checks/AmplitudeAnalyticsCheck.swift \
+	Sources/IntegrationKit/Support/LogLevel.swift \
 	Sources/IntegrationKit/Support/DebugLog.swift \
 	Sources/IntegrationKit/Amplitude/AnalyticsTracking.swift \
 	Sources/IntegrationKit/Amplitude/AmplitudeAnalytics.swift \

@@ -76,9 +76,9 @@ final class PremiumService: PremiumServicing {
 		lock.unlock()
 		apply(adapty: nil, apple: nil)
 
-		adapty?.premiumObserver = { [weak self] profile in
+		adapty?.premiumObserver = { [weak self] profile, isVerified in
 			guard let self else { return }
-			self.apply(adapty: PremiumAccess(profile: profile, levels: self.levels))
+			self.apply(adapty: PremiumAccess(profile: profile, levels: self.levels, isVerified: isVerified))
 		}
 		refresh()
 	}
@@ -157,12 +157,23 @@ final class PremiumService: PremiumServicing {
 		adapty?.hasPaywall(placement: placement) ?? false
 	}
 
-	func remoteValue<T>(placement: String, key: String) -> T? {
-		adapty?.remoteValue(placement: placement, key: key)
+	func paywallState(placement: String) -> PaywallState {
+		adapty?.paywallState(placement: placement) ?? .unavailable
+	}
+
+	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> {
+		adapty?.remoteValue(placement: placement, key: key) ?? .notReady
 	}
 
 	func logPaywallOpen(placement: String) {
 		adapty?.logPaywallOpen(placement: placement)
+	}
+
+	/// Everything the package could not make work and no retry will fix — an empty key, a device id
+	/// that arrived too late, a placement that does not exist, a product the paywall does not sell.
+	/// Each cause appears once. Print it in DEBUG, ship it to Crashlytics, or assert on it in a test.
+	var configurationIssues: [String] {
+		ConfigurationIssues.shared.all
 	}
 
 	// MARK: - PremiumServicing: restore and purchase.
@@ -206,11 +217,35 @@ final class PremiumService: PremiumServicing {
 		}
 		Task { [weak self] in
 			let outcome: PurchaseOutcome
+			// Whether this device just paid for something. Drives the local-purchase mark, which
+			// holds premium open against an Adapty denial recorded before the payment landed.
+			var didPay = false
 			switch await adapty.buy(productId: productId, placement: placement) {
 				case .success:
 					outcome = .purchased
+					didPay = true
 				case .cancelled:
 					outcome = .cancelled
+				case .pending:
+					// Ask to Buy waiting for a parent, or a purchase call that never came back inside
+					// its deadline. Neither bought nor refused: no access, no error, and no second
+					// attempt offered — the answer arrives on its own through the payment queue and
+					// the profile push (AD-04 row 1).
+					outcome = .pending
+				case .paidUnconfirmed:
+					// Apple took the money and Adapty could not confirm it. The one thing that must
+					// never happen here is the StoreKit fallback: it would ask a user who has already
+					// paid to pay again (AD-04 row 2). Access is granted on the strength of the
+					// payment itself — the unfinished transaction comes back through
+					// `completeTransactions` and settles the record.
+					outcome = .pending
+					didPay = true
+				case .unavailable:
+					// Permanent for this device, this storefront, or this product: parental controls,
+					// a product missing from the store, a promotional offer the store refuses to sign.
+					// Falling back to StoreKit would buy that discounted product at full price
+					// (AD-04 rows 3 and 5).
+					outcome = .unavailable
 				case .failed:
 					outcome = .failed
 				case .retryWithStoreKit:
@@ -219,14 +254,15 @@ final class PremiumService: PremiumServicing {
 					// be a branch leaving the single entrance and returning through the back door.
 					// No Apple side wired up means there is no fallback to run, so it is a failure.
 					outcome = await self?.apple?.purchase(productId: productId) ?? .failed
+					didPay = outcome == .purchased
 					// Adapty just failed to serve the purchase, so it does not know about it yet —
 					// ask it to upload the local receipt and refresh its profile, closing the window
 					// the mark exists to cover. Only when the fallback itself actually succeeded.
-					if outcome == .purchased {
+					if didPay {
 						adapty.syncReceipt()
 					}
 			}
-			await self?.resolveBoth(localPurchase: outcome == .purchased)
+			await self?.resolveBoth(localPurchase: didPay)
 			self?.endPurchase()
 			DispatchQueue.main.async { completion(outcome) }
 		}
@@ -258,7 +294,17 @@ final class PremiumService: PremiumServicing {
 		let apple = self.apple
 		let productIds = self.productIds
 		Task {
-			let listed = await adapty.products(placement: placement)
+			let listed: [PremiumProduct]
+			switch await adapty.products(placement: placement) {
+				case .products(let products):
+					listed = products
+				case .notReady:
+					debugLog(tag: "PremiumService", "'\(placement)' has no paywall yet — pricing the configured ids from the store")
+					listed = []
+				case .failed:
+					debugLog(tag: "PremiumService", level: .error, "Adapty could not list the products of '\(placement)' — pricing the configured ids from the store")
+					listed = []
+			}
 			if listed.isEmpty {
 				// The placement did not load — an unloaded paywall must not leave a screen with no
 				// prices at all. Fall back to the ids handed to `init` and price them from the store

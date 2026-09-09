@@ -132,9 +132,10 @@ final class StoreKitService: AppleSubscribing {
 								resume(.failed)
 						}
 					case .deferred:
-						// Ask to buy: neither bought nor refused. Not a purchase now — when the
-						// parent approves it, `completeTransactions` picks it up at the next launch.
-						resume(.failed)
+						// Ask to Buy: neither bought nor refused. `.failed` here made the screen show
+						// an error and offer a retry for a purchase that is alive and waiting for a
+						// parent — when the approval lands, `completeTransactions` picks it up.
+						resume(.pending)
 				}
 			}
 		}

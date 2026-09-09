@@ -26,8 +26,9 @@
 //   - AN-04 rows 3-5 need a real `ATTrackingManager`/`ASIdentifierManager` read this process cannot
 //     force (confirmed empirically to always answer `.notDetermined` outside an app bundle), so the
 //     `.authorized` branch they live in never fires here.
-//   - AN-02 row 1 is a pure pointer to AN-01 row 3, and AN-03 row 2 names `AdaptyService.swift:232`
-//     — that line belongs to `AdaptyServiceCheck.swift`, which already compiles `AdaptyService`.
+//   - AN-02 row 1 is a pure pointer to AN-01 row 3, and AN-03 row 2 is the Adapty side of the same
+//     missing device id — it belongs to `AdaptyServiceCheck.swift` (T02, AD-01 row 2), which
+//     already compiles `AdaptyService`.
 //  AN-02 row 4 and AN-03 row 4 name `AppsFlyerService.swift` and are asserted in
 //  `AppsFlyerServiceCheck.swift` (the `af_` event names, and the unprefixed profile properties).
 //
@@ -241,11 +242,13 @@ enum AmplitudeAnalyticsCheck {
 				+ "\(String(describing: row1An03.deviceId))"
 		)
 
-		// AN-03 row 2 is NOT covered: it exercises `AdaptyService.swift:232`
-		// (`analytics.deviceId ?? ""`), not this wrapper. Wiring `AdaptyService` into this check
-		// pulls in `AdaptyServicing`/`AdaptyPremiumProviding`, `AdaptyPurchaseResult`,
-		// `SingleResume`, `PremiumProduct`, and the full `Adapty` SDK stub — not practical for a
-		// check scoped to three Amplitude files.
+		// AN-03 row 2 is covered elsewhere, on purpose: it is the Adapty side of this same missing
+		// device id (`AdaptyService.linkAmplitudeUserId`), and it is asserted by
+		// `AdaptyServiceCheck.swift` T02 (AD-01 row 2) — the `?? ""` is gone, the field is left
+		// unset and the reason is recorded. Wiring `AdaptyService` into this check would pull in
+		// `AdaptyServicing`/`AdaptyPremiumProviding`, `AdaptyPurchaseResult`, `SingleResume`,
+		// `PremiumProduct` and the full `Adapty` SDK stub — not practical for a check scoped to
+		// three Amplitude files.
 
 		// ── AN-03 row 3 — an explicit setUserId overrides the configure()-time id, as designed ──
 		// Executes `AmplitudeAnalytics.swift:26-28`. Green, deliberately: the method does not

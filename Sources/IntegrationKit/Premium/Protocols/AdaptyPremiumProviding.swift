@@ -9,27 +9,37 @@ import Foundation
 /// Adapty as a premium source. Internal to the package (spec 3.2/3.5): the only way to reach it
 /// from outside is `PremiumServicing`, and `IntegrationKit.configure` is what builds the real one.
 ///
-/// Deviates from the spec by one member: `hasPaywall(placement:)` is added here because
-/// `PremiumServicing.hasPaywall` needs an internal source for it and the spec's snippet for
-/// this protocol did not list one.
+/// Deviates from the spec by two members: `hasPaywall(placement:)` and `paywallState(placement:)`
+/// are added here because `PremiumServicing` needs an internal source for them and the spec's
+/// snippet for this protocol did not list one.
 protocol AdaptyPremiumProviding: AnyObject {
 	/// One-way push: Adapty sent a fresh profile on its own. Not part of any request/response
 	/// pairing.
-	var premiumObserver: ((AdaptyProfile) -> Void)? { get set }
+	///
+	/// The `Bool` is provenance. The first push of a process carries the profile the SDK had on
+	/// disk from the last launch, delivered before any network request is made — `false` there, and
+	/// an unverified "no premium" must not close access for a user whose subscription is alive
+	/// (AD-05 row 2).
+	var premiumObserver: ((AdaptyProfile, Bool) -> Void)? { get set }
 
-	/// Asks for the current profile. `nil` means "did not answer" (network, error) — never
-	/// "no premium".
+	/// Asks for the current profile. `nil` means "did not answer" (network, error, an SDK that
+	/// never called back) — never "no premium".
 	func profile() async -> AdaptyProfile?
 
-	func products(placement: String) async -> [PremiumProduct]
+	/// Products of a placement, with the reason when there are none: "the paywall has not arrived"
+	/// and "listing them failed" are different answers to a screen (AD-03 row 1).
+	func products(placement: String) async -> AdaptyProductsAnswer
+
 	/// Adapty's own answer, `retryWithStoreKit` included — the fallback it asks for is run by
 	/// `PremiumService`, so the app only ever sees a settled `PurchaseOutcome`.
 	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult
-	func remoteValue<T>(placement: String, key: String) -> T?
+
+	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T>
 	func logPaywallOpen(placement: String)
 	func hasPaywall(placement: String) -> Bool
+	func paywallState(placement: String) -> PaywallState
 
-	/// Asks Adapty to upload the local receipt to its backend and refresh the profile. Called by
+	/// Asks Adapty to upload the local purchase to its backend and refresh the profile. Called by
 	/// `PremiumService.purchase` after a StoreKit-fallback purchase Adapty itself did not see.
 	func syncReceipt()
 }

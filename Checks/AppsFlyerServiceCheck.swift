@@ -69,22 +69,27 @@ final class FakeAdapty: AdaptyServicing {
 	/// as nil" from "never handed over", and a tuple field read through `.last?` cannot say that.
 	private(set) var attributionNetworkUserIds: [String?] = []
 
-	func configure(apiKey: String, customerUserId: String, sessionsCounter: Int, placements: [String], analytics: AnalyticsTracking) {}
+	func configure(
+		apiKey: String,
+		customerUserId: String,
+		sessionsCounter: Int,
+		placements: [String],
+		analytics: AnalyticsTracking,
+		attStatus: ATTrackingManager.AuthorizationStatus
+	) {}
 
 	func setProfileValue(value: String, key: String) {
 		profileValues.append((value, key))
 	}
 
 	func hasPaywall(placement: String) -> Bool { false }
+	func paywallState(placement: String) -> PaywallState { .unavailable }
 	func hasProductsForPaywall(placement: String, id: String) -> Bool { false }
 	func hasProductsForPaywall(placement: String) -> Bool { false }
 	func refreshPaywalls() {}
-	func getRemoteValue<Type>(placement: String, key: String) -> Type? { nil }
+	func getRemoteValue<Type>(placement: String, key: String) -> RemoteValue<Type> { .notReady }
 	func logPaywallOpen(placement: String) {}
-	func logOnboardingOpen(step: Int) {}
 	func buyProduct(placement: String, id: String, completion: ((AdaptyPurchaseResult) -> Void)?) {}
-	func integrateFirebase(appInstanceId: String) {}
-	func integrateFacebook(id: String) {}
 	func updateAppTrackingTransparencyStatus(_ status: ATTrackingManager.AuthorizationStatus) {}
 
 	func updateAppsFlyerAttribution(_ data: [AnyHashable: Any], networkUserId: String?) {
@@ -322,13 +327,12 @@ enum AppsFlyerServiceCheck {
 				+ "\(String(describing: t12Analytics.userProperties.first?["status"]))"
 		)
 
-		// AF-03 row 4 (a rejected attribution write must be retried) is NOT covered: the row's
-		// coordinates are `AdaptyService.swift:172-180`, and this check does not compile
-		// `AdaptyService` — `FakeAdapty` stands in its place. The retry the row asks for lives in
-		// those lines, so no implementation of `AppsFlyerService` could turn an assert here green,
-		// and the fake has no channel to signal the rejection with either
-		// (`updateAppsFlyerAttribution` returns Void). The row waits on an AdaptyService
-		// logicflow, which does not exist yet.
+		// AF-03 row 4 (a rejected attribution write must be retried) is covered elsewhere, on
+		// purpose: the retry lives in `AdaptyService.updateAppsFlyerAttribution`, which this check
+		// does not compile — `FakeAdapty` stands in its place, and it has no channel to signal a
+		// rejection with either (`updateAppsFlyerAttribution` returns Void). The row is closed by
+		// `AdaptyServiceCheck.swift` T28 (AD-06 row 1), which asserts the queued write is repeated
+		// after activation with the same `networkUserId`.
 
 		// AF-03 row 5 (profile property names colliding with the app's own) is a pointer to AN-03
 		// row 4 — and that pointer used to run in a circle, because Amplitude's check pointed back

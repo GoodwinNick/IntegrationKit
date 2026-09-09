@@ -10,7 +10,10 @@ import Foundation
 public struct PremiumProduct: Equatable, Sendable {
 	public let id: String
 	public let localizedTitle: String
-	public let localizedPrice: String
+	/// The store's own formatted price. `nil` means the store gave none — a missing value, not an
+	/// empty one: a button showing "" is indistinguishable from a button whose price failed to
+	/// arrive, and the caller is the only one who can decide what to draw instead (AD-03 row 3).
+	public let localizedPrice: String?
 	public let price: Decimal
 	public let currencyCode: String?
 	public let subscriptionPeriod: PremiumPeriod?
@@ -19,7 +22,7 @@ public struct PremiumProduct: Equatable, Sendable {
 	public init(
 		id: String,
 		localizedTitle: String,
-		localizedPrice: String,
+		localizedPrice: String?,
 		price: Decimal,
 		currencyCode: String?,
 		subscriptionPeriod: PremiumPeriod?,

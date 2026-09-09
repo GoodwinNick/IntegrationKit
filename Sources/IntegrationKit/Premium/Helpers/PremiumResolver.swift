@@ -22,14 +22,19 @@ enum PremiumResolver {
 			? cached.map { PremiumState(isPremium: $0.isPremium, source: $0.source, isVerified: false, expiresAt: $0.expiresAt, localPurchase: $0.localPurchase) }
 			: cached
 
-		// 1. Adapty confirmed — it wins and the mark is no longer needed.
+		// 1. Adapty confirmed — it wins and the mark is no longer needed. A grant counts even when it
+		//    is unverified: the SDK's stored profile saying "premium" is still a yes, and doubt goes
+		//    to the user.
 		if let adapty {
 			if adapty.isActive {
-				return PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: adapty.expiresAt, localPurchase: false)
+				return PremiumState(isPremium: true, source: .adapty, isVerified: adapty.isVerified, expiresAt: adapty.expiresAt, localPurchase: false)
 			}
-			// Adapty says no. Without the mark that is final; with it, Adapty simply has not seen
-			// the purchase yet, so its answer is ignored entirely and we fall through as if silent.
-			if !mark {
+			// Adapty says no. That is final only when the answer was actually checked in this process
+			// and no local purchase is outstanding. An UNVERIFIED denial is the profile the SDK
+			// pushed out of its own storage on activation — a memory of the last launch, which must
+			// not close access before the network has answered (AD-05 row 2); with the mark, Adapty
+			// simply has not seen the purchase yet. Either way we fall through as if it stayed silent.
+			if !mark, adapty.isVerified {
 				return PremiumState(isPremium: false, source: .adapty, isVerified: true, expiresAt: adapty.expiresAt, localPurchase: false)
 			}
 		}

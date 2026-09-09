@@ -75,7 +75,7 @@ final class SpyStore: PremiumStateStoring {
 
 /// An Adapty that answers whatever it is told — trimmed to what PM-05 rows 2 and 5 read.
 final class FakeAdapty: AdaptyPremiumProviding {
-	var premiumObserver: ((AdaptyProfile) -> Void)?
+	var premiumObserver: ((AdaptyProfile, Bool) -> Void)?
 	var answer: AdaptyProfile?
 
 	init(answer: AdaptyProfile?) {
@@ -83,11 +83,12 @@ final class FakeAdapty: AdaptyPremiumProviding {
 	}
 
 	func profile() async -> AdaptyProfile? { answer }
-	func products(placement: String) async -> [PremiumProduct] { [] }
+	func products(placement: String) async -> AdaptyProductsAnswer { .notReady }
 	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult { .failed }
-	func remoteValue<T>(placement: String, key: String) -> T? { nil }
+	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> { .notReady }
 	func logPaywallOpen(placement: String) {}
 	func hasPaywall(placement: String) -> Bool { false }
+	func paywallState(placement: String) -> PaywallState { .unavailable }
 	func syncReceipt() {}
 }
 

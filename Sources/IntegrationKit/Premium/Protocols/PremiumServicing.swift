@@ -31,6 +31,23 @@ public protocol PremiumServicing: AnyObject {
 
 	/// Paywalls and remote config — through the facade too, same subsystem.
 	func hasPaywall(placement: String) -> Bool
-	func remoteValue<T>(placement: String, key: String) -> T?
+
+	/// Why a placement has no paywall: `hasPaywall` answers `false` both while an attempt is still
+	/// in flight and when the placement does not exist, and a screen cannot choose between a
+	/// spinner and an empty state from one boolean.
+	func paywallState(placement: String) -> PaywallState
+
+	/// A remote-config value together with the reason when there is none. Call `.value` on the
+	/// result for the plain optional; match the case to tell "ask again in a second" from "the
+	/// dashboard never set this" from "the dashboard set it to the wrong type".
+	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T>
+
 	func logPaywallOpen(placement: String)
+
+	/// Everything the package could not make work and no retry will fix — an empty key, a device id
+	/// that arrived too late, a placement that does not exist in the dashboard, a product the
+	/// paywall does not sell. One line per cause, in the order they were first seen. Empty is the
+	/// healthy state; anything here is an integration mistake worth an assert in a test or a
+	/// non-fatal in Crashlytics.
+	var configurationIssues: [String] { get }
 }

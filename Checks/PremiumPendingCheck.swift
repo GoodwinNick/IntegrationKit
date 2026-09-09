@@ -66,7 +66,7 @@ final class CountingAdapty: AdaptyPremiumProviding {
 	private var buyCallCount = 0
 	private var observerAssignmentCount = 0
 
-	var premiumObserver: ((AdaptyProfile) -> Void)? {
+	var premiumObserver: ((AdaptyProfile, Bool) -> Void)? {
 		didSet {
 			lock.lock()
 			observerAssignmentCount += 1
@@ -125,10 +125,11 @@ final class CountingAdapty: AdaptyPremiumProviding {
 		return buyResult
 	}
 
-	func products(placement: String) async -> [PremiumProduct] { [] }
-	func remoteValue<T>(placement: String, key: String) -> T? { nil }
+	func products(placement: String) async -> AdaptyProductsAnswer { .notReady }
+	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> { .notReady }
 	func logPaywallOpen(placement: String) {}
 	func hasPaywall(placement: String) -> Bool { false }
+	func paywallState(placement: String) -> PaywallState { .unavailable }
 	func syncReceipt() {}
 }
 
