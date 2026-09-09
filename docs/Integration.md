@@ -179,19 +179,16 @@ and the things the package cannot reach on its own are stored inside it. Write
 `let premium = IntegrationKit.configure(...).premium` and the struct dies at
 the end of that line, taking with it:
 
-- **The paywall retry.** `configure` subscribes to
-  `UIApplication.didBecomeActiveNotification` and, on every return to the
-  foreground, re-attempts `getPaywall` for each configured placement that is
-  missing or stale. `NotificationCenter` does not retain the token its
-  block-based API hands back, so the struct is the only thing holding it.
-  Without it, a placement that lost the race at cold start is left to the
-  layer's own backoff alone, and a paywall past its 30-minute freshness never
-  reloads in that launch.
-- **AppsFlyer.** The struct holds the only reference to the attribution
-  service. When it goes, the service's `deinit` unsubscribes it from the
-  foreground notification that starts an AppsFlyer session — no sessions, no
-  install attribution, no conversion data reaching Amplitude and the Adapty
-  profile.
+- **AppsFlyer — attribution, sessions and deep links.** The struct holds the
+  only strong reference to the attribution service. `AppsFlyerLib` declares
+  both of the properties it is handed to as `weak`
+  (`@property(weak, nonatomic) id<AppsFlyerLibDelegate> delegate;` and the same
+  for `deepLinkDelegate`), and the foreground observer it registers does not
+  own it either. So the service deallocates, its `deinit` unsubscribes it, and
+  from then on: no AppsFlyer session is ever started, `onConversionDataSuccess`
+  has nowhere to arrive, and `didResolveDeepLink` is never called. `AppsFlyerLib`
+  itself stays up and looks healthy — it just has no delegate to deliver to.
+  Nothing is logged and nothing lands in `configurationIssues`.
 - **Deep links and the ATT forward.** `handleContinue`, `handleOpen` and
   `updateTrackingAuthorization` are members of the struct. Without it there is
   nothing for the `AppDelegate` to forward to, so universal links and
@@ -199,11 +196,15 @@ the end of that line, taking with it:
 - **The diagnostics and the other two protocols** — `configurationIssues`,
   `droppedDeepLinks`, `analytics` and `crashes` all hang off the same value.
 
-What makes this the most expensive mistake in the guide is that `premium`
-keeps working: `PremiumService` holds Adapty itself, so purchases, paywall
-state and `isPremium` behave normally. Nothing throws, nothing is logged,
-`configurationIssues` stays empty, and the only symptom is a campaign whose
-installs arrive unattributed.
+What makes this the most expensive mistake in the guide is how much keeps
+working. `premium` is fine — `PremiumService` holds Adapty itself, so
+purchases, paywall state and `isPremium` behave normally. So is the paywall
+retry: `NotificationCenter` keeps the block-based observer alive on its own,
+whether or not anything holds the token it returns, and the block holds the
+Adapty layer with it. Nothing throws, nothing is logged, `configurationIssues`
+stays empty, and the only symptom is a campaign whose installs arrive
+unattributed — visible weeks later, on a dashboard, as traffic that looks
+organic.
 
 `SDKKeys` and `AppDefaults` are app-side types, not part of the package — they
 show where the app is expected to get its keys and stable identifiers from.
