@@ -262,6 +262,13 @@ final class PremiumService: PremiumServicing {
 						adapty.syncReceipt()
 					}
 			}
+			if didPay {
+				// PM-04 row 14: the placement the money came from, written by the package because it
+				// is the only side that has both halves — the app knows the placement but not that
+				// Apple charged, the Adapty layer knows neither once the fallback took over. Same
+				// `didPay` as the mark above on purpose: one condition, not two that drift apart.
+				adapty.setProfileValue(value: placement, key: "purchasePlace")
+			}
 			await self?.resolveBoth(localPurchase: didPay)
 			self?.endPurchase()
 			DispatchQueue.main.async { completion(outcome) }

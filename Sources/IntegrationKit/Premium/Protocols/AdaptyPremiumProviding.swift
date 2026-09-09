@@ -52,4 +52,10 @@ protocol AdaptyPremiumProviding: AnyObject {
 	/// Asks Adapty to upload the local purchase to its backend and refresh the profile. Called by
 	/// `PremiumService.purchase` after a StoreKit-fallback purchase Adapty itself did not see.
 	func syncReceipt()
+
+	/// One custom attribute on the Adapty profile, with the layer's own validation and traces
+	/// (AD-06 row 3). `PremiumService.purchase` uses exactly one key, `purchasePlace`: the placement
+	/// and the fact that money changed hands only meet there, and leaving that write to the app made
+	/// it a thing every migration could forget (PM-04 row 14).
+	func setProfileValue(value: String, key: String)
 }
