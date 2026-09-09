@@ -203,6 +203,17 @@ enum AdaptyServiceCheck {
 		check(t01.isActive == false, "AD-01 r1/r7: an empty key must leave the layer inactive")
 		check(hasIssue("inactive"), "AD-01 r1/r7: an empty key must be recorded as a configuration issue — got \(issues())")
 
+		// T01b — AD-01 row 7, the half an empty key does not reach: a key that is present but is not
+		// an Adapty key. `Adapty.activate`'s assert fires on the shape, not on emptiness, so an
+		// obfuscated key decrypted wrong trips it just as hard. Both values the schema names are
+		// asserted — the SDK stayed untouched, and the reason says what was expected.
+		reset("T01b")
+		let t01b = AdaptyService()
+		t01b.configure(apiKey: "sk_live_not_an_adapty_key_but_long_enough_to_pass_41", customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		check(Adapty.activateCallCount == 0, "AD-01 r7: a key that is not an Adapty key must not reach Adapty.activate — got \(Adapty.activateCallCount) activation(s)")
+		check(t01b.isActive == false, "AD-01 r7: a malformed key must leave the layer inactive")
+		check(hasIssue("beginning with 'public_live'"), "AD-01 r7: the reason must name the expected shape — got \(issues())")
+
 		// T02 — AD-01 row 2: analytics has no device id yet. An empty string must NOT be written:
 		// it looks like an id and joins this profile to nothing forever. Both halves are asserted —
 		// nothing reached the SDK, and the reason is readable.

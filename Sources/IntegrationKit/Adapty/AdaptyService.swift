@@ -118,6 +118,17 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 			recordInactive(operation: "configure")
 			return
 		}
+		// The same assert, one frame earlier. An empty key is not the only shape that trips it: an
+		// obfuscated key decrypted wrong, or a key pasted from another service, is 41 characters of
+		// something that is not ours — and it would take the DEBUG build down here, before any
+		// network call. Invariant 2 of the schema is that nothing in this layer ever traps.
+		guard apiKey.count >= 41, apiKey.hasPrefix("public_live") else {
+			ConfigurationIssues.shared.record(
+				"The Adapty API key is not shaped like one (\(apiKey.count) characters, expected 41+ beginning with 'public_live') — the layer stays inactive",
+				tag: Self.tag
+			)
+			return
+		}
 		if placements.isEmpty {
 			ConfigurationIssues.shared.record(
 				"Adapty is configured with no placements — no paywall will be warmed up",
