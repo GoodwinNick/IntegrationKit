@@ -21,7 +21,7 @@ This file is the short version.
 ## Installation
 
 ```swift
-.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.2.0")
+.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.2.1")
 ```
 
 In Xcode: File → Add Package Dependencies → the same URL, product `IntegrationKit`.
