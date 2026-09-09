@@ -61,6 +61,28 @@ enum PremiumResolverCheck {
 		let beforeBoundary = PremiumResolver.resolve(adapty: nil, apple: nil, cached: boundaryCache, now: boundaryExpiry - 0.001)
 		assert(beforeBoundary == boundaryCache, "PM-03 row 8: one millisecond earlier the cache is still valid and handed back unchanged, expected \(boundaryCache), got \(beforeBoundary)")
 
-		print("PremiumResolver: 7/7 OK")
+		// 8. PM-03 row 6, the provenance half (AD-05 row 2): a grant the SDK pushed straight out of its
+		//    own storage on activation is still a grant. It is recorded as unverified so a later silence
+		//    cannot be mistaken for a network confirmation — but access opens either way, because doubt
+		//    goes to the user.
+		let diskGrant = PremiumResolver.resolve(adapty: PremiumAccess(isActive: true, expiresAt: now + hour, isVerified: false), apple: nil, cached: nil, now: now)
+		assert(diskGrant.isPremium, "PM-03 row 6: an unverified Adapty grant must still grant, expected isPremium true, got \(diskGrant.isPremium)")
+		assert(diskGrant.isVerified == false, "PM-03 row 6: the verdict must carry the answer's own provenance, expected isVerified false, got \(diskGrant.isVerified)")
+		assert(diskGrant.source == .adapty, "PM-03 row 6: expected source .adapty, got \(diskGrant.source)")
+		assert(diskGrant.expiresAt == now + hour, "PM-03 row 6: the profile's expiry must come through, expected \(now + hour), got \(String(describing: diskGrant.expiresAt))")
+
+		// 9. PM-03 row 18 (AD-05 row 2, the other half): the same disk-cached profile saying NO is a
+		//    memory of the last launch, not a check. It must not close access before the network has
+		//    answered — the resolver falls through as if Adapty had stayed silent. The verified denial
+		//    right after it is the contrast that proves `isVerified` is the field doing the deciding.
+		let unverifiedCache = PremiumState(isPremium: true, source: .apple, isVerified: false)
+		let diskDenial = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false, isVerified: false), apple: nil, cached: unverifiedCache, now: now)
+		assert(diskDenial.isPremium, "PM-03 row 18: an unverified Adapty denial must not close access, expected the cached premium to stand, got \(diskDenial)")
+		assert(diskDenial.source == .apple, "PM-03 row 18: the verdict must come from the cache, not from the denial, expected source .apple, got \(diskDenial.source)")
+		let networkDenial = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false), apple: nil, cached: unverifiedCache, now: now)
+		assert(networkDenial.isPremium == false, "PM-03 row 18: the very same denial, verified, must revoke — expected isPremium false, got \(networkDenial.isPremium)")
+		assert(networkDenial.source == .adapty, "PM-03 row 18: a verified denial is Adapty's own verdict, expected source .adapty, got \(networkDenial.source)")
+
+		print("PremiumResolver: 9/9 OK")
 	}
 }
