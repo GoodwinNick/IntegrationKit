@@ -371,15 +371,24 @@ public var configurationIssues: [String] { get }
 ```
 
 **`setProfileValue(value:key:)`** writes one custom attribute to the Adapty
-profile — the app's own, such as the place a purchase was made from:
+profile — the app's own, whatever the package cannot know:
 
 ```swift
-kit.setProfileValue(value: "onboarding_paywall", key: "purchasePlace")
+kit.setProfileValue(value: "returning_user", key: "cohort")
 ```
 
 The keys the package writes by itself — `lastUsedDay` and `launchSession` at
-activation, `deep_link_value` when AppsFlyer resolves one — do **not** need to
-be passed in, and passing them again only overwrites what is already correct.
+activation, `deep_link_value` when AppsFlyer resolves one, and `purchasePlace`
+after every purchase that was actually paid for — do **not** need to be passed
+in, and passing them again only overwrites what is already correct.
+
+`purchasePlace` is the one to watch for if you are migrating: apps used to
+write it themselves after a successful purchase. Since 0.2.2 the package does
+it, because `purchase(_:placement:)` already carries the placement and is the
+only place that also knows Apple took the money. It is written on a plain
+Adapty purchase, on a StoreKit-fallback purchase and on a payment Adapty could
+not confirm — and on nothing else, so a cancelled purchase never stamps a
+placement nobody paid from.
 
 Adapty's own rules apply and are checked before anything is sent: a key is 1…30
 characters of `A-Za-z0-9._-`, a string value is 1…50 characters, and a profile

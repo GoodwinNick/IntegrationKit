@@ -114,9 +114,10 @@ layer is up). Deep links go through `kit.handleContinue(...)` /
 `kit.updateTrackingAuthorization(_:)`. Two more forwards reach Adapty directly:
 
 ```swift
-// The app's own profile attributes — the place a purchase was made from, say.
-// `lastUsedDay`, `launchSession` and `deep_link_value` the package writes itself.
-kit.setProfileValue(value: "onboarding_paywall", key: "purchasePlace")
+// The app's own profile attributes. `lastUsedDay`, `launchSession`,
+// `deep_link_value` and `purchasePlace` the package writes itself — do not
+// write those from the app, it only doubles the traffic.
+kit.setProfileValue(value: "returning_user", key: "cohort")
 
 // One onboarding screen, sent as `onboarding_1`. Steps are numbered from ONE:
 // Adapty refuses screen order 0, so a screen counted from zero is missing from
