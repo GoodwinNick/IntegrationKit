@@ -2,7 +2,7 @@
 //  AppsFlyerServiceCheck.swift
 //  IntegrationKit
 //
-//  Written from the approved schemas AF-01…AF-06, not from the code. Thirty-six asserts carry
+//  Written from the approved schemas AF-01…AF-06, not from the code. Thirty-nine asserts carry
 //  twenty-four of the thirty-two rows plus AN-03 row 4, whose code lives here rather than in
 //  Amplitude's; the eight rows that carry none say why — four in a comment above their block,
 //  four (the logging rows of 2026-09-09) in the risk row itself — not with a lookalike assert.
@@ -12,7 +12,7 @@
 //  which order (AF-01 row 6), the "unknown" default for an attribution field the SDK did not send
 //  (AF-03 row 6), and the URL forward reaching the SDK unchanged (AF-05 row 4).
 //
-//  All thirty-six are green as of `b6ac9ef`. Fifteen of them were written red first, against
+//  All thirty-nine are green. Seventeen of them were written red first, against
 //  schemas the wrapper did not satisfy yet, and each one names the behaviour the code had to grow
 //  rather than the shape it happened to have:
 //    T4  AF-01 row 2 — the ATT wait limit is the app's, not the constant 60.
@@ -27,12 +27,12 @@
 //    T25 AF-02 row 1 — a second foreground return starts a new session.
 //    T26 AF-01 row 1 — an empty dev key records a reason a release build can read.
 //    T27 AF-04 row 2 — a "found" deep link with no content is counted, not just skipped.
-//    T28 AF-05 row 3 — the forwards do not touch an SDK that was never initialized, and still
-//        answer the system.
+//    T28 AF-05 row 3 — the forwards do not touch an uninitialized SDK and still answer the system.
 //    T29 AF-06 row 1 — a failed attribution keeps the error's domain and code.
-//  The rest were green from the start and pin behaviour that was already correct — the silence of
-//  the failure callback (T23), the fixed eleven-field deep-link payload (T17),
-//  last-attribution-wins (T20) — so a later change cannot loosen any of it silently.
+//    T35 AF-01 row 1 — a test run leaves the layer down, with a reason of its own.
+//    T36 AF-01 row 3 — SDK logging rides the app's `isDebug`, the key crash collection uses too.
+//  The rest were green from the start — the silent failure callback (T23), the eleven-field
+//  deep-link payload (T17), last-attribution-wins (T20) — so no later change can loosen them.
 //
 //  Built WITHOUT `-D DEBUG` on purpose: every row that asks for "a trace visible outside Xcode"
 //  (AF-01 row 1, AF-04 row 2, AF-05 row 3, AF-06 row 1) is measured against exactly the build the
@@ -58,7 +58,7 @@ final class FakeAnalytics: AnalyticsTracking {
 	private(set) var userProperties: [[String: Any]] = []
 	var deviceId: String? = "device-1"
 
-	func configure(apiKey: String, deviceId: String, firstOpenEvent: String?) {}
+	func configure(apiKey: String, deviceId: String, firstOpenEvent: String?, isTestsRunning: Bool) {}
 
 	func logEvent(_ event: String, properties: [String: Any]?) {
 		events.append((event, properties))
@@ -88,7 +88,7 @@ final class FakeAdapty: AdaptyServicing {
 		sessionsCounter: Int,
 		placements: [String],
 		analytics: AnalyticsTracking,
-		attStatus: ATTrackingManager.AuthorizationStatus
+		attStatus: ATTrackingManager.AuthorizationStatus, isTestsRunning: Bool
 	) {}
 
 	func setProfileValue(value: String, key: String) {
@@ -740,10 +740,58 @@ enum AppsFlyerServiceCheck {
 				+ "\(String(describing: AppsFlyerLib.lastOpenedURL))"
 		)
 
+		// ── AF-01 row 1, second switch — a test run must not stand the SDK up ────────────────
+		// The row asks for two switches, not one: an empty dev key is an app that ships without
+		// attribution, and `isTestsRunning` is a run that must not be measured. Until this key
+		// existed only the first one worked, so a UI-test run of the app with its real dev key sent
+		// sessions and install data into the live AppsFlyer account — attribution that advertising
+		// budget is steered by, moved by a robot. The app computes the answer itself (`-uitest`
+		// among the arguments, or `XCTestConfigurationFilePath` in the environment).
+		//
+		// The foreground signal is posted deliberately: `configure` never starts a session itself
+		// (T31), so the only way to prove the observer was not registered is to fire the thing it
+		// listens to and watch nothing happen. The reason is asserted apart from the dev-key one —
+		// a shared line would send whoever reads it looking for a key that is perfectly fine.
+		AppsFlyerLib.reset()
+		ConfigurationIssues.shared.reset()
+		let testRunService = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
+		testRunService.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false, isTestsRunning: true)
+		postForegroundSignal()
+		NotificationCenter.default.removeObserver(testRunService)
+		check(
+			AppsFlyerLib.initializeCallCount == 0 && AppsFlyerLib.startCallCount == 0,
+			"T35 AF-01 row 1: a test run must not initialize the SDK and must not register the "
+				+ "foreground observer, got \(AppsFlyerLib.initializeCallCount) initialize(s) and "
+				+ "\(AppsFlyerLib.startCallCount) start(s)"
+		)
+		check(
+			ConfigurationIssues.shared.all.contains { $0.contains("test run") },
+			"T35 AF-01 row 1: a test run must record its own reason, apart from the empty-dev-key "
+				+ "one, got \(ConfigurationIssues.shared.all)"
+		)
+
+		// ── AF-01 row 3 — SDK debug logging rides the app's `isDebug`, not a switch of its own ──
+		// T18/T19 already pin that the value travels from a parameter rather than a constant. What
+		// changed is which parameter: the facade's separate `sdkDebugLogs` is gone, and this is the
+		// same `isDebug` that decides crash collection — the row's whole point is that the app has
+		// two keys and the package has none of its own. A test run leaves logging alone: the two
+		// keys are different axes, and gluing them together would either drag another SDK's console
+		// logs into every test run or silence attribution in every debug build.
+		AppsFlyerLib.reset()
+		let debugKeyService = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
+		debugKeyService.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: true, isTestsRunning: false)
+		NotificationCenter.default.removeObserver(debugKeyService)
+		check(
+			AppsFlyerLib.shared().isDebug && AppsFlyerLib.initializeCallCount == 1,
+			"T36 AF-01 row 3: the app's isDebug must reach AppsFlyerLib.isDebug on a run that is not "
+				+ "a test run, got isDebug=\(AppsFlyerLib.shared().isDebug), "
+				+ "\(AppsFlyerLib.initializeCallCount) initialize(s)"
+		)
+
 		if failures.isEmpty {
-			print("AppsFlyerService (AF-01…AF-06): 36/36 OK")
+			print("AppsFlyerService (AF-01…AF-06): 39/39 OK")
 		} else {
-			print("\(failures.count) of 36 asserts FAILED:")
+			print("\(failures.count) of 39 asserts FAILED:")
 			for failure in failures {
 				print("  - \(failure)")
 			}

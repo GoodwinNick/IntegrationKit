@@ -7,8 +7,10 @@ import AppTrackingTransparency
 import Foundation
 
 public protocol AnalyticsTracking: AnyObject {
-	/// `firstOpenEvent` is logged once per install, under the package's own gate.
-	func configure(apiKey: String, deviceId: String, firstOpenEvent: String?)
+	/// `firstOpenEvent` is logged once per install, under the package's own gate. `isTestsRunning`
+	/// is the app's own answer to "is this a test run" — the layer does not start at all when it is
+	/// true, and the gate above is left unspent (AN-01 rows 3 and 8).
+	func configure(apiKey: String, deviceId: String, firstOpenEvent: String?, isTestsRunning: Bool)
 	/// Logs an event by name, optionally with properties.
 	func logEvent(_ event: String, properties: [String: Any]?)
 	/// Merges these into the current Amplitude user profile.

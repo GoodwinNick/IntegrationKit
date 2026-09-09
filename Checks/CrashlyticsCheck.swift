@@ -2,20 +2,20 @@
 //  CrashlyticsCheck.swift
 //  IntegrationKit
 //
-//  Written from the approved schemas CR-01 and CR-02, not from the code. Twelve of the sixteen rows
-//  of those two tables are checked here. The four that are not each say why in the row itself:
+//  Written from the approved schemas CR-01 and CR-02, not from the code. Eleven of the sixteen rows
+//  of those two tables are checked here. The five that are not each say why in the row itself:
 //  CR-02 row 6 is a pointer to CR-01 row 1 (covering it twice would hide which one owns the test),
-//  CR-01 row 6 is a resolver fact with no runtime to observe, and CR-01 row 7 and CR-02 row 8 are
-//  log lines the schema requires and the code does not yet emit — an assert for those goes in with
-//  the code fix, which is a separate phase.
+//  CR-01 row 6 is a resolver fact with no runtime to observe, CR-01 row 7 and CR-02 row 8 are log
+//  lines the schema requires and the code does not yet emit, and CR-01 row 5 stopped being a
+//  runtime state at all — see the note standing where T10 used to.
 //
-//  All twelve are green as of `b6ac9ef`. T1–T5 were written red first, as the spec for behaviour the
-//  wrapper did not have: a second `FirebaseIntegration.configure()` is a no-op (CR-01 row 3), the
-//  collection flag arrives as a parameter and is written on every launch in both directions (CR-01
-//  rows 2 and 4), a report filed before Firebase is up is counted rather than lost (CR-01 row 1),
-//  and the tag reaches Crashlytics as a *searchable custom key* (CR-02 row 1). T6–T9 were green
-//  from the start and pin the noise filter exactly as the contract describes it, so a later change
-//  cannot loosen it silently.
+//  All eleven are green. T1–T5 and T14–T15 were written red first, as the spec for behaviour the
+//  wrapper did not have: a second `FirebaseIntegration.configure()` is a no-op (CR-01 row 3), crash
+//  collection follows the app's own `isDebug` key and is written on every launch in both directions
+//  (CR-01 rows 2 and 4), a report filed before Firebase is up is counted rather than lost (CR-01
+//  row 1), and the tag reaches Crashlytics as a *searchable custom key* (CR-02 row 1). T6–T9 were
+//  green from the start and pin the noise filter exactly as the contract describes it, so a later
+//  change cannot loosen it silently.
 //
 //  This check does not stop at the first failing row: every row runs, every failure is collected,
 //  and the summary at the end reports all of them with a non-zero exit code — same shape as
@@ -30,7 +30,7 @@ import Foundation
 @main
 enum CrashlyticsCheck {
 	static var failures: [String] = []
-	static var rowCount = 12
+	static var rowCount = 11
 
 	/// Records a failure instead of trapping — one failing row must not stop every row after it
 	/// from running.
@@ -58,8 +58,8 @@ enum CrashlyticsCheck {
 		// Executes `FirebaseIntegration.configure()`. The real SDK throws an `NSException` on the
 		// second `FirebaseApp.configure()` — one that Swift cannot catch, so the app dies at launch.
 		reset()
-		FirebaseIntegration.configure(collectsCrashes: false)
-		FirebaseIntegration.configure(collectsCrashes: false)
+		FirebaseIntegration.configure(isDebug: true)
+		FirebaseIntegration.configure(isDebug: true)
 		check(
 			FirebaseApp.configureCallCount == 1,
 			"T1 CR-01 row 3: two FirebaseIntegration.configure() calls must reach the SDK once, "
@@ -72,10 +72,10 @@ enum CrashlyticsCheck {
 		// that is the whole point of the row — a developer who wants to see their own test crash in
 		// the dashboard must not have to make a Release build to do it.
 		reset()
-		FirebaseIntegration.configure(collectsCrashes: true)
+		FirebaseIntegration.configure(isDebug: false)
 		check(
 			Crashlytics.collectionEnabled == true,
-			"T2 CR-01 row 2: collectsCrashes: true must reach the SDK as true even under -D DEBUG, "
+			"T2 CR-01 row 2: isDebug false must reach the SDK as collection ON even under -D DEBUG, "
 				+ "got \(String(describing: Crashlytics.collectionEnabled))"
 		)
 
@@ -85,7 +85,7 @@ enum CrashlyticsCheck {
 		// Debug run that switched collection off would keep it off in the Release build installed
 		// over it. `nil` here means nobody wrote the flag at all, and that is the failure.
 		reset()
-		FirebaseIntegration.configure(collectsCrashes: false)
+		FirebaseIntegration.configure(isDebug: true)
 		check(
 			Crashlytics.collectionEnabled == false,
 			"T3 CR-01 row 4: the flag must be written explicitly on every launch, got "
@@ -120,7 +120,7 @@ enum CrashlyticsCheck {
 		// filtered on in the dashboard (`FIRCLSUserLogging.m:329-352`). A tag that arrives only in
 		// `userInfo` therefore does not close this row: "errors from premium" is still unfindable.
 		reset()
-		FirebaseIntegration.configure(collectsCrashes: true)
+		FirebaseIntegration.configure(isDebug: false)
 		let reporter = CrashReporter()
 		reporter.recordNonFatal("premium", NSError(domain: "app.premium", code: 42), ["step": "restore"])
 		check(
@@ -193,18 +193,18 @@ enum CrashlyticsCheck {
 		// CR-02 row 6 (Crashlytics never brought up) is NOT covered here on purpose — it is a
 		// pointer to CR-01 row 1, and covering it twice would hide which of the two owns the test.
 
-		// ── CR-01 row 5 — an app that says nothing collects crashes ──────────────────────────
-		// The parameter carries a default, and the default is the whole policy for every app that
-		// never thinks about the argument. Silence from the integrator has to turn a
-		// not-to-be-silent tool ON; a default flipped to `false` in a refactor would take every
-		// such app dark without a single call site changing.
-		reset()
-		FirebaseIntegration.configure()
-		check(
-			Crashlytics.collectionEnabled == true,
-			"T10 CR-01 row 5: configure() with no argument must default to collecting, got "
-				+ "\(String(describing: Crashlytics.collectionEnabled)) (nil = never written)"
-		)
+		// CR-01 row 5 (an app that says nothing) is NOT covered here any more, and cannot be: the
+		// row was about the default behind `collectsCrashes`, and that parameter is gone. Crash
+		// collection now follows `isDebug` — one of the two keys the app hands the package — and
+		// `isDebug` carries no default, because a package that defaults it is a package guessing
+		// the build type. "The app passed nothing" therefore stops being a runtime state to assert
+		// and becomes a compile error at the call site, which is a stronger lock than T10 was.
+		// T10 stood here until 2026-09-09; its twelve lines are kept as this note rather than
+		// deleted, so every assert coordinate below stays where the risk tables say it is.
+		// What the row's real intent — silence must not switch a not-to-be-silent tool off — turns
+		// into is the pair of asserts at the end of this file: the flag is written on every launch,
+		// in both directions, from the app's own answer. Neither direction can be dropped without
+		// one of them going red.
 
 		// ── CR-02 row 7 — the noise filter runs before the Firebase-up guard ─────────────────
 		// Order is contract here, not implementation detail. A filtered network error is not a lost
@@ -230,7 +230,7 @@ enum CrashlyticsCheck {
 		// reference material inside an issue already opened by the tag's filter. T5 pins that the
 		// tag arrives searchable; this pins that nothing was traded away to get it there.
 		reset()
-		FirebaseIntegration.configure(collectsCrashes: true)
+		FirebaseIntegration.configure(isDebug: false)
 		CrashReporter().recordNonFatal("premium", NSError(domain: "app.premium", code: 42), ["step": "restore"])
 		check(
 			(Crashlytics.recordedErrors.first?.userInfo?["step"] as? String) == "restore",
@@ -255,6 +255,48 @@ enum CrashlyticsCheck {
 			},
 			"T13 CR-02 row 9: the dropped-report cause must be logged with the [IntegrationKit] "
 				+ "prefix, at error level, naming the call that was missed, got \(logged)"
+		)
+
+		// ── CR-01 row 4 — the second launch on a device the first launch already wrote ───────
+		// Appended at the end on purpose: every coordinate above is quoted by CR-01 and CR-02, and
+		// renumbering them is a worse defect than a long file.
+		//
+		// T2 and T3 own the two directions within one launch, each from a flag nobody has written
+		// yet. What neither of them can say is the thing the row is actually about: the flag lives
+		// in `NSUserDefaults` under `com.crashlytics.data_collection`
+		// (`FIRCLSDataCollectionArbiter.m:116`), so it survives the process that wrote it and the
+		// build that wrote it. `reset()` clears the stub, which is exactly the state a real device
+		// is never in after the first run.
+		//
+		// So both rows here are two launches on one device with the flag left standing in between —
+		// only `FirebaseApp` is reset, the way a relaunch resets a process. A wrapper that only
+		// knew how to switch collection off would pass T2 and T3 and still fail T14: yesterday's
+		// debug build left the device dark, and today's release build has to turn it back on.
+		Crashlytics.reset()
+		FirebaseApp.reset()
+		FirebaseIntegration.configure(isDebug: true)
+		FirebaseApp.reset()
+		FirebaseIntegration.configure(isDebug: false)
+		check(
+			Crashlytics.collectionEnabled == true,
+			"T14 CR-01 row 4: a launch with isDebug false must switch collection back ON over the "
+				+ "value a previous launch persisted, got "
+				+ "\(String(describing: Crashlytics.collectionEnabled)) (nil = never written)"
+		)
+
+		// T15 — the same in the other direction. A device that reported crashes must stop when the
+		// next build says it is a debug one; "write it only when turning collection on" is the
+		// mirror defect and would leave a developer's own crashes in the production dashboard.
+		Crashlytics.reset()
+		FirebaseApp.reset()
+		FirebaseIntegration.configure(isDebug: false)
+		FirebaseApp.reset()
+		FirebaseIntegration.configure(isDebug: true)
+		check(
+			Crashlytics.collectionEnabled == false,
+			"T15 CR-01 row 4: a launch with isDebug true must switch collection back OFF over the "
+				+ "value a previous launch persisted, got "
+				+ "\(String(describing: Crashlytics.collectionEnabled)) (nil = never written)"
 		)
 
 		if failures.isEmpty {

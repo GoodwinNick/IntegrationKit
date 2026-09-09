@@ -17,13 +17,19 @@ protocol AdaptyServicing: AnyObject {
 	/// over rather than read here: the status is state, not install data, so it is sent on every
 	/// launch (AD-06 row 6), and a service that reached for `ATTrackingManager` itself would be
 	/// reading a global the caller already owns — and one that blocks forever outside an app bundle.
+	///
+	/// `isTestsRunning` is the app's own answer to "is this a test run", and it leaves the layer
+	/// inactive the same way an empty key does — with its own reason, because an app shipped
+	/// without monetisation and a test run are different facts (AD-01 row 1). Without it a UI-test
+	/// run of the app reaches the live Adapty project with the live key.
 	func configure(
 		apiKey: String,
 		customerUserId: String,
 		sessionsCounter: Int,
 		placements: [String],
 		analytics: AnalyticsTracking,
-		attStatus: ATTrackingManager.AuthorizationStatus
+		attStatus: ATTrackingManager.AuthorizationStatus,
+		isTestsRunning: Bool
 	)
 
 	/// Writes one custom attribute to the Adapty profile. A value Adapty would refuse (a key outside

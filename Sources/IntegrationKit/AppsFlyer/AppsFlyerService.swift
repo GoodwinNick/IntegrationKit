@@ -44,7 +44,20 @@ final class AppsFlyerService: NSObject, AppsFlyerServicing {
 		NotificationCenter.default.removeObserver(self)
 	}
 
-	func configure(devKey: String, appId: String, deviceId: String, attTimeout: TimeInterval, isDebug: Bool) {
+	/// `isTestsRunning` defaults only so the checks' own call sites stay short — the composition
+	/// root always passes the app's answer, and the app always computes it.
+	func configure(devKey: String, appId: String, deviceId: String, attTimeout: TimeInterval, isDebug: Bool, isTestsRunning: Bool = false) {
+		// AF-01 row 1, the second of the two switches: a test run must not stand the SDK up at all.
+		// Attribution is bought traffic — sessions and install data from a robot move the numbers
+		// an advertising budget is steered by. Its own reason, apart from the empty dev key: that
+		// one is an app shipping without attribution, this one is a key that is perfectly fine.
+		guard !isTestsRunning else {
+			ConfigurationIssues.shared.record(
+				"AppsFlyer is off for this run — the app reported a test run",
+				tag: Self.tag
+			)
+			return
+		}
 		// AF-01 row 1: a supported way to run without attribution — a test build, a flavour without
 		// AppsFlyer — but not a silent one. Without this line "no attribution" and "forgot the key"
 		// look identical from a release build.

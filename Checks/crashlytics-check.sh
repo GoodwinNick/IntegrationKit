@@ -1,5 +1,5 @@
 #!/bin/sh
-# CrashReporter/FirebaseIntegration self-check — 12 rows from the approved schemas CR-01 and CR-02.
+# CrashReporter/FirebaseIntegration self-check — 11 rows from the approved schemas CR-01 and CR-02.
 # No XCTest, no Xcode project.
 #
 # `-D DEBUG` on the final build on purpose: it is the build in which the collection flag used to be

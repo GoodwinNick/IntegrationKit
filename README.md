@@ -31,9 +31,8 @@ In Xcode: File → Add Package Dependencies → the same URL, product `Integrati
 ```swift
 import IntegrationKit
 
-// Call before IntegrationKit.configure(...). Pass collectsCrashes: false to keep
-// Crashlytics off until the user consents — the setting applies from the next launch.
-FirebaseIntegration.configure()
+// Call before IntegrationKit.configure(...).
+FirebaseIntegration.configure(isDebug: isDebug)
 
 let kit = IntegrationKit.configure(
 	deviceId: deviceId,
@@ -43,6 +42,8 @@ let kit = IntegrationKit.configure(
 	sessionsCounter: sessionsCounter,
 	sharedSecret: appStoreSharedSecret,
 	productIds: ["year.sub", "week.sub"],
+	isDebug: isDebug,
+	isTestsRunning: isTestsRunning,
 	levels: ["premium"],
 	firstOpenEvent: "first_open",
 	appsFlyerDevKey: appsFlyerDevKey,
@@ -53,10 +54,25 @@ kit.analytics.logEvent("app_open")
 kit.crashes.recordNonFatal("launch", someError)
 ```
 
+`isDebug` and `isTestsRunning` are the package's only two switches, and the app
+computes both: `isDebug` is its own `#if DEBUG`, `isTestsRunning` is
+`ProcessInfo.processInfo.arguments.contains("-uitest")` or
+`ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil`.
+Neither has a default — the package does not guess the build type or the kind
+of launch. `isDebug` decides Crashlytics collection (on exactly when it is
+`false`, so a debug build can still be made to report a live crash) and
+AppsFlyer's console logging. `isTestsRunning` leaves Amplitude, Adapty and
+AppsFlyer down for the whole run, so a test run cannot poison the analytics or
+spend the attribution budget it is measured by; Firebase and StoreKit are not
+touched by it, because a run meant to catch crashes must not lose them. They
+are separate keys on purpose: one silences, the other reports.
+
 An empty key switches its SDK off for the whole run rather than half-starting
 it — `adaptyKey: ""` leaves the Adapty layer inert and records why,
 `amplitudeKey: ""` sends no events, `appsFlyerDevKey: ""` creates no AppsFlyer
-at all. No `#if` needed for a test run or a build flavour without one of them.
+at all. No `#if` needed for a build flavour without one of them; for a test run
+pass `isTestsRunning: true` instead, which reaches the same three states with
+the real reason recorded rather than a fake key.
 
 Every such cause lands in `kit.configurationIssues` — a plain `[String]`, one
 line per cause, readable in a **release** build. It is the answer to "the SDK is
@@ -87,8 +103,11 @@ meaning of every `configure` parameter and the paywall-to-purchase flow.
   passed to `configure`, never hardcoded in the package. StoreKit itself is the
   package's job now: receipt validation, restore, the fallback purchase and the
   prices shown on the paywall all live inside it.
-- Calling `FirebaseIntegration.configure()` and `IntegrationKit.configure(...)`
-  at app launch, and forwarding `application(_:continue:restorationHandler:)` /
+- `isDebug` and `isTestsRunning` — the app's own `#if DEBUG` and its own reading
+  of `-uitest` / `XCTestConfigurationFilePath`. The package never derives either.
+- Calling `FirebaseIntegration.configure(isDebug:)` and
+  `IntegrationKit.configure(...)` at app launch, and forwarding
+  `application(_:continue:restorationHandler:)` /
   `application(_:open:options:)` through `kit.handleContinue` / `kit.handleOpen`.
 
 ## Package layout
