@@ -43,8 +43,8 @@ not build.
 
 Your own Firebase project's config file (Firebase console), dropped into the
 target's root with **target membership checked**. Without it,
-`FirebaseIntegration.configure()` calls `FirebaseApp.configure()`, which
-fails fatally at launch — there is no soft-fail path.
+`FirebaseIntegration.configure(isDebug:)` calls `FirebaseApp.configure()`,
+which fails fatally at launch — there is no soft-fail path.
 
 ### 3. `Info.plist` / build settings
 
@@ -97,7 +97,7 @@ fi
 `firebase-ios-sdk` transitively, it shows up there automatically once
 dependencies resolve.
 
-### 6. Call `FirebaseIntegration.configure()`, then `IntegrationKit.configure(...)`
+### 6. Call `FirebaseIntegration.configure(isDebug:)`, then `IntegrationKit.configure(...)`
 
 Firebase configures first, and separately — it has no state the composition
 root needs. Everything else goes through one call:
@@ -113,8 +113,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 		_ application: UIApplication,
 		didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
 	) -> Bool {
+		// The package's only two switches, and both of them are facts only the app can see.
+		#if DEBUG
+		let isDebug = true
+		#else
+		let isDebug = false
+		#endif
+		let isTestsRunning = ProcessInfo.processInfo.arguments.contains("-uitest")
+			|| ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+
 		// Must be first: a report filed before this line is dropped and counted.
-		FirebaseIntegration.configure(collectsCrashes: true)
+		FirebaseIntegration.configure(isDebug: isDebug)
 
 		let kit = IntegrationKit.configure(
 			deviceId: AppDefaults.deviceId,
@@ -124,13 +133,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 			sessionsCounter: AppDefaults.sessionsCounter,
 			sharedSecret: ObfuscatedSecret.reveal(encrypted: SDKKeys.sharedSecretEncrypted, secret: SDKKeys.secret),
 			productIds: ["year.sub", "week.sub"],
+			isDebug: isDebug,
+			isTestsRunning: isTestsRunning,
 			levels: ["premium"],
 			firstOpenEvent: "first_open",
 			appsFlyerDevKey: ObfuscatedSecret.reveal(encrypted: SDKKeys.appsFlyerEncrypted, secret: SDKKeys.secret),
 			appsFlyerAppId: "1234567890",
 			// 60 s fits an ATT prompt shown at launch; raise it if the prompt comes after onboarding.
-			attTimeout: 60,
-			sdkDebugLogs: false
+			attTimeout: 60
 		)
 		self.kit = kit
 
@@ -175,6 +185,31 @@ order that the app cannot reorder or skip a step of. That is the entire point
 of the composition root: there is no longer a way to call `premium.start()`
 late, or configure AppsFlyer before Adapty exists to receive its attribution.
 
+**The two keys are computed by the app, every launch, and passed to both
+calls.** The package never derives either of them: it cannot tell a
+developer's own run from a CI machine, and an `#if DEBUG` compiled into a
+package cannot be switched off by whoever needs it off. Neither key has a
+default, so a build that forgets one does not compile.
+
+`isDebug` is the app's own `#if DEBUG`, nothing more. `isTestsRunning` is the
+app's reading of its own launch — the two conditions above cover both test
+harnesses: XCUITest passes launch arguments, so a UI test adds `-uitest` to
+`app.launchArguments`, and XCTest puts `XCTestConfigurationFilePath` into the
+environment of a unit-test run by itself. Compute it once and keep it, rather
+than re-reading `ProcessInfo` in several places:
+
+```swift
+enum AppRun {
+	static let isTests = ProcessInfo.processInfo.arguments.contains("-uitest")
+		|| ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+}
+```
+
+They are two axes, not one switch with two names, and collapsing them breaks
+in both directions: a test run that also stopped crash collection would lose
+exactly the crashes the run existed to find, and a debug build that also
+silenced analytics would leave every development session unmeasurable.
+
 ## `IntegrationKit.configure`
 
 ```swift
@@ -186,13 +221,14 @@ public static func configure(
 	sessionsCounter: Int,
 	sharedSecret: String,
 	productIds: Set<String>,
+	isDebug: Bool,
+	isTestsRunning: Bool,
 	levels: Set<String> = ["premium"],
 	firstOpenEvent: String? = nil,
 	appsFlyerDevKey: String = "",
 	appsFlyerAppId: String = "",
 	sourceTimeout: TimeInterval = 5,
-	attTimeout: TimeInterval = 60,
-	sdkDebugLogs: Bool = false
+	attTimeout: TimeInterval = 60
 ) -> IntegrationKit
 ```
 
@@ -205,23 +241,35 @@ public static func configure(
 | `sessionsCounter` | The app's own session counter, incremented once per launch before this call | App-owned persistent counter | Required — no default. Written into the Adapty profile as-is; passing a stale or constant value just means that field in the profile stops being meaningful. |
 | `sharedSecret` | App Store Connect shared secret, used to validate the receipt against Apple's production endpoint | App Store Connect → Subscriptions → App-Specific Shared Secret | Required — no default, but `""` is legal and means the receipt is never checked (`checkReceipt` answers "not checked"). Premium then relies on Adapty alone. |
 | `productIds` | The subscription product ids to look for in the receipt, and the ids whose prices are read from the store | App Store Connect, same ids as in the Adapty dashboard | Required — no default. An empty set means the receipt is read but nothing is ever found in it, so Apple can never confirm premium. |
+| `isDebug` | The app's own `#if DEBUG`, and the only thing that decides crash collection. Here it also turns AppsFlyer's own console logging on and off; pass the same value to `FirebaseIntegration.configure(isDebug:)` | An `#if DEBUG` in the app, beside its other developer flags | Required — no default, deliberately: a default is the package guessing the build type. `true` switches Crashlytics collection off and AppsFlyer's SDK logging on; `false` does the opposite. It does **not** touch Amplitude, Adapty or StoreKit. |
+| `isTestsRunning` | Whether this launch is a test run. `true` leaves Amplitude, Adapty and AppsFlyer down for the whole run, each recording its own reason in `configurationIssues` | The app: `ProcessInfo.processInfo.arguments.contains("-uitest")` or `ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil` | Required — no default. `true` means no Amplitude events, no Adapty activation (so no live paywalls and no live purchases through it), and no AppsFlyer sessions, install data or deep links. Firebase and StoreKit are **not** affected: crash collection follows `isDebug` alone, and the receipt is still read. |
 | `levels` | The set of Adapty access level ids that count as "premium" | Adapty dashboard — access level ids configured for the paywall | Defaults to `["premium"]`. Wrong values here mean a real Adapty premium purchase never flips `isPremium` to true. |
 | `firstOpenEvent` | Analytics event name logged exactly once per install | App's own event naming | `nil` (default) — no first-open event is logged at all. |
 | `appsFlyerDevKey` | AppsFlyer dev key | AppsFlyer dashboard, per app | Defaults to `""`. An empty dev key means **AppsFlyer is not created at all** — no attribution, `kit.handleContinue`/`kit.handleOpen` become no-ops. |
 | `appsFlyerAppId` | Numeric App Store id | App Store Connect / `itunes.apple.com/lookup` | Defaults to `""`. Only meaningful together with a non-empty `appsFlyerDevKey`; without a confirmed App ID, AppsFlyer attribution can end up pointed at the wrong app. |
 | `sourceTimeout` | How long one premium refresh waits for a single source — Adapty, or the Apple receipt — before deciding without it | The app's own judgement about its users' networks | Defaults to `5` seconds. That number comes from practice, not from anything Adapty documents; an app whose users are on worse networks passes a larger one instead of patching the package. Neither source answering within it is not "no premium" — it is "unknown", and the cached state stands. |
 | `attTimeout` | How long AppsFlyer holds the install data waiting for the ATT answer | Where the app shows the ATT prompt | Defaults to `60` seconds, which is AppsFlyer's own recommendation for a prompt shown at launch. An app that asks after a tutorial is told to pass `120`. Only the app knows which it is, and a user who deletes the app before the limit expires stays unattributed. |
-| `sdkDebugLogs` | AppsFlyer's own console logging | The app's debug flag — the same one its other developer switches use | Defaults to `false`. Not derived from the build configuration on purpose: otherwise nobody can turn logs on to check an integration in a TestFlight build, or off in a Debug build that ships to a client. AppsFlyer's docs require it off in a shipping build. |
+There is no separate switch for AppsFlyer's console logging any more — it is
+`isDebug`, the same key crash collection runs off. AppsFlyer's docs require
+the logging off in a shipping build, which a release build's `false` gives
+without anyone remembering.
 
 **An empty key makes a whole SDK inert, on purpose.** All three behave the
-same way, so a test run, a build flavour without analytics, or an app that
-ships without one of the SDKs needs no `#if` anywhere:
+same way, so a build flavour without analytics or an app that ships without
+one of the SDKs needs no `#if` anywhere:
 
 | Empty argument | What happens |
 |---|---|
 | `adaptyKey: ""` | Adapty is never activated. Every call into the layer becomes a no-op, one line lands in `configurationIssues`, and no purchase is ever pushed through Adapty behind the app's back. |
 | `amplitudeKey: ""` | Amplitude is never activated; events go nowhere. |
 | `appsFlyerDevKey: ""` | No `AppsFlyerService` is created at all; `handleContinue`/`handleOpen` become no-ops. |
+
+`isTestsRunning: true` reaches the same three states at once, and is the right
+way to do it for a test run — an empty key would be a lie about the
+configuration, and each layer records a reason of its own instead: an app
+shipped without monetisation and a test run land in the same place through
+different facts, and are fixed differently. Which is why they are separate
+lines in `configurationIssues` rather than one.
 
 For `adaptyKey` this is a hard guard, not a courtesy: `Adapty.activate` runs
 `assert(apiKey.count >= 41 && apiKey.starts(with: "public_live"))` on the
@@ -240,7 +288,7 @@ they are not public types.
 
 ```swift
 public protocol AnalyticsTracking: AnyObject {
-	func configure(apiKey: String, deviceId: String, firstOpenEvent: String?)
+	func configure(apiKey: String, deviceId: String, firstOpenEvent: String?, isTestsRunning: Bool)
 	func logEvent(_ event: String, properties: [String: Any]?)
 	func setUserProperties(_ properties: [String: Any])
 	func setUserId(_ userId: String)
@@ -352,14 +400,14 @@ would want once you are looking at the report.
 
 ### Order matters, and the count says when it was wrong
 
-`FirebaseIntegration.configure()` must run **before**
+`FirebaseIntegration.configure(isDebug:)` must run **before**
 `IntegrationKit.configure(...)`. A report filed while Firebase is not up
 cannot be delivered, so it is dropped, counted, and the reason is recorded
 once in `kit.configurationIssues`:
 
 ```swift
 if kit.crashes.droppedReports > 0 {
-	// FirebaseIntegration.configure() ran too late — or not at all.
+	// FirebaseIntegration.configure(isDebug:) ran too late — or not at all.
 }
 ```
 
@@ -367,19 +415,60 @@ if kit.crashes.droppedReports > 0 {
 Both are readable in a release build, which is the point — nothing here
 depends on a DEBUG log.
 
-### Turning collection off
+### What switches collection on and off
 
 ```swift
-FirebaseIntegration.configure(collectsCrashes: false)
+FirebaseIntegration.configure(isDebug: isDebug)
 ```
 
-Passing `false` is for a build that must not report until the user consents.
-Crashlytics stores the flag in `NSUserDefaults` and reads it while starting
-up, so **the change applies from the next launch**, not from this one — the
-current session keeps whatever the previous launch set. Calling
-`FirebaseIntegration.configure()` a second time in one process does nothing:
-a second `FirebaseApp.configure()` raises an `NSException` that no Swift
-`catch` can stop, so the call returns early when Firebase is already up.
+Collection is on exactly when `isDebug` is `false`. There is no second switch:
+the app's own `#if DEBUG` is the whole policy, so a developer's crashes stay
+out of the dashboard and a shipped build's go in.
+
+`isTestsRunning` deliberately does not reach this call. It silences Amplitude,
+Adapty and AppsFlyer; Firebase stays up, because a test run that was meant to
+catch crashes must not be the run that loses them.
+
+**The flag is written on every launch, in both directions, and that is not
+symmetry for its own sake.** Crashlytics persists it in `NSUserDefaults` under
+`com.crashlytics.data_collection` and reads it while starting up, so it
+survives the build that wrote it. A package that only knew how to switch
+collection *off* would leave every device that ever ran a debug build dark for
+every build installed on it afterwards — including the release one. So the
+value is set explicitly each launch rather than left to a default.
+
+Two consequences worth knowing before debugging a silent dashboard:
+
+- **The change applies from the *next* launch**, not from this one. The
+  current session keeps whatever the previous launch set. That is the SDK's
+  rule, not this package's.
+- A device that last ran a debug build has collection off *right now*. The
+  first release launch after it turns the flag back on, and reports start
+  arriving from the launch after that.
+
+Calling `FirebaseIntegration.configure(isDebug:)` a second time in one process
+does nothing: a second `FirebaseApp.configure()` raises an `NSException` that
+no Swift `catch` can stop, so the call returns early when Firebase is already
+up.
+
+### Checking a live crash on a real device
+
+Crash *reporting* cannot be verified from Xcode — with a debugger attached the
+SDK installs no signal or mach-exception handlers at all, so the crash is
+caught by the debugger and nothing is ever written. The procedure:
+
+1. Build **Debug**, but pass `isDebug: false` to
+   `FirebaseIntegration.configure(...)` for this build only. That is what the
+   key exists for: no Release build, no archive, no `#if` inside the package to
+   fight.
+2. Install the app and launch it **from the home screen**, not from Xcode. Let
+   it reach the first screen — this launch is the one that turns collection on.
+3. Force a crash (`fatalError()` behind a debug button, or Crashlytics's own
+   test crash).
+4. **Launch the app again.** The report is written on the crash and uploaded on
+   the *next* start; it never appears while the app is still down.
+5. Set `isDebug` back to the app's own `#if DEBUG` afterwards, or every
+   developer's crash lands in the production dashboard from then on.
 
 ## Premium
 
@@ -701,7 +790,7 @@ for s in Checks/*.sh; do "./$s"; done
 | `premium-pending-check.sh` | That one hung purchase does not refuse every later purchase in the process. |
 | `premium-storekit-check.sh` | Restore, price lookup, and unfinished transactions delivered by the payment queue. |
 | `crashlytics-check.sh` | Double `configure`, the network-noise filter, and the tags a non-fatal carries. |
-| `amplitude-analytics-check.sh` | First-open gating, the IDFA plugin attached exactly once, the environment property. |
+| `amplitude-analytics-check.sh` | First-open gating, the IDFA plugin attached exactly once, the environment property, the test-run guard. |
 | `appsflyer-service-check.sh` | Session start, attribution mapping, the ATT wait limit, deep-link values. |
 | `appsflyer-attribution-check.sh` | `cleanedAttributionData`: `NSNull`/non-scalar values and non-string keys dropped, an empty input staying empty, a `nil` deep link value becoming `"-"`, `clickEvent` fields flowing through. |
 
@@ -780,10 +869,26 @@ dashboard entry.
   target.
 - **Non-fatals never reach the Crashlytics dashboard.** Read
   `kit.crashes.droppedReports`: anything above zero means
-  `FirebaseIntegration.configure()` ran after `IntegrationKit.configure(...)`,
-  or not at all, and every report filed in between was dropped. If it is zero,
-  check that `collectsCrashes` was not left `false` on the previous launch —
-  the flag applies from the launch *after* it is set.
+  `FirebaseIntegration.configure(isDebug:)` ran after
+  `IntegrationKit.configure(...)`, or not at all, and every report filed in
+  between was dropped. If it is zero, see the next entry.
+- **The Crashlytics dashboard is empty on a device that ran a debug build,
+  even now that the app is a release one.** Expected, and it clears itself.
+  The debug launch wrote collection *off* into `NSUserDefaults`
+  (`com.crashlytics.data_collection`), where it survived the reinstall; the
+  first release launch writes `true` back, and the flag applies from the launch
+  after that. So: launch the release build twice before concluding anything.
+  What would make this permanent is a build that only ever writes `false` —
+  which is why the package sets the flag explicitly on every launch, in both
+  directions, rather than only when switching collection off.
+- **Analytics, paywalls and attribution are all silent at once, and the keys
+  are right.** `isTestsRunning` was left `true`. It is one switch over three
+  SDKs, so "Amplitude is quiet" and "no paywall ever loads" and "AppsFlyer
+  never attributes" arrive together — the usual cause is a launch argument or
+  scheme setting that survived a debugging session, or a computed value that
+  went constant. `kit.configurationIssues` names it directly: three lines, one
+  per layer, each saying the app reported a test run. Firebase stays up in that
+  state, so crashes still arrive and the app does not look dead.
 - **A report is in the dashboard but cannot be filtered by its tag.** Filter on
   the custom key `ik_tag`, not on the `info` dictionary: `info` is the report's
   `userInfo` and is only visible inside an issue that is already open.
@@ -795,8 +900,11 @@ dashboard entry.
 - [ ] Crashlytics dSYM Run Script added, `inputPaths` point at this target
 - [ ] `NSUserTrackingUsageDescription` set in Info.plist
 - [ ] Associated Domains added, if Universal Links are needed
-- [ ] `AppDelegate` calls `FirebaseIntegration.configure()` before
-      `IntegrationKit.configure(...)`
+- [ ] `AppDelegate` calls `FirebaseIntegration.configure(isDebug:)` before
+      `IntegrationKit.configure(...)`, and both get the same `isDebug`
+- [ ] `isTestsRunning` is computed from `-uitest` / `XCTestConfigurationFilePath`
+      and is `false` on a real launch — check `kit.configurationIssues` for the
+      three "test run" lines
 - [ ] `sharedSecret` is this app's real App Store Connect shared secret, and
       `productIds` lists every subscription id the paywall can sell
 - [ ] `handleContinue`/`handleOpen` forwarded through `kit`, not any SDK
