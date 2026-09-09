@@ -171,6 +171,7 @@ enum AdaptyServiceCheck {
 			("AD-05 profile", profile),
 			("AD-06 identity", identity),
 			("AD-07 remote values", remoteValues),
+			("AD-02…AD-07 amendments", amendments),
 		]
 		for (name, section) in sections {
 			fputs("· \(name)\n", stderr)
@@ -762,5 +763,133 @@ enum AdaptyServiceCheck {
 		check(t38.hasProductsForPaywall(placement: "nope") == false, "PM-07 r1: an unconfigured placement must report no products")
 		let t38Remote: RemoteValue<String> = t38.getRemoteValue(placement: "nope", key: "any")
 		check(name(t38Remote) == "notReady", "PM-07 r1: an unconfigured placement must have no remote config, got \(name(t38Remote))")
+	}
+
+	// MARK: - Amendments: rows the schemas assert that nothing pinned.
+	//
+	// Appended at the end on purpose. The rows of the AD tables name their checks by test id, not by
+	// line, but every risk row added with these carries `file:line`, and a new section spliced into
+	// the middle of the file would move those the day the next row is written.
+
+	static func amendments() {
+		// T39 — AD-02 row 7: the paywall-cache observer. The schema's side-effect table promises the
+		// screen is woken on every change of the cache, and AD-02 row 1 promises the same wake for a
+		// placement Adapty rejects — a wake with no paywall behind it. Nothing pinned either half, and
+		// the second one is the expensive one: without it a typo'd placement leaves the screen on its
+		// spinner for the life of the process, which is exactly the state `paywallState` was added to
+		// make visible.
+		reset("T39")
+		Adapty.holdGetPaywall = true
+		let t39 = AdaptyService()
+		var t39Wakes = 0
+		t39.observer = { t39Wakes += 1 }
+		t39.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		check(t39Wakes == 0, "AD-02 r7: a request still in flight must not wake the cache observer — got \(t39Wakes)")
+		Adapty.releaseHeldPaywall(.success(AdaptyPaywall()))
+		check(t39Wakes == 1, "AD-02 r7: a loaded paywall must wake the cache observer exactly once — got \(t39Wakes)")
+
+		// T39b — the same observer, the branch where no paywall ever arrives. `.unavailable` is only
+		// useful if somebody is told to go and read it.
+		reset("T39b")
+		Adapty.getPaywallResults = [.failure(AdaptyError(.badRequest))]
+		let t39b = AdaptyService()
+		var t39bWakes = 0
+		t39b.observer = { t39bWakes += 1 }
+		t39b.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["typo"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		check(t39bWakes == 1, "AD-02 r7: a placement Adapty rejected must wake the observer too, or the screen never leaves the spinner — got \(t39bWakes)")
+		check(t39b.paywallState(placement: "typo") == .unavailable, "AD-02 r7: the state the wake sends the screen to read must be .unavailable, got \(t39b.paywallState(placement: "typo"))")
+
+		// T40 — AD-03 row 6: a failed listing must not be cached. The schema tells the caller to show
+		// "try again later" and allow the retry, which is a promise only if the retry actually reaches
+		// the store — a `.failed` remembered as an empty list would answer the same way forever, and
+		// the difference is invisible from the answer alone.
+		reset("T40")
+		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getPaywallProductsResult = .failure(AdaptyError(.noProductIDsFound))
+		let t40 = AdaptyService()
+		t40.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		let t40Failed = run { await t40.products(placement: "main") }
+		check(name(t40Failed ?? .notReady) == "failed", "AD-03 r6 setup: the first call must answer .failed, got \(name(t40Failed ?? .notReady))")
+		let t40Before = Adapty.getPaywallProductsCallCount
+		Adapty.getPaywallProductsResult = .success([AdaptyPaywallProduct(vendorProductId: "year.sub")])
+		let t40Retry = run { await t40.products(placement: "main") }
+		check(Adapty.getPaywallProductsCallCount == t40Before + 1, "AD-03 r6: a failed listing must not be cached — the retry must reach the SDK again — \(t40Before) → \(Adapty.getPaywallProductsCallCount)")
+		check(name(t40Retry ?? .notReady) == "products(1)", "AD-03 r6: the retry must be applied, not merely attempted, got \(name(t40Retry ?? .notReady))")
+
+		// T41 — AD-04 row 8: exactly one verdict per call. The schema says it twice — "one verdict per
+		// call" in the steady state, "the caller, exactly once per call" in the side-effect table — and
+		// a second `resume` on a continuation is a hard crash, not a dropped value. AD-04's "what was
+		// checked" records that the Adapty 2.10.4 pin does not double-call through this path, so the
+		// guard is insurance; this is the check that the insurance works, and it is the only place in
+		// the package where a double answer can be produced at all.
+		reset("T41")
+		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getPaywallProductsResult = .success([AdaptyPaywallProduct(vendorProductId: "year.sub")])
+		let t41 = AdaptyService(deadlines: fast(\.purchase, 5))
+		t41.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		Adapty.holdMakePurchase = true
+		// `heldPurchases` is deliberately never cleared by `reset()` — see the stub — so the count is
+		// taken here rather than assumed to start at zero.
+		let t41Held = Adapty.heldPurchases.count
+		var t41Verdicts: [String] = []
+		Task { t41Verdicts.append(name(await t41.buy(productId: "year.sub", placement: "main"))) }
+		check(wait(3) { Adapty.heldPurchases.count > t41Held }, "AD-04 r8 setup: the purchase must reach the SDK and be held")
+		let t41Callback = Adapty.heldPurchases.last
+		t41Callback?(.success(()))
+		t41Callback?(.failure(AdaptyError(.paymentCancelled)))
+		check(wait(3) { !t41Verdicts.isEmpty }, "AD-04 r8: the call must settle after the SDK's first answer")
+		check(t41Verdicts == ["success"], "AD-04 r8: an SDK that answers twice must still yield exactly one verdict, and it must be the first — got \(t41Verdicts)")
+		check(hasLog("fired more than once"), "AD-04 r8: the dropped second answer must leave a trace, or a real double callback stays silent — got \(log)")
+
+		// T42 — AD-05 row 6: `profile()` is the second way the provenance flag flips, and the one
+		// nothing pinned. T25 covers the delegate's own half. This half decides what the push AFTER a
+		// request means: an answered request says the network has spoken, so the next push is checked;
+		// silence must leave the flag down, or a stale "no premium" from disk arrives dressed as a
+		// verified denial and PM-06 row 5 stops being true.
+		reset("T42")
+		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getProfileResult = .success(AdaptyProfile(accessLevels: [:]))
+		let t42 = AdaptyService()
+		var t42Pushes: [Bool] = []
+		t42.premiumObserver = { _, isVerified in t42Pushes.append(isVerified) }
+		t42.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		_ = run { await t42.profile() }
+		t42.didLoadLatestProfile(AdaptyProfile(accessLevels: [:]))
+		check(t42Pushes == [true], "AD-05 r6: a push after an answered profile() must be verified — got \(t42Pushes)")
+
+		// T42b — the same push after a request the SDK never answered. The verdict must stay unverified,
+		// which is what keeps a disk profile from closing access.
+		reset("T42b")
+		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.holdGetProfile = true
+		let t42b = AdaptyService(deadlines: fast(\.call, 0.3))
+		var t42bPushes: [Bool] = []
+		t42b.premiumObserver = { _, isVerified in t42bPushes.append(isVerified) }
+		t42b.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		_ = run { await t42b.profile() }
+		t42b.didLoadLatestProfile(AdaptyProfile(accessLevels: [:]))
+		check(t42bPushes == [false], "AD-05 r6: a push after a profile() the SDK never answered must stay unverified — got \(t42bPushes)")
+
+		// T42c — and the third path to the same place: the SDK answered, with an error. `profile()`
+		// hands back a double optional there (`.some(nil)`), which is the shape most easily mistaken
+		// for an answer.
+		reset("T42c")
+		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getProfileResult = .failure(AdaptyError(.serverError))
+		let t42c = AdaptyService()
+		var t42cPushes: [Bool] = []
+		t42c.premiumObserver = { _, isVerified in t42cPushes.append(isVerified) }
+		t42c.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		_ = run { await t42c.profile() }
+		t42c.didLoadLatestProfile(AdaptyProfile(accessLevels: [:]))
+		check(t42cPushes == [false], "AD-05 r6: a push after a profile() the SDK refused must stay unverified — got \(t42cPushes)")
+
+		// T43 — AD-07 row 4, the half T37 leaves open. The row asks for an `info` line naming the
+		// placement on success as well; a check that only pins the failure line stays green if the
+		// success branch goes silent, and then "the impression was sent" is once again unreadable.
+		reset("T43")
+		let t43 = loadedService()
+		t43.logPaywallOpen(placement: "main")
+		check(hasLog("logShowPaywall ok for 'main'"), "AD-07 r4: a delivered impression must leave an info line naming the placement — got \(log)")
 	}
 }
