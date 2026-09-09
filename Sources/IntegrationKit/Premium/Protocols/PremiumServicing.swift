@@ -27,6 +27,14 @@ public protocol PremiumServicing: AnyObject {
 
 	/// Prices and product description — from here, not from Adapty or StoreKit directly.
 	func product(_ productId: String, placement: String, completion: @escaping (PremiumProduct?) -> Void)
+	/// Everything the placement sells, priced. Two sources, one list: Adapty owns the paywall and
+	/// says which products are on it, the store owns the storefront and says what they cost. The
+	/// store's price wins wherever it answers; a product the store stayed silent about keeps
+	/// Adapty's copy rather than dropping out of the list.
+	///
+	/// A placement that has not loaded yet, or one Adapty could not list, does not give an empty
+	/// paywall: the `productIds` handed to `IntegrationKit.configure(...)` are priced straight from
+	/// the store instead. Empty means neither source knew anything.
 	func products(placement: String, completion: @escaping ([PremiumProduct]) -> Void)
 
 	/// Paywalls and remote config — through the facade too, same subsystem.
@@ -42,6 +50,12 @@ public protocol PremiumServicing: AnyObject {
 	/// dashboard never set this" from "the dashboard set it to the wrong type".
 	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T>
 
+	/// Reports that this placement's paywall was shown, so Adapty counts the impression against the
+	/// variation it served. Call it once, as the screen appears.
+	///
+	/// A placement whose paywall has not loaded carries no variation to attribute the impression to,
+	/// so nothing is sent — a purchase can still go through the fallback, and the skipped impression
+	/// leaves a trace rather than disappearing.
 	func logPaywallOpen(placement: String)
 
 	/// Everything the package could not make work and no retry will fix — an empty key, a device id

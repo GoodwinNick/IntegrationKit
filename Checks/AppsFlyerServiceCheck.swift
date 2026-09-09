@@ -58,8 +58,6 @@ final class FakeAnalytics: AnalyticsTracking {
 	private(set) var userProperties: [[String: Any]] = []
 	var deviceId: String? = "device-1"
 
-	func configure(apiKey: String, deviceId: String, firstOpenEvent: String?, isTestsRunning: Bool) {}
-
 	func logEvent(_ event: String, properties: [String: Any]?) {
 		events.append((event, properties))
 	}

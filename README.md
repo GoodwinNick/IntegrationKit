@@ -52,7 +52,22 @@ let kit = IntegrationKit.configure(
 
 kit.analytics.logEvent("app_open")
 kit.crashes.recordNonFatal("launch", someError)
+
+// Premium is announced, not polled: the notification fires only when the flag
+// actually changes, and `kit.premium.isPremium` is the new value.
+NotificationCenter.default.addObserver(
+	forName: .premiumDidChange,
+	object: nil,
+	queue: .main
+) { _ in
+	render(isPremium: kit.premium.isPremium)
+}
 ```
+
+`.premiumDidChange` is the only way to observe premium. The value moves without
+the app asking — Adapty pushes a new profile, an interrupted purchase is
+delivered by the payment queue at launch — so a screen that reads `isPremium`
+once and never subscribes goes stale.
 
 **Store the returned `IntegrationKit` for the lifetime of the app** — on the
 `AppDelegate`, not in a local that ends with the function: pulling one member
@@ -91,9 +106,12 @@ kit.configurationIssues.forEach { print("[IntegrationKit] \($0)") }
 ```
 
 `kit.premium`, `kit.analytics`, `kit.crashes` are the only surfaces the app talks
-to afterwards — `PremiumServicing`, `AnalyticsTracking`, `CrashReporting`. Deep
-links go through `kit.handleContinue(...)` / `kit.handleOpen(...)`, and the ATT
-answer through `kit.updateTrackingAuthorization(_:)`. See
+to afterwards — `PremiumServicing`, `AnalyticsTracking`, `CrashReporting`.
+Besides `logEvent`, `kit.analytics` carries `setUserId(_:)` (re-point analytics
+at another id after a login) and `deviceId` (Amplitude's own id, `nil` until the
+layer is up). Deep links go through `kit.handleContinue(...)` /
+`kit.handleOpen(...)`, and the ATT answer through
+`kit.updateTrackingAuthorization(_:)`. See
 [`docs/Integration.md`](docs/Integration.md) for the full `AppDelegate`, the
 meaning of every `configure` parameter and the paywall-to-purchase flow.
 

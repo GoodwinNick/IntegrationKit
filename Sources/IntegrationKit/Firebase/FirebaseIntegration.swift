@@ -6,6 +6,8 @@
 import FirebaseCore
 import FirebaseCrashlytics
 
+/// Firebase Core and Crashlytics. A namespace rather than a service: this layer holds no state, so
+/// it stays outside the kit `IntegrationKit.configure(...)` builds and is brought up before it.
 public enum FirebaseIntegration {
 
 	/// Brings Firebase up. Call once, before `IntegrationKit.configure(...)`.

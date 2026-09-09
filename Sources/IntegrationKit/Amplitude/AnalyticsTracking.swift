@@ -6,11 +6,11 @@
 import AppTrackingTransparency
 import Foundation
 
+/// The app's analytics surface — Amplitude behind it, reached as `IntegrationKit.analytics`. The
+/// layer is already configured by the time the app holds one, and it never configures itself twice:
+/// the composition root owns that call. A run the app reported as a test run, and an empty API key,
+/// both leave the layer down for the whole run — nothing below is sent, and `deviceId` stays `nil`.
 public protocol AnalyticsTracking: AnyObject {
-	/// `firstOpenEvent` is logged once per install, under the package's own gate. `isTestsRunning`
-	/// is the app's own answer to "is this a test run" — the layer does not start at all when it is
-	/// true, and the gate above is left unspent (AN-01 rows 3 and 8).
-	func configure(apiKey: String, deviceId: String, firstOpenEvent: String?, isTestsRunning: Bool)
 	/// Logs an event by name, optionally with properties.
 	func logEvent(_ event: String, properties: [String: Any]?)
 	/// Merges these into the current Amplitude user profile.
@@ -24,6 +24,7 @@ public protocol AnalyticsTracking: AnyObject {
 }
 
 public extension AnalyticsTracking {
+	/// Logs an event carrying no properties — the common case.
 	func logEvent(_ event: String) {
 		logEvent(event, properties: nil)
 	}
