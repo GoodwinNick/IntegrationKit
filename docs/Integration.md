@@ -498,6 +498,36 @@ never calls it. `isPremium` is synchronous and reads from cache, no network
 round trip; the source of truth behind it is Adapty first, the App Store
 receipt as a fallback when Adapty has not answered yet.
 
+### What decides `isPremium`, and what can take it away
+
+Three candidates go in — Adapty's answer, the App Store receipt, the state
+cached from the last launch — and one verdict comes out. The order of the
+branches *is* the rule, and it is not simply "Adapty, then the receipt":
+
+1. **Adapty says active** → premium, and the local-purchase mark is dropped.
+   An answer that has not been confirmed over the network yet still grants:
+   doubt goes to the user.
+2. **Adapty says inactive, that answer was checked over the network in this
+   process, and no local purchase is outstanding** → premium is revoked. An
+   *unverified* "inactive" — the profile the SDK pushes out of its own storage
+   at activation, a memory of the last launch rather than a check — is read as
+   silence and revokes nothing. Neither does a verified one while the
+   local-purchase mark is up: a purchase or restore that just went through on
+   this device is newer evidence than anything Adapty has seen.
+3. **The cache**, when it is verified or premium and has not expired → it
+   stands as it is, and the receipt is never consulted.
+4. **The receipt**, and only once the cache is gone or expired: `true` grants
+   premium and carries the expiry date with it, `false` leaves premium off.
+5. **Nobody answered** → not premium.
+
+So the two things that can actually close premium are a **verified** Adapty
+"inactive" with no local purchase outstanding, and an expiry date that has
+passed. A `false` from the receipt revokes nothing on its own — with a live
+premium cache the verdict never reaches branch 4, and behind a local-purchase
+mark the receipt is treated as saying "yes" regardless. The asymmetry is
+deliberate: a short free ride for someone who did not pay costs less than a
+paywall shown to someone who did.
+
 ### The paywall-to-purchase flow
 
 ```swift
@@ -693,7 +723,10 @@ What the package does with them:
   your shared secret, then an auto-renewable check for each of `productIds`.
   Three answers, and the difference matters: `true` (an active subscription is
   in the receipt), `false` (the receipt was read and carries none), `nil` (it
-  could not be checked at all). Only `false` can revoke premium.
+  could not be checked at all). `false` is not by itself a revocation — it is
+  only consulted once the cached state is gone or expired, and it is ignored
+  while a local purchase is outstanding. See
+  [What decides `isPremium`](#what-decides-ispremium-and-what-can-take-it-away).
   A **sandbox receipt answers `nil` immediately** — the production endpoint can
   only ever reply 21007 to one, so TestFlight and simulator builds simply lean
   on Adapty. An empty `sharedSecret` answers `nil` the same way.
