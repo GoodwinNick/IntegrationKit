@@ -1,11 +1,13 @@
 #!/bin/sh
-# AmplitudeAnalytics/AmplitudeIDFAPlugin self-check — 14 asserts over 13 rows of the approved
+# AmplitudeAnalytics/AmplitudeIDFAPlugin self-check — 18 asserts over 15 rows of the approved
 # schemas AN-01 through AN-04. No XCTest, no Xcode project.
 #
-# A non-zero exit here is the expected, healthy outcome until AN-01 rows 1-4 (the first-open gate,
-# the reason an inactive layer is inactive, the missing-receipt environment) and AN-04 rows 1-2
-# (double-add/pre-configure guard for the IDFA plugin) are implemented. `set -e` still applies to a
-# genuine compile failure, same as every other check.
+# A non-zero exit is a regression: every row this harness can reach is green as of `b6ac9ef`. The
+# rows it cannot reach say so in their own risk table rather than sitting here red. `set -e` still
+# applies to a genuine compile failure, same as every other check.
+#
+# Built without `-D DEBUG` on purpose: that is what makes `debugLogSink` (`DebugLog.swift:25-27`)
+# the readable destination T14 and T15 assert the log format on.
 set -e
 cd "$(dirname "$0")/.."
 work="${TMPDIR:-/tmp}/amplitude-analytics-check"
