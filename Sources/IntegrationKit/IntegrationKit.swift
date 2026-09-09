@@ -14,18 +14,47 @@ import AppTrackingTransparency
 import Foundation
 import UIKit
 
+/// Everything the app is given, in one value: the three protocols, the `AppDelegate` forwards and
+/// the package's own diagnostics. Build it once with ``configure(deviceId:amplitudeKey:adaptyKey:placements:sessionsCounter:sharedSecret:productIds:isDebug:isTestsRunning:levels:firstOpenEvent:appsFlyerDevKey:appsFlyerAppId:sourceTimeout:attTimeout:)``
+/// and keep it for as long as the app runs.
 public struct IntegrationKit {
+	private static let tag = "IntegrationKit"
+
+	/// The one kit this process builds, held so that neither of the two ways an app can get the
+	/// lifetime wrong costs it money.
+	///
+	/// A second `configure` used to build a whole second graph. Nothing refused it: every guard that
+	/// looks like it would — `isConfigured`, `didStart`, `didAddIDFAPlugin` — is an instance flag,
+	/// and this method makes fresh instances each time. The expensive half was silent, because
+	/// SwiftyStoreKit keeps the *first* `completeTransactions` and ignores every later one: the kit
+	/// the app went on to hold had no delivery path for an interrupted purchase, so a user who paid
+	/// simply never got it. The cheaper half was a second `didBecomeActive` observer refreshing
+	/// paywalls twice for the rest of the process, and a second Adapty profile fetch and Apple
+	/// receipt validation per call.
+	///
+	/// The other way is dropping the returned value. `AppsFlyerLib` holds both of its delegates
+	/// weakly and the foreground observer does not own the service either, so the struct was the
+	/// only strong reference: attribution, sessions and deep links died with nothing logged.
+	/// `AdaptyService` already keeps itself alive this way for the same reason; this is that, one
+	/// level up, for the whole graph.
+	private static var built: IntegrationKit?
+
+	/// The premium layer: `isPremium`, purchases, restore, prices and paywall state.
 	public let premium: PremiumServicing
+	/// The analytics layer: events and user properties.
 	public let analytics: AnalyticsTracking
+	/// The crash layer: non-fatal reports, and how many were dropped.
 	public let crashes: CrashReporting
 
 	// Kept only to stay alive and to back the forwards below — never handed out. AppsFlyer is
 	// optional because an app without a dev key simply has no attribution.
 	private let adapty: AdaptyServicing
 	private let appsFlyer: AppsFlyerServicing?
-	/// Keeps the `didBecomeActive` paywall-retry observer alive: `NotificationCenter` does not
-	/// retain the token the block-based API hands back, so dropping this would silently stop the
-	/// retries after the first launch.
+	/// The `didBecomeActive` paywall-retry token. Holding it is not what keeps the observation
+	/// alive — `NotificationCenter` retains the block-based observer itself, whether or not anyone
+	/// keeps the token, and the block retains the Adapty layer with it. It is kept because it is
+	/// the only handle that could ever remove the observation, and a struct has no `deinit` to do
+	/// that from: the observation lasts the process, by construction.
 	private let adaptyRefreshObserver: NSObjectProtocol
 
 	/// Builds and starts the whole layer. Call `FirebaseIntegration.configure()` before this one.
@@ -78,6 +107,13 @@ public struct IntegrationKit {
 		sourceTimeout: TimeInterval = 5,
 		attTimeout: TimeInterval = 60
 	) -> IntegrationKit {
+		if let built {
+			ConfigurationIssues.shared.record(
+				"IntegrationKit.configure was called more than once — the kit built by the first call is returned and these arguments are ignored",
+				tag: Self.tag
+			)
+			return built
+		}
 		let analytics = AmplitudeAnalytics(isDebug: isDebug)
 		analytics.configure(apiKey: amplitudeKey, deviceId: deviceId, firstOpenEvent: firstOpenEvent, isTestsRunning: isTestsRunning)
 
@@ -117,6 +153,15 @@ public struct IntegrationKit {
 				isTestsRunning: isTestsRunning
 			)
 			appsFlyer = service
+		} else {
+			// AF-01 row 1. The service records this itself, but only a service that was built — and
+			// an empty dev key is exactly the case where none is. Written here so the forgotten key
+			// has a reason in the one list the guide tells an integrator to read, with the same text
+			// the service would have used, so the two can never read as different causes.
+			ConfigurationIssues.shared.record(
+				"AppsFlyer got an empty dev key — attribution and deep links are off for this run",
+				tag: "AppsFlyer"
+			)
 		}
 
 		let storeKit = StoreKitService(sharedSecret: sharedSecret, productIds: productIds)
@@ -140,7 +185,7 @@ public struct IntegrationKit {
 		// the next one.
 		storeKit.completeTransactions { [weak premium] in premium?.purchaseDelivered() }
 
-		return IntegrationKit(
+		let kit = IntegrationKit(
 			premium: premium,
 			analytics: analytics,
 			crashes: CrashReporter(),
@@ -148,6 +193,8 @@ public struct IntegrationKit {
 			appsFlyer: appsFlyer,
 			adaptyRefreshObserver: adaptyRefreshObserver
 		)
+		built = kit
+		return kit
 	}
 
 	// MARK: - AppDelegate forwards.
