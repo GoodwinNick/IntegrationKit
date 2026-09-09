@@ -19,4 +19,9 @@ protocol AppsFlyerServicing: AnyObject {
 	func handleContinue(_ userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void)
 	/// Forwards `application(_:open:options:)` from AppDelegate into the SDK.
 	func handleOpen(_ url: URL, options: [UIApplication.OpenURLOptionsKey: Any])
+	/// How many deep links the SDK reported as found and then handed over empty. Not a
+	/// configuration issue — nothing is misconfigured, the SDK contradicted itself — so it is
+	/// counted rather than filed as a cause. Surfaced by `IntegrationKit.droppedDeepLinks`,
+	/// because a trace only `debugLog` can show is a trace nobody sees in a shipping build.
+	var droppedDeepLinks: Int { get }
 }

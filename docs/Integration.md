@@ -652,6 +652,20 @@ navigate anywhere. If the app needs to open a specific screen based on the
 resolved deep link value, that routing is entirely the app's own code —
 `IntegrationKit` has no callback for "the deep link resolved to X".
 
+**When the SDK contradicts itself:** AppsFlyer sometimes answers "deep link
+found" and hands over nothing. There is nothing to route and nothing to log,
+so the package drops it and counts it — `kit.droppedDeepLinks`, readable in
+release like `kit.crashes.droppedReports`. It is not a `configurationIssues`
+entry: nothing is misconfigured, so a list meant for causes no retry will fix
+would fill up with weather. Anything above zero is paid traffic arriving
+nowhere, and only the app can see it in a shipping build.
+
+```swift
+if kit.droppedDeepLinks > 0 {
+    kit.analytics.logEvent("deep_links_dropped", properties: ["count": kit.droppedDeepLinks])
+}
+```
+
 ## Building and checks
 
 The package does not build standalone — `swift build` targets the macOS host
@@ -756,6 +770,11 @@ dashboard entry.
   AppsFlyer entirely, and both forwards become no-ops. Separately, Universal
   Links additionally need the Associated Domains capability configured, or
   iOS never calls `application(_:continue:restorationHandler:)` at all.
+- **A campaign's deep links resolve, but the app never sees a value.** Read
+  `kit.droppedDeepLinks`: anything above zero means the SDK reported "found"
+  and handed over an empty payload that many times. Nothing on the app side
+  fixes it — check the OneLink configuration for links that carry no
+  `deep_link_value`.
 - **Crashlytics dashboard shows unsymbolicated crashes.** The dSYM Run
   Script (setup step 5) is missing or its `inputPaths` point at the wrong
   target.
@@ -791,7 +810,8 @@ dashboard entry.
 - [ ] `kit.premium.purchase(...)` handles all five `PurchaseOutcome` cases —
       `.pending` shows waiting, `.unavailable` hides the button
 - [ ] `kit.configurationIssues` is empty on a real launch, and
-      `kit.crashes.droppedReports` is zero (both are readable in release —
-      print them, or ship them as a Crashlytics non-fatal)
+      `kit.crashes.droppedReports` and `kit.droppedDeepLinks` are zero (all
+      three are readable in release — print them, or ship them as a
+      Crashlytics non-fatal)
 - [ ] `for s in Checks/*.sh; do "./$s"; done` — all ten green
 - [ ] `cd BuildHost && xcb app-sim` builds

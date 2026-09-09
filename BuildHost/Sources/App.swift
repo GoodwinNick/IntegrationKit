@@ -70,6 +70,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
 	func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
 		kit?.handleOpen(url, options: options)
+		// A deep link AppsFlyer reported as found and then handed over empty is paid traffic that
+		// arrives nowhere. Only the app can see it in a shipping build, so it reads the count here.
+		if let dropped = kit?.droppedDeepLinks, dropped > 0 {
+			kit?.analytics.logEvent("deep_links_dropped", properties: ["count": dropped])
+		}
 		return true
 	}
 

@@ -154,6 +154,15 @@ public struct IntegrationKit {
 		adapty.updateAppTrackingTransparencyStatus(status)
 	}
 
+	/// AF-04 row 2: how many times AppsFlyer answered "deep link found" and handed over nothing.
+	/// A deep link the campaign was paid for disappears each time, and the only other trace is a
+	/// `debugLog` line no shipping build prints. Zero without AppsFlyer — there are no deep links
+	/// to drop. Not a `configurationIssues` entry: nothing here is misconfigured, so a list meant
+	/// for causes no retry will fix would fill up with weather.
+	public var droppedDeepLinks: Int {
+		appsFlyer?.droppedDeepLinks ?? 0
+	}
+
 	/// Everything the package could not make work and no retry will fix — an empty key, a device id
 	/// that arrived too late, a Firebase that was never configured, a placement the dashboard does
 	/// not have. One line per cause, oldest first. Empty is the healthy state.
