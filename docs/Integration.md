@@ -173,6 +173,38 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 }
 ```
 
+**The `private var kit` above is a requirement, not a style choice — keep the
+returned value for as long as the app runs.** `IntegrationKit` is a struct,
+and the things the package cannot reach on its own are stored inside it. Write
+`let premium = IntegrationKit.configure(...).premium` and the struct dies at
+the end of that line, taking with it:
+
+- **The paywall retry.** `configure` subscribes to
+  `UIApplication.didBecomeActiveNotification` and, on every return to the
+  foreground, re-attempts `getPaywall` for each configured placement that is
+  missing or stale. `NotificationCenter` does not retain the token its
+  block-based API hands back, so the struct is the only thing holding it.
+  Without it, a placement that lost the race at cold start is left to the
+  layer's own backoff alone, and a paywall past its 30-minute freshness never
+  reloads in that launch.
+- **AppsFlyer.** The struct holds the only reference to the attribution
+  service. When it goes, the service's `deinit` unsubscribes it from the
+  foreground notification that starts an AppsFlyer session — no sessions, no
+  install attribution, no conversion data reaching Amplitude and the Adapty
+  profile.
+- **Deep links and the ATT forward.** `handleContinue`, `handleOpen` and
+  `updateTrackingAuthorization` are members of the struct. Without it there is
+  nothing for the `AppDelegate` to forward to, so universal links and
+  URL-scheme links never reach the package at all.
+- **The diagnostics and the other two protocols** — `configurationIssues`,
+  `droppedDeepLinks`, `analytics` and `crashes` all hang off the same value.
+
+What makes this the most expensive mistake in the guide is that `premium`
+keeps working: `PremiumService` holds Adapty itself, so purchases, paywall
+state and `isPremium` behave normally. Nothing throws, nothing is logged,
+`configurationIssues` stays empty, and the only symptom is a campaign whose
+installs arrive unattributed.
+
 `SDKKeys` and `AppDefaults` are app-side types, not part of the package — they
 show where the app is expected to get its keys and stable identifiers from.
 Keys arrive at `configure` as plain strings: an app that ships them obfuscated
@@ -350,8 +382,13 @@ result of the system dialog when it shows. The every-launch resend is not
 something to call, or to remember.
 
 **First-open event.** Pass a name through `firstOpenEvent` at `configure`
-time and the package logs it once per install, gated internally so a
-reinstall or a relaunch never double-logs it. Pass `nil` to opt out.
+time and the package logs it **once per install**. The gate is a flag in
+`UserDefaults`, so a relaunch never double-logs it — and a **reinstall does**,
+because the flag goes away with the app. Once per install is the guarantee,
+not once per device: an install funnel counted from this event counts
+reinstalls as new installs. Pass `nil` to opt out; a `nil` name deliberately
+leaves the gate open, so a build that ships before the event has a name does
+not spend it for the whole cohort it touched.
 
 ## Crash reporting
 
@@ -498,6 +535,36 @@ never calls it. `isPremium` is synchronous and reads from cache, no network
 round trip; the source of truth behind it is Adapty first, the App Store
 receipt as a fallback when Adapty has not answered yet.
 
+### What decides `isPremium`, and what can take it away
+
+Three candidates go in — Adapty's answer, the App Store receipt, the state
+cached from the last launch — and one verdict comes out. The order of the
+branches *is* the rule, and it is not simply "Adapty, then the receipt":
+
+1. **Adapty says active** → premium, and the local-purchase mark is dropped.
+   An answer that has not been confirmed over the network yet still grants:
+   doubt goes to the user.
+2. **Adapty says inactive, that answer was checked over the network in this
+   process, and no local purchase is outstanding** → premium is revoked. An
+   *unverified* "inactive" — the profile the SDK pushes out of its own storage
+   at activation, a memory of the last launch rather than a check — is read as
+   silence and revokes nothing. Neither does a verified one while the
+   local-purchase mark is up: a purchase or restore that just went through on
+   this device is newer evidence than anything Adapty has seen.
+3. **The cache**, when it is verified or premium and has not expired → it
+   stands as it is, and the receipt is never consulted.
+4. **The receipt**, and only once the cache is gone or expired: `true` grants
+   premium and carries the expiry date with it, `false` leaves premium off.
+5. **Nobody answered** → not premium.
+
+So the two things that can actually close premium are a **verified** Adapty
+"inactive" with no local purchase outstanding, and an expiry date that has
+passed. A `false` from the receipt revokes nothing on its own — with a live
+premium cache the verdict never reaches branch 4, and behind a local-purchase
+mark the receipt is treated as saying "yes" regardless. The asymmetry is
+deliberate: a short free ride for someone who did not pay costs less than a
+paywall shown to someone who did.
+
 ### The paywall-to-purchase flow
 
 ```swift
@@ -582,11 +649,35 @@ func paywall() {
   Adapty's own purchase request fails and asks for a StoreKit retry, the
   package runs that retry itself through its own StoreKit layer — the app never
   sees a "please retry" signal, only the final `PurchaseOutcome`.
-- **`restore(completion:)`** — restores through both sources (StoreKit, then a
-  re-ask of Adapty) and reports one combined `RestoreOutcome`. `isPremium`
-  already reflects `.restored` by the time the completion fires.
-- **`refresh()`** — re-asks both sources and updates the cached state; safe
-  to call any time (e.g. on foreground), concurrent calls collapse into one.
+- **`restore(completion:)`** — runs StoreKit's restore, then re-asks both
+  sources, then calls you back. The `RestoreOutcome` is **StoreKit's own
+  answer, not a combined verdict**: Adapty is re-asked only so that `isPremium`
+  is already current by the time the completion fires. They are two separate
+  readings — the outcome says what the payment queue gave back, `isPremium`
+  says whether the user has access.
+  **`.nothingToRestore` together with `isPremium == true` is a normal pairing,
+  not a contradiction**, and it is the one an integrator meets in the wild: a
+  subscription bought on another Apple ID, a purchase made on the web, or a
+  grant handed out in the Adapty dashboard leaves StoreKit with nothing to
+  hand back while Adapty answers "active". Read `isPremium` first and say
+  "your subscription is already active"; keep "no active purchases found" for
+  `.nothingToRestore` with `isPremium == false`. Telling a paying user that
+  nothing was found is how a support ticket or a refund request starts.
+- **`refresh()`** — re-asks both sources and updates the cached state. **There
+  is no de-duplication**: every call starts a pass of its own, and two
+  overlapping calls run two of them. That is a deliberate limit of the
+  contract, not a defect — the store write and the `.premiumDidChange`
+  notification stay one per actual change, so the extra passes cost network
+  rather than correctness. The network is the part that matters: each pass
+  validates the receipt against Apple's production endpoint, so a `refresh()`
+  wired to every `viewWillAppear` is a storm Apple throttles. A throttled
+  receipt answers "could not be checked", which removes the offline reserve at
+  exactly the moment it was there for. Call it where the state can really have
+  changed behind the app's back — returning to the foreground, opening the
+  paywall or the settings screen, coming back from a subscription managed in
+  Settings. Most apps need it nowhere else: `configure` runs the first pass,
+  `purchase` and `restore` re-ask on their own, and Adapty pushes profile
+  updates in by itself.
 
 ### Models
 
@@ -650,7 +741,7 @@ Three of the five need a UI decision that `failed` would get wrong:
 |---|---|
 | `.pending` | "Waiting for approval" — no error, no second buy button. The real answer arrives through `.premiumDidChange`. Treating it as a failure is how a paid user gets charged twice. |
 | `.unavailable` | Hide or disable the button. A retry fails identically every time. |
-| `.failed` | Show an error and let the user try again — this one really is temporary. |
+| `.failed` | Show an error and let the user try again — this one really is temporary. **It is also what a second tap on the buy button gets while the first purchase is still in flight.** The package refuses the second call before the SDK ever sees it, so two payment sheets can never stack; the app is not expected to disable the button itself. Do not turn that into an alert — a purchase is already running, so the screen should be waiting, and the outcome of the first call is the one to react to. |
 
 ### Reacting to premium changes
 
@@ -682,7 +773,10 @@ What the package does with them:
   your shared secret, then an auto-renewable check for each of `productIds`.
   Three answers, and the difference matters: `true` (an active subscription is
   in the receipt), `false` (the receipt was read and carries none), `nil` (it
-  could not be checked at all). Only `false` can revoke premium.
+  could not be checked at all). `false` is not by itself a revocation — it is
+  only consulted once the cached state is gone or expired, and it is ignored
+  while a local purchase is outstanding. See
+  [What decides `isPremium`](#what-decides-ispremium-and-what-can-take-it-away).
   A **sandbox receipt answers `nil` immediately** — the production endpoint can
   only ever reply 21007 to one, so TestFlight and simulator builds simply lean
   on Adapty. An empty `sharedSecret` answers `nil` the same way.
