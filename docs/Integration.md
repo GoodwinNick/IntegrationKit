@@ -33,7 +33,7 @@ Xcode → File → Add Package Dependencies → this repo's URL → product
 `IntegrationKit`.
 
 ```swift
-.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.2.1")
+.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.2.2")
 ```
 
 The target's minimum deployment target must be iOS 15.6 or the package will
