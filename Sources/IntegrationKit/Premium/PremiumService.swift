@@ -286,8 +286,15 @@ final class PremiumService: PremiumServicing {
 		products(placement: placement) { completion($0.first { $0.id == productId }) }
 	}
 
+	/// PM-07 row 12: `isActive` is asked for here, not inferred. A layer that never came up answers
+	/// `.notReady` about every placement — letter for letter what a live layer says while its paywall
+	/// is still on the way — so the fallback below cannot tell the two apart on its own. The fallback
+	/// is for "the paywall did not load"; a layer that is off for the run sells nothing at all,
+	/// because `AdaptyService.buyProduct` refuses on this same flag, and pricing the configured ids
+	/// there would draw a paywall of real prices with every button dead. An empty list is the honest
+	/// answer, and it is the answer an app shipped without monetisation wants anyway.
 	func products(placement: String, completion: @escaping ([PremiumProduct]) -> Void) {
-		guard let adapty else {
+		guard let adapty, adapty.isActive else {
 			DispatchQueue.main.async { completion([]) }
 			return
 		}

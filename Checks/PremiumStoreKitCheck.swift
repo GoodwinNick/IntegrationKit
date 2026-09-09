@@ -376,3 +376,10 @@ enum PremiumStoreKitCheck {
 		}
 	}
 }
+
+// Appended rather than declared inside `FakeAdapty`, so the line numbers PM-05/07/08 quote in this
+// file do not move. A layer that came up: these rows are about restore, prices and the payment
+// queue, not about activation.
+extension FakeAdapty {
+	var isActive: Bool { true }
+}

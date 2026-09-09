@@ -748,7 +748,42 @@ enum PremiumBarrierCheck {
 		let noSourceService = PremiumService(store: SpyStore(), adapty: nil, apple: nil, levels: ["premium"], sourceTimeout: 1)
 		assert(noSourceService.paywallState(placement: "main") == .unavailable, "case 31: with no Adapty source the state must be .unavailable, never .loading, got \(noSourceService.paywallState(placement: "main"))")
 
-		print("PremiumService barrier, restore, purchase fallback and prices: 31/31 OK")
+		// 32. PM-07 row 12: the Adapty layer never came up — an empty key, or an obfuscated one that
+		//     decrypted into something that is not a key — and it never will for the rest of the run.
+		//     Its `products` answer is `.notReady`, character for character the answer a live layer
+		//     gives while its paywall is still on the way, so the price fallback of row 9 fires and
+		//     draws a paywall out of the store's REAL prices. Every button on it then answers
+		//     `.failed`, because `AdaptyService.buyProduct` refuses on the same flag the layer is
+		//     down by. Nothing to sell means nothing to show.
+		let catalogue: [String: PremiumProduct] = [
+			"year.sub": PremiumProduct(id: "year.sub", localizedTitle: "Year", localizedPrice: "$29.99", price: 29.99, currencyCode: "USD", subscriptionPeriod: PremiumPeriod(unit: .year, numberOfUnits: 1), introductoryOffer: nil),
+			"week.sub": PremiumProduct(id: "week.sub", localizedTitle: "Week", localizedPrice: "$4.99", price: 4.99, currencyCode: "USD", subscriptionPeriod: PremiumPeriod(unit: .week, numberOfUnits: 1), introductoryOffer: nil),
+		]
+		let deadLayerApple = FakeApple(receipt: nil)
+		deadLayerApple.catalogue = catalogue
+		let deadLayerService = PremiumService(store: SpyStore(), adapty: InactiveLayerAdapty(), apple: deadLayerApple, levels: ["premium"], sourceTimeout: 1, productIds: ["year.sub", "week.sub"])
+		var deadLayerProducts: [PremiumProduct]?
+		deadLayerService.products(placement: "main") { deadLayerProducts = $0 }
+		assert(wait { deadLayerProducts != nil }, "case 32: products must call back")
+		assert(
+			deadLayerProducts?.isEmpty == true,
+			"case 32: a layer that never came up must not price the configured ids from the store — every button on that paywall would fail; expected 0 products, got \(deadLayerProducts?.map(\.id).sorted() ?? [])"
+		)
+		// The other half, and the case is worthless without it: the identical store, the identical
+		// ids, and a layer that IS up whose paywall simply has not arrived. Row 9's fallback must
+		// still run there, or the fix above would have closed the paywall for everybody.
+		let liveLayerApple = FakeApple(receipt: nil)
+		liveLayerApple.catalogue = catalogue
+		let liveLayerService = PremiumService(store: SpyStore(), adapty: FakeAdapty(answer: nil), apple: liveLayerApple, levels: ["premium"], sourceTimeout: 1, productIds: ["year.sub", "week.sub"])
+		var liveLayerProducts: [PremiumProduct]?
+		liveLayerService.products(placement: "main") { liveLayerProducts = $0 }
+		assert(wait { liveLayerProducts != nil }, "case 32: products must call back")
+		assert(
+			liveLayerProducts?.map(\.id).sorted() == ["week.sub", "year.sub"],
+			"case 32: a live layer whose paywall has not arrived must still fall back to the configured ids (PM-07 row 9), expected both, got \(liveLayerProducts?.map(\.id).sorted() ?? [])"
+		)
+
+		print("PremiumService barrier, restore, purchase fallback and prices: 32/32 OK")
 	}
 }
 
@@ -769,5 +804,35 @@ final class StatefulPaywallAdapty: AdaptyPremiumProviding {
 	/// other, and it could not tell if this moved with `paywallStateAnswer`.
 	func hasPaywall(placement: String) -> Bool { false }
 	func paywallState(placement: String) -> PaywallState { paywallStateAnswer }
+	func syncReceipt() {}
+}
+
+// `isActive` arrives as an extension rather than a stored property for the same reason case 31's
+// fake was appended rather than folded into `FakeAdapty`: the risk tables of PM-01…PM-08 quote line
+// numbers in this file, and a member added inside either class moves every one of them. Both fakes
+// stand for a layer that came up — the cases above are about the barrier, not about activation.
+extension FakeAdapty {
+	var isActive: Bool { true }
+}
+
+extension StatefulPaywallAdapty {
+	var isActive: Bool { true }
+}
+
+/// Case 32's Adapty: the layer that never came up. Every answer is the one `AdaptyService` gives
+/// with `isActive == false` — and `products` is the interesting one, because `.notReady` is also
+/// exactly what a live layer says while its paywall is still loading. The two are indistinguishable
+/// from the answer alone, which is why the flag has to be asked for separately.
+final class InactiveLayerAdapty: AdaptyPremiumProviding {
+	var isActive: Bool { false }
+	var premiumObserver: ((AdaptyProfile, Bool) -> Void)?
+
+	func profile() async -> AdaptyProfile? { nil }
+	func products(placement: String) async -> AdaptyProductsAnswer { .notReady }
+	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult { .failed }
+	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> { .notReady }
+	func logPaywallOpen(placement: String) {}
+	func hasPaywall(placement: String) -> Bool { false }
+	func paywallState(placement: String) -> PaywallState { .unavailable }
 	func syncReceipt() {}
 }
