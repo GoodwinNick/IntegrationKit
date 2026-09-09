@@ -2,12 +2,17 @@
 //  AppsFlyerServiceCheck.swift
 //  IntegrationKit
 //
-//  Written from the approved schemas AF-01…AF-06, not from the code. Thirty-one asserts carry
-//  twenty-one of the twenty-five rows plus AN-03 row 4, whose code lives here rather than in
+//  Written from the approved schemas AF-01…AF-06, not from the code. Thirty-six asserts carry
+//  twenty-four of the twenty-eight rows plus AN-03 row 4, whose code lives here rather than in
 //  Amplitude's; the four rows that carry none say why in a comment above the block they belong
 //  to, rather than being closed by a lookalike assert.
 //
-//  All thirty-one are green as of `b955866`. Fifteen of them were written red first, against
+//  The last five (T30…T34) came out of the 2026-09-09 schema/code re-check, which found three
+//  rules the schemas state and no assert held: what a successful `configure` hands the SDK and in
+//  which order (AF-01 row 6), the "unknown" default for an attribution field the SDK did not send
+//  (AF-03 row 6), and the URL forward reaching the SDK unchanged (AF-05 row 4).
+//
+//  All thirty-six are green as of `b6ac9ef`. Fifteen of them were written red first, against
 //  schemas the wrapper did not satisfy yet, and each one names the behaviour the code had to grow
 //  rather than the shape it happened to have:
 //    T4  AF-01 row 2 — the ATT wait limit is the app's, not the constant 60.
@@ -654,10 +659,91 @@ enum AppsFlyerServiceCheck {
 				+ "\(AppsFlyerLib.startCallCount) start(s)"
 		)
 
+		// ── AF-01 row 6 — what a successful `configure` actually hands the SDK ───────────────
+		// Every AF-01 assert until now read the empty-key branch: T1–T3 and T26 name what must NOT
+		// happen. The schema's other four steps — initialize with the app's key and id, the CUID,
+		// both delegates — had no assert at all, so any of them could be dropped and every existing
+		// row would stay green. T32 is the ordering half the schema's own note called out as
+		// uncatchable: the docs say a CUID set after `start` is not associated with the install
+		// event, so what matters is not that the property holds the id afterwards but that it
+		// already held it when the session started.
+		AppsFlyerLib.reset()
+		let handedOverAnalytics = FakeAnalytics()
+		let handedOverService = AppsFlyerService(analytics: handedOverAnalytics, adapty: FakeAdapty())
+		handedOverService.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
+		check(
+			AppsFlyerLib.lastDevKey == "key-1"
+				&& AppsFlyerLib.lastAppId == "id-1"
+				&& AppsFlyerLib.shared().customerUserID == "device-1"
+				&& AppsFlyerLib.shared().delegate === handedOverService
+				&& AppsFlyerLib.shared().deepLinkDelegate === handedOverService,
+			"T30 AF-01 row 6: configure must hand the SDK the app's key-1/id-1, the deviceId as "
+				+ "customerUserID and this service as both delegates, got devKey "
+				+ "\(String(describing: AppsFlyerLib.lastDevKey)), appId "
+				+ "\(String(describing: AppsFlyerLib.lastAppId)), customerUserID "
+				+ "\(String(describing: AppsFlyerLib.shared().customerUserID)), delegate "
+				+ "\(AppsFlyerLib.shared().delegate === handedOverService ? "this" : "other/nil"), "
+				+ "deepLinkDelegate "
+				+ "\(AppsFlyerLib.shared().deepLinkDelegate === handedOverService ? "this" : "other/nil")"
+		)
+		check(
+			AppsFlyerLib.startCallCount == 0,
+			"T31 AF-01 row 6: configure alone must start 0 sessions — the session belongs to the "
+				+ "foreground signal (AF-02) — got \(AppsFlyerLib.startCallCount)"
+		)
+		postForegroundSignal()
+		NotificationCenter.default.removeObserver(handedOverService)
+		check(
+			AppsFlyerLib.customerUserIDAtStart == "device-1",
+			"T32 AF-01 row 6: customerUserID must already be device-1 when start() runs, or the "
+				+ "install event is attributed to nobody, got "
+				+ "\(String(describing: AppsFlyerLib.customerUserIDAtStart))"
+		)
+
+		// ── AF-03 row 6 — an absent attribution field is an answer, and must read as one ─────
+		// Executes `AppsFlyerService.swift:139-143` and `:170-173` with two of the three fields
+		// missing. The schema requires the default "unknown" rather than an empty or absent
+		// property: a dashboard cannot segment on a property that is not there, and "" and "the
+		// SDK did not say" look identical once they are in Amplitude. T24 pins the three names,
+		// never their values, so nothing until now would have noticed the default disappearing.
+		AppsFlyerLib.reset()
+		let sparseAnalytics = FakeAnalytics()
+		let sparseService = AppsFlyerService(analytics: sparseAnalytics, adapty: FakeAdapty())
+		sparseService.onConversionDataSuccess(["campaign": "spring"])
+		let sparseProperties = sparseAnalytics.userProperties.first ?? [:]
+		check(
+			sparseProperties["af_status"] as? String == "unknown"
+				&& sparseProperties["af_media_source"] as? String == "unknown"
+				&& sparseProperties["af_campaign_name"] as? String == "spring",
+			"T33 AF-03 row 6: fields the SDK did not send must reach the profile as \"unknown\", "
+				+ "not empty or absent, got af_status "
+				+ "\(String(describing: sparseProperties["af_status"])), af_media_source "
+				+ "\(String(describing: sparseProperties["af_media_source"])), af_campaign_name "
+				+ "\(String(describing: sparseProperties["af_campaign_name"]))"
+		)
+
+		// ── AF-05 row 4 — the URL forward reaches the SDK unchanged ──────────────────────────
+		// Executes `AppsFlyerService.swift:115-118` on a configured layer. T28 owns the negative
+		// half — 0 forwards while the layer is off — and nothing owned the positive one: the
+		// schema's "forward it as it is" is a claim about the URL, and a service that forwarded
+		// some other URL, or swallowed it, would have left every AF-05 assert green.
+		AppsFlyerLib.reset()
+		let forwardedURL = URL(string: "https://example.com/promo?af_sub1=vip")!
+		let forwardService = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
+		forwardService.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
+		NotificationCenter.default.removeObserver(forwardService)
+		forwardService.handleOpen(forwardedURL, options: [:])
+		check(
+			AppsFlyerLib.handleOpenCallCount == 1 && AppsFlyerLib.lastOpenedURL == forwardedURL,
+			"T34 AF-05 row 4: a configured layer must forward the URL to the SDK once, unchanged, "
+				+ "got \(AppsFlyerLib.handleOpenCallCount) call(s) carrying "
+				+ "\(String(describing: AppsFlyerLib.lastOpenedURL))"
+		)
+
 		if failures.isEmpty {
-			print("AppsFlyerService (AF-01…AF-06): 31/31 OK")
+			print("AppsFlyerService (AF-01…AF-06): 36/36 OK")
 		} else {
-			print("\(failures.count) of 31 asserts FAILED:")
+			print("\(failures.count) of 36 asserts FAILED:")
 			for failure in failures {
 				print("  - \(failure)")
 			}
