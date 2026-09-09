@@ -14,6 +14,7 @@
 //  Run:  ./Checks/integration-kit-check.sh
 //
 
+import Adapty
 import Foundation
 import UIKit
 
@@ -30,14 +31,19 @@ enum IntegrationKitCheck {
 		print("FAILED: \(text)")
 	}
 
-	/// An app shipped without attribution: every key empty, which is the documented legal
-	/// configuration. `appsFlyerDevKey` empty is what leaves `IntegrationKit` holding no
-	/// `AppsFlyerService` at all.
+	/// An app shipped without attribution: `appsFlyerDevKey` empty, which is the documented legal
+	/// configuration and what leaves `IntegrationKit` holding no `AppsFlyerService` at all.
+	///
+	/// The Adapty key, on the other hand, is live-shaped, and that is not decoration: the forwards
+	/// asserted below are only observable through the SDK stub, and an inactive Adapty layer stops
+	/// every one of them at its own `guard isActive` before the forward can be seen at all. It has to
+	/// be decided here rather than per row — `configure` builds one kit per process by design, so the
+	/// first call in this file is the only call that chooses anything.
 	static func kitWithoutAppsFlyer() -> IntegrationKit {
 		IntegrationKit.configure(
 			deviceId: "00000000-0000-0000-0000-000000000000",
 			amplitudeKey: "",
-			adaptyKey: "",
+			adaptyKey: "public_live_0000000000000000000000000000000000",
 			placements: [],
 			sessionsCounter: 1,
 			sharedSecret: "",
@@ -84,8 +90,35 @@ enum IntegrationKitCheck {
 		let doubleReasons = kit.configurationIssues.filter { $0.contains("more than once") }
 		check(doubleReasons.count == 1, "A second configure() must say so in configurationIssues, got \(doubleReasons.count)")
 
+		// AD-06 row 8, through the facade. The write itself is covered by `AdaptyServiceCheck` (T30,
+		// T30b) and needs nothing here; what is covered nowhere else is whether the app can reach it
+		// at all. `AdaptyServicing` is internal, so until 0.2.1 an app migrating onto the package
+		// simply lost the custom attributes it used to write — `purchasePlace` after every purchase —
+		// and lost them silently: the app still builds, still sells, and only the segmentation on the
+		// dashboard goes empty. An operation the app cannot reach equals an operation that is not there.
+		//
+		// The assert names the GROWTH of the journal, not its emptiness: `configure` has already
+		// written the ATT status and the Amplitude link by this point.
+		let beforeAttribute = Adapty.updateProfileJournal.count
+		kit.setProfileValue(value: "onboarding_paywall", key: "purchasePlace")
+		check(Adapty.updateProfileJournal.count == beforeAttribute + 1,
+		      "AD-06 r8: setProfileValue on the facade must reach the SDK exactly once — journal \(beforeAttribute) → \(Adapty.updateProfileJournal.count)")
+		let written = Adapty.updateProfileJournal.last?.customAttributes["purchasePlace"]
+		check(written == "onboarding_paywall",
+		      "AD-06 r8: the forward must carry the app's own value and key, not a rewritten pair — got \(written ?? "nil")")
+
+		// AD-07 row 3, the same argument for the other new forward. The guard on the step and the two
+		// traps behind it are `AdaptyServiceCheck`'s (T46…T50); this is the one place that can show the
+		// public method exists and lands on the service at all.
+		let beforeOnboarding = Adapty.logShowOnboardingCount
+		kit.logOnboardingOpen(step: 1)
+		check(Adapty.logShowOnboardingCount == beforeOnboarding + 1,
+		      "AD-07 r3: logOnboardingOpen on the facade must reach the SDK exactly once — \(beforeOnboarding) → \(Adapty.logShowOnboardingCount)")
+		check(Adapty.lastOnboardingName == "onboarding_1",
+		      "AD-07 r3: the forward must keep the event name the apps already send — got \(Adapty.lastOnboardingName ?? "nil")")
+
 		if failures.isEmpty {
-			print("IntegrationKit composition root: \(6) checks OK")
+			print("IntegrationKit composition root: \(10) checks OK")
 		} else {
 			print("\(failures.count) check(s) failed:")
 			for failure in failures {

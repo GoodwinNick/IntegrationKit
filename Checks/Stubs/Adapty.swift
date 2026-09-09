@@ -69,6 +69,17 @@ public enum Adapty {
 	public static var logShowPaywallError: Error?
 	public static private(set) var logShowPaywallCount = 0
 
+	/// What `logShowOnboarding`'s completion hands back.
+	public static var logShowOnboardingError: Error?
+	public static private(set) var logShowOnboardingCount = 0
+	/// The arguments of the last onboarding event that reached the SDK. AD-07 row 3 asserts on the
+	/// NAME and the ORDER, not on the fact that a call happened: `onboarding_1` at `screenOrder` 1
+	/// is the shape the dashboard funnel is built on, and a counter cannot tell it apart from an
+	/// `onboarding_0` the SDK would have thrown away.
+	public static private(set) var lastOnboardingName: String?
+	public static private(set) var lastOnboardingScreenName: String?
+	public static private(set) var lastOnboardingScreenOrder: UInt?
+
 	public static var updateProfileError: Error?
 	public static var holdUpdateProfile = false
 	/// Every profile write that actually reached the SDK, in order.
@@ -101,6 +112,11 @@ public enum Adapty {
 		restorePurchasesCallCount = 0
 		logShowPaywallError = nil
 		logShowPaywallCount = 0
+		logShowOnboardingError = nil
+		logShowOnboardingCount = 0
+		lastOnboardingName = nil
+		lastOnboardingScreenName = nil
+		lastOnboardingScreenOrder = nil
 		updateProfileError = nil
 		holdUpdateProfile = false
 		updateProfileJournal = []
@@ -161,6 +177,18 @@ public enum Adapty {
 	public static func logShowPaywall(_ paywall: AdaptyPaywall, _ completion: ((Error?) -> Void)? = nil) {
 		logShowPaywallCount += 1
 		completion?(logShowPaywallError)
+	}
+
+	/// Counts and journals whatever it is given — the SDK's own `screenOrder > 0` guard is NOT
+	/// reproduced here on purpose. That guard is the SDK's; the row this stub serves is about OUR
+	/// guard, and a stub that refused a zero itself would leave the counter at zero either way, so a
+	/// missing guard in `AdaptyService` would read exactly like a working one.
+	public static func logShowOnboarding(name: String?, screenName: String?, screenOrder: UInt, _ completion: ((Error?) -> Void)? = nil) {
+		logShowOnboardingCount += 1
+		lastOnboardingName = name
+		lastOnboardingScreenName = screenName
+		lastOnboardingScreenOrder = screenOrder
+		completion?(logShowOnboardingError)
 	}
 
 	public static func updateAttribution(_ attribution: [AnyHashable: Any], source: AdaptyAttributionSource) {

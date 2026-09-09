@@ -959,5 +959,71 @@ enum AdaptyServiceCheck {
 		t45.refreshPaywalls()
 		let t45Ids = Adapty.updateAttributionJournal.map { $0.networkUserId ?? "nil" }
 		check(t45Ids == ["af-uid-2"], "AD-06 r7: a write the already-active SDK refused must be repeated at the next foreground pass, with the same networkUserId — got \(t45Ids)")
+
+		onboarding()
+	}
+
+	// MARK: - AD-07 row 3: the onboarding step, brought back with its guard.
+
+	/// Appended after `attributionRetry()` for the reason given there: every assert coordinate the
+	/// AD-01…AD-07 risk tables quote sits above this line.
+	static func onboarding() {
+		// T46 — AD-07 row 3, first trap: step 0. Adapty numbers onboarding screens from one and
+		// refuses `screenOrder == 0` with `wrongParamOnboardingScreenOrder`
+		// (`Adapty+Events.swift:63-69`), so an app counting from zero loses its FIRST screen from the
+		// funnel and nothing anywhere says so — the dashboard simply shows a funnel that starts at
+		// step two. The cause goes to `configurationIssues` rather than the log: no retry fixes an
+		// integration counting from the wrong number.
+		//
+		// Both halves are asserted. "Nothing was sent" alone stays green on a method that does
+		// nothing at all, and "a line was recorded" alone stays green on one that records the line
+		// and sends the doomed event anyway.
+		reset("T46")
+		let t46 = loadedService()
+		t46.logOnboardingOpen(step: 0)
+		check(Adapty.logShowOnboardingCount == 0, "AD-07 r3: step 0 must not reach the SDK — got \(Adapty.logShowOnboardingCount) onboarding event(s)")
+		check(hasIssue("(got 0)"), "AD-07 r3: a step below one must be recorded WITH the value received — got \(issues())")
+
+		// T47 — the second trap, and the one that is not about analytics at all: `UInt(-1)` traps on
+		// the CALLER's stack. Without the guard this row does not fail, it takes the process down —
+		// so the check reaching its own assert is half the assertion, and the summary line at the end
+		// of the run is the other half.
+		reset("T47")
+		let t47 = loadedService()
+		t47.logOnboardingOpen(step: -1)
+		check(Adapty.logShowOnboardingCount == 0, "AD-07 r3: a negative step must not reach the SDK — got \(Adapty.logShowOnboardingCount) onboarding event(s)")
+		check(hasIssue("(got -1)"), "AD-07 r3: a negative step must be recorded WITH the value received — got \(issues())")
+
+		// T48 — the legal step. The asserts name the event's NAME and ORDER, not the call: the format
+		// `onboarding_<step>` with `screenOrder == step` is what the apps send to Adapty directly
+		// today, and a migration that changed either would split one funnel into two on the dashboard
+		// with nothing to say they are the same event.
+		reset("T48")
+		let t48 = loadedService()
+		t48.logOnboardingOpen(step: 1)
+		check(Adapty.logShowOnboardingCount == 1, "AD-07 r3: a legal step must send exactly one event — got \(Adapty.logShowOnboardingCount)")
+		check(Adapty.lastOnboardingName == "onboarding_1", "AD-07 r3: the event name must stay the one the apps already send — got \(Adapty.lastOnboardingName ?? "nil")")
+		check(Adapty.lastOnboardingScreenOrder == 1, "AD-07 r3: screenOrder must carry the step itself — got \(String(describing: Adapty.lastOnboardingScreenOrder))")
+		check(hasLog("logShowOnboarding ok for 'onboarding_1'"), "AD-07 r3: a delivered onboarding event must leave an info line naming the event — got \(log)")
+
+		// T49 — the same pair as T37/T43 one row up: the failure branch. Without it the success line
+		// could go silent and this section would stay green, and a dropped onboarding event would
+		// again look exactly like a sent one.
+		reset("T49")
+		let t49 = loadedService()
+		Adapty.logShowOnboardingError = AdaptyError(.networkFailed)
+		t49.logOnboardingOpen(step: 2)
+		check(hasLog("logShowOnboarding failed for 'onboarding_2'"), "AD-07 r3: a failed onboarding event must leave an error line naming the event — got \(log)")
+
+		// T50 — AD-06 row 5 for the new operation: an inactive layer must not reach the SDK. The
+		// guard order matters and is asserted by the pair T46/T50 together — `isActive` runs FIRST,
+		// like it does in every other operation of this layer, so an inactive layer records the one
+		// shared reason instead of a second, different one.
+		reset("T50")
+		let t50 = AdaptyService()
+		t50.configure(apiKey: "", customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		t50.logOnboardingOpen(step: 1)
+		check(Adapty.logShowOnboardingCount == 0, "AD-06 r5 / AD-07 r3: an inactive layer must log no onboarding event — got \(Adapty.logShowOnboardingCount)")
+		check(issues().count == 1, "AD-06 r5: an inactive layer must still record ONE line, not a second one for the onboarding step — got \(issues())")
 	}
 }
