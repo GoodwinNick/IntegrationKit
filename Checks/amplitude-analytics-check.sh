@@ -1,5 +1,5 @@
 #!/bin/sh
-# AmplitudeAnalytics/AmplitudeIDFAPlugin self-check — 18 asserts over 15 rows of the approved
+# AmplitudeAnalytics/AmplitudeIDFAPlugin self-check — 19 asserts over 16 rows of the approved
 # schemas AN-01 through AN-04. No XCTest, no Xcode project.
 #
 # A non-zero exit is a regression: every row this harness can reach is green as of `b6ac9ef`. The

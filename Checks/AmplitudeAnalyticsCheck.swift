@@ -2,21 +2,22 @@
 //  AmplitudeAnalyticsCheck.swift
 //  IntegrationKit
 //
-//  Written from the approved schemas AN-01..AN-04, not from the code. Fifteen of the twenty-six
+//  Written from the approved schemas AN-01..AN-04, not from the code. Sixteen of the twenty-seven
 //  rows across the four risk tables are testable with the `AmplitudeSwift` stub (plus real
 //  `AppTrackingTransparency` enum literals for the two ATT-parameter rows); three more are carried
 //  by `AppsFlyerServiceCheck.swift` and `AdaptyServiceCheck.swift`, because the code they name
 //  lives there; the remaining eight say why in the comment above them rather than being closed by
 //  a lookalike assert.
 //
-//  T14..T17 were added on `b6ac9ef`, after the schemas were re-read against the decisions taken
+//  T14..T18 were added on `b6ac9ef`, after the schemas were re-read against the decisions taken
 //  since they were written. They are appended at the end on purpose: renumbering would move every
 //  assert coordinate already quoted in the four risk tables. T14 and T15 pin the shared logging
 //  decision of 2026-09-09 (`[IntegrationKit][<tag>]`, `info`/`error`, the data rather than the
 //  fact of the call) on the two places that already obey it; T16 and T17 pin the two outputs the
 //  schemas described less precisely than the code produces them — a configured layer whose device
 //  id is still nil, and a `configure()` that attaches the IDFA plugin without being told the ATT
-//  status.
+//  status; T18 pins that `environment` belongs to the gate rather than to the first-open event,
+//  which the AN-01 side-effect table had backwards.
 //
 //  All of them are green as of `60169db`. T1, T2, T10, T11, T12, T13 were written red first, as the
 //  spec for behaviour the wrapper did not have: the first-open gate closes only after the event
@@ -429,10 +430,34 @@ enum AmplitudeAnalyticsCheck {
 				+ "status, got \(Amplitude.addedPluginCount)"
 		)
 
+		// ── AN-01 row 10 — `environment` is tied to the gate, not to the first-open event ──
+		// Executes `AmplitudeAnalytics.swift:89` ahead of the `guard let event` at `:94`. The
+		// side-effect table used to say the property is written "only on the first install"; it is
+		// not — it sits inside the gate but before the event-name check, so an app that ships
+		// without naming its first-open event still gets an `environment` on the profile, on every
+		// launch, for as long as the gate stays open. Moving the write below the guard would leave
+		// that app with no environment at all, and T12 would not notice: T12 always passes an event
+		// name. Two configures, gate never closed, so both halves are pinned at once.
+		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
+		Amplitude.reset()
+		let row10First = AmplitudeAnalytics()
+		row10First.configure(apiKey: "amp-key", deviceId: "device-10a", firstOpenEvent: nil)
+		let identifiesAfterFirst = Amplitude.identifyCalls.count
+		let row10Second = AmplitudeAnalytics()
+		row10Second.configure(apiKey: "amp-key", deviceId: "device-10b", firstOpenEvent: nil)
+		check(
+			identifiesAfterFirst == 1
+				&& Amplitude.identifyCalls.count == 2
+				&& Amplitude.identifyCalls.allSatisfy { $0["environment"] != nil },
+			"T18 AN-01 row 10: `environment` must be written without a first-open event name and "
+				+ "again on every launch while the gate stays open, got \(identifiesAfterFirst) then "
+				+ "\(Amplitude.identifyCalls.count) identify call(s): \(Amplitude.identifyCalls)"
+		)
+
 		if failures.isEmpty {
-			print("AmplitudeAnalytics (AN-01..AN-04): 18/18 OK")
+			print("AmplitudeAnalytics (AN-01..AN-04): 19/19 OK")
 		} else {
-			print("\(failures.count) of 18 asserts FAILED")
+			print("\(failures.count) of 19 asserts FAILED")
 			exit(1)
 		}
 	}
