@@ -313,10 +313,11 @@ public static func configure(
 | `isTestsRunning` | Whether this launch is a test run. `true` leaves Amplitude, Adapty and AppsFlyer down for the whole run, each recording its own reason in `configurationIssues` | The app: `ProcessInfo.processInfo.arguments.contains("-uitest")` or `ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil` | Required — no default. `true` means no Amplitude events, no Adapty activation (so no live paywalls and no live purchases through it), and no AppsFlyer sessions, install data or deep links. Firebase and StoreKit are **not** affected: crash collection follows `isDebug` alone, and the receipt is still read. |
 | `levels` | The set of Adapty access level ids that count as "premium" | Adapty dashboard — access level ids configured for the paywall | Defaults to `["premium"]`. Wrong values here mean a real Adapty premium purchase never flips `isPremium` to true. |
 | `firstOpenEvent` | Analytics event name logged exactly once per install | App's own event naming | `nil` (default) — no first-open event is logged at all. |
-| `appsFlyerDevKey` | AppsFlyer dev key | AppsFlyer dashboard, per app | Defaults to `""`. An empty dev key means **AppsFlyer is not created at all** — no attribution, `kit.handleContinue`/`kit.handleOpen` become no-ops. |
+| `appsFlyerDevKey` | AppsFlyer dev key | AppsFlyer dashboard, per app | Defaults to `""`. An empty dev key means **AppsFlyer is not created at all** — no attribution and no deep links, and one line saying so lands in `configurationIssues`. Keep forwarding `handleContinue`/`handleOpen` anyway: `handleContinue` still calls your `restorationHandler` (see [Deep links](#deep-links)), so the app must not answer UIKit itself. |
 | `appsFlyerAppId` | Numeric App Store id | App Store Connect / `itunes.apple.com/lookup` | Defaults to `""`. Only meaningful together with a non-empty `appsFlyerDevKey`; without a confirmed App ID, AppsFlyer attribution can end up pointed at the wrong app. |
 | `sourceTimeout` | How long one premium refresh waits for a single source — Adapty, or the Apple receipt — before deciding without it | The app's own judgement about its users' networks | Defaults to `5` seconds. That number comes from practice, not from anything Adapty documents; an app whose users are on worse networks passes a larger one instead of patching the package. Neither source answering within it is not "no premium" — it is "unknown", and the cached state stands. |
 | `attTimeout` | How long AppsFlyer holds the install data waiting for the ATT answer | Where the app shows the ATT prompt | Defaults to `60` seconds, which is AppsFlyer's own recommendation for a prompt shown at launch. An app that asks after a tutorial is told to pass `120`. Only the app knows which it is, and a user who deletes the app before the limit expires stays unattributed. |
+
 There is no separate switch for AppsFlyer's console logging any more — it is
 `isDebug`, the same key crash collection runs off. AppsFlyer's docs require
 the logging off in a shipping build, which a release build's `false` gives
@@ -330,7 +331,7 @@ one of the SDKs needs no `#if` anywhere:
 |---|---|
 | `adaptyKey: ""` | Adapty is never activated. Every call into the layer becomes a no-op, one line lands in `configurationIssues`, and no purchase is ever pushed through Adapty behind the app's back. |
 | `amplitudeKey: ""` | Amplitude is never activated; events go nowhere. |
-| `appsFlyerDevKey: ""` | No `AppsFlyerService` is created at all; `handleContinue`/`handleOpen` become no-ops. |
+| `appsFlyerDevKey: ""` | No `AppsFlyerService` is created at all. `handleOpen` becomes a no-op; `handleContinue` does not — it still answers UIKit's `restorationHandler`, which is a duty the app must never take back. |
 
 `isTestsRunning: true` reaches the same three states at once, and is the right
 way to do it for a test run — an empty key would be a lie about the
@@ -860,9 +861,15 @@ func application(_ app: UIApplication, open url: URL, options: [UIApplication.Op
   or fall back around.
 - **URL scheme** (`handleOpen`) needs `CFBundleURLTypes` in `Info.plist`,
   independent of the package.
-- If `appsFlyerDevKey` was empty at `configure` time, both methods are
-  effectively no-ops — there is no AppsFlyer instance behind them to forward
-  to.
+- If `appsFlyerDevKey` was empty at `configure` time there is no AppsFlyer
+  instance behind either method, but they are not both no-ops, and the
+  difference matters. `handleOpen` is one: the URL goes nowhere. `handleContinue`
+  is not — it still calls `restorationHandler(nil)`, exactly once. That handler
+  belongs to UIKit, and an app that leaves it uncalled sits on its launch screen
+  for the whole universal-link open. So forward both unconditionally and never
+  answer `restorationHandler` yourself as a fallback: calling it twice is a
+  UIKit contract violation, and `Checks/IntegrationKitCheck.swift` pins the
+  "exactly once" from the package's side.
 
 **What the package does with a resolved deep link:** logs an
 `af_didResolveDeepLink` analytics event, sets a `deep_link_value` user
