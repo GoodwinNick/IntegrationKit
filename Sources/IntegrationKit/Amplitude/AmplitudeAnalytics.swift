@@ -58,6 +58,13 @@ final class AmplitudeAnalytics: AnalyticsTracking {
 		amplitude = Amplitude(configuration: Configuration(apiKey: apiKey))
 		// User id goes in before the first event, so even the first event carries it.
 		setUserId(deviceId)
+		// AN-01 row 11: on every launch, and re-read on every launch. This used to live inside the
+		// first-open gate, where it inherited that gate's lifetime: an app that names its first-open
+		// event wrote it once per install, and a fresh App Store install has no receipt until the
+		// first purchase — so that single write said "unknown" and the profile stayed "unknown" long
+		// after the receipt arrived. The property describes the launch, not the install, so it goes
+		// where the launch is.
+		amplitude?.identify(userProperties: ["environment": environment])
 		// AN-04 row 2: added unconditionally, because the plugin re-reads the ATT status on every
 		// event anyway. An authorization that arrived before this call would otherwise be lost with
 		// nothing to replay it — and the user only gives that answer once.
@@ -95,20 +102,28 @@ final class AmplitudeAnalytics: AnalyticsTracking {
 		amplitude.add(plugin: AmplitudeIDFAPlugin())
 	}
 
+	/// Which install this is, as the dashboard has to be able to slice it.
+	///
+	/// AN-01 row 4: no receipt is "we cannot tell", not "production" — a fresh TestFlight install
+	/// has no receipt until the first purchase or restore, and calling that cohort production mixes
+	/// testers into the numbers the business reads.
+	///
+	/// AN-01 row 11: a debug build says so and stops there. Its receipt is whatever the last
+	/// build-and-run left in the container, and knowing that is worth far less than being able to
+	/// take developer traffic out of every number at once. The name stays `environment` — the app
+	/// this package was extracted from already has dashboards on it, and renaming it is the app
+	/// owner's call, not the package's.
+	private var environment: String {
+		guard !isDebug else { return "debug" }
+		switch Bundle.main.appStoreReceiptURL?.lastPathComponent {
+			case "sandboxReceipt": return "sandbox"
+			case .some: return "production"
+			case .none: return "unknown"
+		}
+	}
+
 	private func trackFirstOpenOnce(event: String?) {
 		guard !UserDefaults.standard.bool(forKey: Self.firstOpenTrackedKey) else { return }
-
-		// AN-01 row 4: no receipt is "we cannot tell", not "production". A fresh TestFlight install
-		// has no receipt until the first purchase or restore, and calling that cohort production
-		// mixes testers into the numbers the business reads.
-		let environment: String
-		switch Bundle.main.appStoreReceiptURL?.lastPathComponent {
-			case "sandboxReceipt": environment = "sandbox"
-			case .some: environment = "production"
-			case .none: environment = "unknown"
-		}
-		amplitude?.identify(userProperties: ["environment": environment])
-
 		// AN-01 row 2: nothing to send is nothing to close. A build that ships before the app names
 		// its first-open event would otherwise burn the gate for every install it touched, and the
 		// version that finally names the event would never send it for that cohort.
