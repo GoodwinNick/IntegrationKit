@@ -16,9 +16,14 @@ import Foundation
 /// Deliberately not an error type: nothing here is thrown or handled. It is a list the app can
 /// print, ship to Crashlytics, or assert on in a test — the observable half of every "fails
 /// silently" row in the schemas.
-public final class ConfigurationIssues {
+///
+/// Internal on purpose: the app reads the same list as a plain `[String]` through
+/// `IntegrationKit.configurationIssues` or `PremiumServicing.configurationIssues`. Handing out the
+/// collector itself would let the app `record` into the very list an integrator reads as the
+/// package's own verdict.
+final class ConfigurationIssues {
 
-	public static let shared = ConfigurationIssues()
+	static let shared = ConfigurationIssues()
 
 	private let lock = NSLock()
 	private var seen: Set<String> = []
@@ -27,7 +32,7 @@ public final class ConfigurationIssues {
 	init() {}
 
 	/// Everything recorded so far, oldest first.
-	public var all: [String] {
+	var all: [String] {
 		lock.lock()
 		defer { lock.unlock() }
 		return ordered
@@ -39,7 +44,7 @@ public final class ConfigurationIssues {
 	/// Returns `true` when the text was new — the callers that also want a log line use that to
 	/// avoid printing the same sentence a thousand times.
 	@discardableResult
-	public func record(_ text: String, tag: String? = nil) -> Bool {
+	func record(_ text: String, tag: String? = nil) -> Bool {
 		lock.lock()
 		let isNew = seen.insert(text).inserted
 		if isNew {
