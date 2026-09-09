@@ -582,9 +582,20 @@ func paywall() {
   Adapty's own purchase request fails and asks for a StoreKit retry, the
   package runs that retry itself through its own StoreKit layer — the app never
   sees a "please retry" signal, only the final `PurchaseOutcome`.
-- **`restore(completion:)`** — restores through both sources (StoreKit, then a
-  re-ask of Adapty) and reports one combined `RestoreOutcome`. `isPremium`
-  already reflects `.restored` by the time the completion fires.
+- **`restore(completion:)`** — runs StoreKit's restore, then re-asks both
+  sources, then calls you back. The `RestoreOutcome` is **StoreKit's own
+  answer, not a combined verdict**: Adapty is re-asked only so that `isPremium`
+  is already current by the time the completion fires. They are two separate
+  readings — the outcome says what the payment queue gave back, `isPremium`
+  says whether the user has access.
+  **`.nothingToRestore` together with `isPremium == true` is a normal pairing,
+  not a contradiction**, and it is the one an integrator meets in the wild: a
+  subscription bought on another Apple ID, a purchase made on the web, or a
+  grant handed out in the Adapty dashboard leaves StoreKit with nothing to
+  hand back while Adapty answers "active". Read `isPremium` first and say
+  "your subscription is already active"; keep "no active purchases found" for
+  `.nothingToRestore` with `isPremium == false`. Telling a paying user that
+  nothing was found is how a support ticket or a refund request starts.
 - **`refresh()`** — re-asks both sources and updates the cached state; safe
   to call any time (e.g. on foreground), concurrent calls collapse into one.
 
