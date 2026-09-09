@@ -3,12 +3,11 @@
 //  IntegrationKit
 //
 //  Covers PM-03 rows 10-17, PM-04 rows 9-10, PM-05 row 8, PM-08 row 7 and PM-07 row 9 — the
-//  local-purchase mark. `PremiumState.localPurchase` and the demoted-cache trick in
-//  `PremiumService.apply` already exist; what does NOT exist yet is (a) `PremiumResolver.resolve`
-//  actually reading its new `localPurchase` parameter (today it is accepted and ignored) and
-//  (b) `PremiumService` ever writing `localPurchase: true` onto a freshly resolved state after a
-//  purchase, a restore or a delivered transaction. This file is the spec for that follow-up task —
-//  most rows below are RED on purpose, and that is the point, not a bug in this check.
+//  local-purchase mark. Written as the spec for two things that did not exist when it was first
+//  run: `PremiumResolver.resolve` reading its `localPurchase` parameter instead of accepting and
+//  ignoring it, and `PremiumService` writing `localPurchase: true` onto a freshly resolved state
+//  after a purchase, a restore or a delivered transaction. Both landed, and all twenty asserts are
+//  green — a failure here now means the mark was lost, not that the work is still pending.
 //
 //  This check does not stop at the first failing row: every row runs, every failure is collected,
 //  and the summary at the end reports all of them with a non-zero exit code.

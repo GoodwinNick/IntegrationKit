@@ -1,12 +1,10 @@
 #!/bin/sh
-# Local-purchase mark self-check — spec for a NOT-YET-IMPLEMENTED behaviour, most rows RED on
-# purpose. No XCTest, no Xcode project. Same trick as `premium-barrier-check.sh`: `PremiumService`
-# names exactly one Adapty type (`AdaptyProfile`), so a stub module called `Adapty` is compiled
-# first and linked in its place.
+# Local-purchase mark self-check — written as the spec for behaviour that did not exist yet, green
+# since it landed. No XCTest, no Xcode project. Same trick as `premium-barrier-check.sh`:
+# `PremiumService` names exactly one Adapty type (`AdaptyProfile`), so a stub module called `Adapty`
+# is compiled first and linked in its place.
 #
-# A non-zero exit here is the expected, healthy outcome until the local-purchase mark is
-# implemented — this script still uses `set -e` and exits non-zero on a genuine compile failure,
-# same as every other check.
+# A non-zero exit is a regression, not the expected outcome.
 set -e
 cd "$(dirname "$0")/.."
 work="${TMPDIR:-/tmp}/premium-local-purchase-check"

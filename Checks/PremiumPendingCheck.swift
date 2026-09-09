@@ -172,7 +172,7 @@ enum PremiumPendingCheck {
 		wait(0.5) { startAdapty.profileCalls >= 2 }
 		check(
 			startAdapty.profileCalls == 1,
-			"case 1 (PM-01 row 4): start() twice must do the work exactly once — expected 1 Adapty profile fetch, got \(startAdapty.profileCalls); the push observer was installed \(startAdapty.observerAssignments) time(s), expected 1. The idempotency guard decided on 2026-09-08 is not implemented yet"
+			"case 1 (PM-01 row 4): start() twice must do the work exactly once — expected 1 Adapty profile fetch, got \(startAdapty.profileCalls); the push observer was installed \(startAdapty.observerAssignments) time(s), expected 1. The idempotency guard decided on 2026-09-08 has been lost"
 		)
 
 		// 2. PM-04 row 7 — two `purchase()` calls fired without awaiting the first. Decision
@@ -190,7 +190,7 @@ enum PremiumPendingCheck {
 		wait(2) { completions >= 2 }
 		check(
 			buyAdapty.buyCalls == 1,
-			"case 2 (PM-04 row 7): a second purchase() before the first settled must be rejected without reaching the SDK — expected exactly 1 buy attempt, got \(buyAdapty.buyCalls) for \(completions) completed purchase() call(s). The concurrency guard decided on 2026-09-08 is not implemented yet"
+			"case 2 (PM-04 row 7): a second purchase() before the first settled must be rejected without reaching the SDK — expected exactly 1 buy attempt, got \(buyAdapty.buyCalls) for \(completions) completed purchase() call(s). The concurrency guard decided on 2026-09-08 has been lost"
 		)
 
 		if failures.isEmpty {

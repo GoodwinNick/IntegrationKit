@@ -8,15 +8,16 @@
 //  `AppsFlyerServiceCheck.swift`, because the code they name lives there; the remaining seven say
 //  why in the comment above them rather than being closed by a lookalike assert.
 //
-//  T1, T2, T10, T11, T12, T13 are red on purpose — they are the spec for behaviour the wrapper does
-//  not have yet: the first-open gate must close only after the event ships, not before it (AN-01
-//  row 1); a configure() that finally names the event must still send it even after an earlier
-//  unnamed call (AN-01 row 2); a second `.authorized` call must not add a second IDFA plugin (AN-04
-//  row 1); an `.authorized` call that arrives before configure() must still take effect once
-//  configure() runs (AN-04 row 2); a missing App Store receipt must read as "unknown" rather than
-//  as a production install (AN-01 row 4); and an inactive layer must name the reason it is inactive
-//  (AN-01 row 3). T3, T4, T5, T6, T7, T8, T9 are green and pin exactly what the contract already
-//  gets right, so a later change cannot loosen it silently — including AN-01 row 6, whose own
+//  All of them are green as of `60169db`. T1, T2, T10, T11, T12, T13 were written red first, as the
+//  spec for behaviour the wrapper did not have: the first-open gate closes only after the event
+//  ships, not before it (AN-01 row 1); a configure() that finally names the event still sends it
+//  after an earlier unnamed call (AN-01 row 2); a second `.authorized` call does not add a second
+//  IDFA plugin (AN-04 row 1); an `.authorized` call that arrives before configure() still takes
+//  effect once configure() runs (AN-04 row 2); a missing App Store receipt reads as "unknown"
+//  rather than as a production install (AN-01 row 4); and an inactive layer names the reason it is
+//  inactive (AN-01 row 3). T3, T4, T5, T6, T7, T8, T9 were green from the start and pin exactly
+//  what the contract already got right, so a later change cannot loosen it silently — including
+//  AN-01 row 6, whose own
 //  reproduction step only asks to confirm the SDK reinitialises on a second configure() (one of
 //  the two contract-legal outcomes for that row), not to demand a guard that does not exist.
 //
@@ -34,8 +35,7 @@
 //
 //  This check does not stop at the first failing row: every row runs, every failure is collected,
 //  and the summary at the end reports all of them with a non-zero exit code — same shape as
-//  `CrashlyticsCheck`. A non-zero exit here is the expected, healthy outcome until AN-01 rows 1-2
-//  and AN-04 rows 1-2 are implemented.
+//  `CrashlyticsCheck`. A non-zero exit is now a regression, not the expected outcome.
 //  Run:  ./Checks/amplitude-analytics-check.sh
 //
 
@@ -63,8 +63,9 @@ enum AmplitudeAnalyticsCheck {
 
 	static func main() {
 		// ── AN-01 row 1 — the first-open gate must not close before the event ships ────────
-		// Executes `AmplitudeAnalytics.swift:50-56`. Red: `:51` writes the flag, then `:53-56`
-		// send — so at the instant the flag becomes true, no event has shipped yet. `UserDefaults`
+		// Executes `AmplitudeAnalytics.swift:77-100`. Green: `:95` hands the event over and only
+		// then `:99` writes the flag — the flag used to be written first, so at the instant it
+		// became true no event had shipped yet. `UserDefaults`
 		// posts `didChangeNotification` synchronously right after `set()` (confirmed empirically),
 		// which is the only way to catch that instant without touching `Sources/`.
 		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
@@ -88,9 +89,9 @@ enum AmplitudeAnalyticsCheck {
 		)
 
 		// ── AN-01 row 2 — an unnamed first-open must not burn the gate for a later named one ──
-		// Executes `AmplitudeAnalytics.swift:50-51` (closes unconditionally) and `:54-56` (sends
-		// only if named). Red: the second `configure()` never sends, because the first already
-		// closed the gate with nothing to send.
+		// Executes `AmplitudeAnalytics.swift:94` (nothing to send is nothing to close) and `:95-99`
+		// (send, then close). Green: the unnamed first call returns before the gate, so the second
+		// `configure()` still has it to spend. It used to close unconditionally.
 		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
 		Amplitude.reset()
 		let row2First = AmplitudeAnalytics()
@@ -109,7 +110,7 @@ enum AmplitudeAnalyticsCheck {
 		// off" alone is useless to whoever reads it. Only the empty-key half is asserted — the
 		// test-run branch has no code yet (decision 2026-09-08, task 1218288104081038), and an
 		// assert for a branch that cannot be reached would be a lookalike. The "stays inactive"
-		// half is AN-01 row 8's, further down. RED until the guard records anything.
+		// half is AN-01 row 8's, further down. Green since `:30-36` records the cause.
 		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
 		Amplitude.reset()
 		ConfigurationIssues.shared.reset()
@@ -127,12 +128,12 @@ enum AmplitudeAnalyticsCheck {
 		)
 
 		// ── AN-01 row 4 — a missing receipt is "unknown", not a production install ────────
-		// Executes `AmplitudeAnalytics.swift:52-53`. The schema's own "Як відтворити" calls this
+		// Executes `AmplitudeAnalytics.swift:83-89`. The schema's own "Як відтворити" calls this
 		// row read-by-code, because `Bundle.main.appStoreReceiptURL` looks the same on every run
-		// here. It does — and that constant is exactly the row's defect rather than an obstacle to
-		// it: this process has no App Store receipt, so `:52` takes the `!= "sandboxReceipt"`
-		// branch and reports every install as production. RED: the row asks for a third value.
-		// What stays out of reach is only the sandbox half, and no assert below claims it.
+		// here. It does — and that constant is exactly what made the row testable: this process has
+		// no App Store receipt, and the old two-way branch called that production. Green: `:87` is
+		// the third value the row asked for. What stays out of reach is only the sandbox half, and
+		// no assert below claims it.
 		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
 		Amplitude.reset()
 		let row4 = AmplitudeAnalytics()
@@ -144,7 +145,7 @@ enum AmplitudeAnalyticsCheck {
 		)
 
 		// ── AN-01 row 5 — user id must be set before the first event ships ─────────────────
-		// Executes `AmplitudeAnalytics.swift:22` (setUserId) ahead of `:23` (trackFirstOpenOnce).
+		// Executes `AmplitudeAnalytics.swift:39` (setUserId) ahead of `:44` (trackFirstOpenOnce).
 		// Green, already correct: `userIdAtFirstTrack` snapshots `lastUserId` the moment `track`
 		// first runs, so this proves the order rather than just the end state — both calls having
 		// happened does not, by itself, say which ran first.
@@ -159,9 +160,9 @@ enum AmplitudeAnalyticsCheck {
 		)
 
 		// ── AN-01 row 6 — a second configure() is a full replacement, not a crash or a merge ──
-		// Executes `AmplitudeAnalytics.swift:20` twice. Green as written: the row's own "Як
+		// Executes `AmplitudeAnalytics.swift:37` twice. Green as written: the row's own "Як
 		// відтворити" only asks to confirm the SDK reinitialises — one of the two contract-legal
-		// outcomes ("no-op, or full replacement without loss") — not to demand the guard `:20`
+		// outcomes ("no-op, or full replacement without loss") — not to demand the guard `:37`
 		// does not have.
 		Amplitude.reset()
 		let row6 = AmplitudeAnalytics()
@@ -174,11 +175,11 @@ enum AmplitudeAnalyticsCheck {
 		)
 
 		// AN-01 row 7 is NOT covered: its own "Як відтворити" calls this read-by-code — verified
-		// by reading the composition root (`IntegrationKit.swift:59-60`), not by exercising it here.
+		// by reading the composition root (`IntegrationKit.swift:66-67`), not by exercising it here.
 
 		// ── AN-01 row 8 — an inactive layer must not burn the first-open gate ──────────────
-		// Executes `AmplitudeAnalytics.swift:19` (early return before the gate is ever touched).
-		// Green already: kept as a guard against `:19-23`'s order being reshuffled by accident —
+		// Executes `AmplitudeAnalytics.swift:30-36` (early return before the gate is ever touched).
+		// Green already: kept as a guard against `:30-44`'s order being reshuffled by accident —
 		// an empty-key run must not spend the one-time gate on an open analytics never saw.
 		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
 		Amplitude.reset()
@@ -204,7 +205,7 @@ enum AmplitudeAnalyticsCheck {
 		an02.configure(apiKey: "amp-key", deviceId: "device-an02", firstOpenEvent: nil)
 
 		// ── AN-02 row 2 — properties reach the SDK exactly as given, non-serialisable types too ──
-		// Executes `AmplitudeAnalytics.swift:34-37`. Green: `properties` is forwarded to `track`
+		// Executes `AmplitudeAnalytics.swift:55-58`. Green: `properties` is forwarded to `track`
 		// with no conversion or filtering — the contract's deliberate choice, pinned so a
 		// "helpful" sanitiser does not creep in later.
 		Amplitude.reset()
@@ -220,7 +221,7 @@ enum AmplitudeAnalyticsCheck {
 		)
 
 		// ── AN-02 row 3 — a background-thread call must not crash or get dropped ───────────
-		// Executes `AmplitudeAnalytics.swift:34-37` from two queues at once. Green: `track` is
+		// Executes `AmplitudeAnalytics.swift:55-58` from two queues at once. Green: `track` is
 		// documented thread-safe by Amplitude itself, so the wrapper adds no hop of its own — this
 		// proves the claim instead of leaving it as an assurance, same idea as `CrashlyticsCheck`'s
 		// T7. The stub's own array is not thread-safe, so the two calls are serialised through one
@@ -249,7 +250,7 @@ enum AmplitudeAnalyticsCheck {
 		// files — not practical here, same reasoning as AN-03 row 2 for `AdaptyService`.
 
 		// ── AN-03 row 1 — deviceId before configure() answers nil, not a crash ─────────────
-		// Executes `AmplitudeAnalytics.swift:30-32`. Green: `amplitude` is nil until `configure()`
+		// Executes `AmplitudeAnalytics.swift:51-53`. Green: `amplitude` is nil until `configure()`
 		// runs, and the optional chain answers nil instead of trapping.
 		let row1An03 = AmplitudeAnalytics()
 		check(
@@ -267,7 +268,7 @@ enum AmplitudeAnalyticsCheck {
 		// three Amplitude files.
 
 		// ── AN-03 row 3 — an explicit setUserId overrides the configure()-time id, as designed ──
-		// Executes `AmplitudeAnalytics.swift:26-28`. Green, deliberately: the method does not
+		// Executes `AmplitudeAnalytics.swift:47-49`. Green, deliberately: the method does not
 		// validate its input — the boundary the row exists to record, not a defect.
 		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
 		Amplitude.reset()
@@ -280,16 +281,17 @@ enum AmplitudeAnalyticsCheck {
 				+ "exactly as given, got \(String(describing: Amplitude.lastUserId))"
 		)
 
-		// AN-03 row 4 is NOT covered: it exercises `AppsFlyerService.swift:84-88` (the
-		// un-prefixed `status`/`media_source`/`campaign_name` profile properties), not this
-		// wrapper — same out-of-scope reasoning as AN-02 row 4.
+		// AN-03 row 4 is NOT covered here: it exercises `AppsFlyerService.swift:139-143` (the
+		// `af_`-prefixed profile properties, unprefixed until 2026-09-09), not this wrapper — same
+		// out-of-scope reasoning as AN-02 row 4. `AppsFlyerServiceCheck.swift` T24 owns it.
 
 		// AN-03 row 5 is NOT covered: its own "Як відтворити" calls this read-by-code — the
 		// `AmplitudeSwift` stub's `identify` has no delete/remove counterpart to call.
 
 		// ── AN-04 row 1 — a second `.authorized` call must not add a second plugin ─────────
-		// Executes `AmplitudeAnalytics.swift:44-46` twice. Red: there is neither a flag nor an
-		// existence check, so the plugin count doubles instead of staying at one.
+		// Executes `AmplitudeAnalytics.swift:67-69` twice, both times through `addIDFAPluginOnce`
+		// (`:71-75`). Green: the flag at `:22` holds the count at one. The SDK's own dedup cannot —
+		// it keys on `plugin.name`, whose witness is statically `nil` on this pin.
 		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
 		Amplitude.reset()
 		let row1An04 = AmplitudeAnalytics()
@@ -303,9 +305,9 @@ enum AmplitudeAnalyticsCheck {
 		)
 
 		// ── AN-04 row 2 — an `.authorized` call before configure() must not be lost ────────
-		// Executes `AmplitudeAnalytics.swift:45` while `amplitude` is still nil. Red: the status
-		// is not remembered anywhere, so the optional chain silently drops the call and
-		// configure() never replays it.
+		// Executes `AmplitudeAnalytics.swift:68` while `amplitude` is still nil, so that call is
+		// dropped — and it no longer matters: `:43` attaches the plugin during `configure()`
+		// unconditionally, and the plugin re-reads the ATT status on every event. Green.
 		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
 		Amplitude.reset()
 		let row2An04 = AmplitudeAnalytics()

@@ -6,18 +6,17 @@
 //  those two tables are checked here; the tenth (CR-02 row 6) is a pointer to CR-01 row 1 and says
 //  below why covering it twice would hide something.
 //
-//  T1–T5 are red on purpose — they are the spec for behaviour the wrapper does not have yet:
-//  a second `FirebaseIntegration.configure()` must be a no-op (CR-01 row 3), the collection flag
-//  must arrive as a parameter and be written on every launch in both directions (CR-01 rows 2
-//  and 4), a report filed before Firebase is up must be counted rather than lost (CR-01 row 1),
-//  and the tag must reach Crashlytics as a *searchable custom key* (CR-02 row 1). T6–T9 are green
-//  and pin the noise filter exactly as the contract describes it, so a later change cannot loosen
-//  it silently.
+//  All nine are green as of `60169db`. T1–T5 were written red first, as the spec for behaviour the
+//  wrapper did not have: a second `FirebaseIntegration.configure()` is a no-op (CR-01 row 3), the
+//  collection flag arrives as a parameter and is written on every launch in both directions (CR-01
+//  rows 2 and 4), a report filed before Firebase is up is counted rather than lost (CR-01 row 1),
+//  and the tag reaches Crashlytics as a *searchable custom key* (CR-02 row 1). T6–T9 were green
+//  from the start and pin the noise filter exactly as the contract describes it, so a later change
+//  cannot loosen it silently.
 //
 //  This check does not stop at the first failing row: every row runs, every failure is collected,
 //  and the summary at the end reports all of them with a non-zero exit code — same shape as
-//  `AdaptyServiceCheck`. A non-zero exit here is the expected, healthy outcome until those five
-//  rows are implemented.
+//  `AdaptyServiceCheck`. A non-zero exit is now a regression, not the expected outcome.
 //  Run:  ./Checks/crashlytics-check.sh
 //
 

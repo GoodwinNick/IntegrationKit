@@ -7,25 +7,27 @@
 //  Amplitude's; the four rows that carry none say why in a comment above the block they belong
 //  to, rather than being closed by a lookalike assert.
 //
-//  Red on purpose — the spec for behaviour the wrapper does not have yet:
-//    T4  AF-01 row 2 — the ATT wait limit must be the app's, not the constant 60.
-//    T5  AF-01 row 3 — SDK debug logging must follow the app's key, not a hardwired `false`.
-//    T6  AF-01 row 5 — a second `configure` must not initialize the SDK a second time.
-//    T11 AF-03 row 2 — an empty AppsFlyer UID must reach Adapty as nil, not as "".
-//    T13 AF-03 row 3 — the profile property and the event must not contradict each other.
-//    T15 AF-04 row 1 — the `-` placeholder belongs in the event only, never in a profile.
-//    T21 AF-05 row 1 — the restoration handler must answer even when the SDK never calls back.
-//    T22 AF-05 row 2 — one foreign object must not take the whole restoration array with it.
-//    T24 AN-03 row 4 — the profile properties the package writes must be recognizably its own.
-//    T25 AF-02 row 1 — a second foreground return must start a new session.
-//    T26 AF-01 row 1 — an empty dev key must record a reason a release build can read.
-//    T27 AF-04 row 2 — a "found" deep link with no content must be counted, not just skipped.
-//    T28 AF-05 row 3 — the forwards must not touch an SDK that was never initialized, and must
-//        still answer the system.
-//    T29 AF-06 row 1 — a failed attribution must keep the error's domain and code.
-//  The rest are green and pin behaviour that is already correct — the silence of the failure
-//  callbacks (T23), the fixed eleven-field deep-link payload (T17), last-attribution-wins (T20) —
-//  so a later change cannot loosen any of it silently.
+//  All thirty-one are green as of `b955866`. Fifteen of them were written red first, against
+//  schemas the wrapper did not satisfy yet, and each one names the behaviour the code had to grow
+//  rather than the shape it happened to have:
+//    T4  AF-01 row 2 — the ATT wait limit is the app's, not the constant 60.
+//    T5  AF-01 row 3 — SDK debug logging follows the app's key, not a hardwired `false`.
+//    T6  AF-01 row 5 — a second `configure` does not initialize the SDK a second time.
+//    T11 AF-03 row 2 — an empty AppsFlyer UID reaches Adapty as nil, not as "".
+//    T13 AF-03 row 3 — the profile property and the event do not contradict each other.
+//    T15 AF-04 row 1 — the `-` placeholder stays in the event, never in a profile.
+//    T21 AF-05 row 1 — the restoration handler answers even when the SDK never calls back.
+//    T22 AF-05 row 2 — one foreign object does not take the whole restoration array with it.
+//    T24 AN-03 row 4 — the profile properties the package writes are recognizably its own.
+//    T25 AF-02 row 1 — a second foreground return starts a new session.
+//    T26 AF-01 row 1 — an empty dev key records a reason a release build can read.
+//    T27 AF-04 row 2 — a "found" deep link with no content is counted, not just skipped.
+//    T28 AF-05 row 3 — the forwards do not touch an SDK that was never initialized, and still
+//        answer the system.
+//    T29 AF-06 row 1 — a failed attribution keeps the error's domain and code.
+//  The rest were green from the start and pin behaviour that was already correct — the silence of
+//  the failure callback (T23), the fixed eleven-field deep-link payload (T17),
+//  last-attribution-wins (T20) — so a later change cannot loosen any of it silently.
 //
 //  Built WITHOUT `-D DEBUG` on purpose: every row that asks for "a trace visible outside Xcode"
 //  (AF-01 row 1, AF-04 row 2, AF-05 row 3, AF-06 row 1) is measured against exactly the build the
@@ -35,7 +37,7 @@
 //
 //  This check does not stop at the first failing row: every row runs, every failure is collected,
 //  and the summary at the end reports all of them with a non-zero exit code — same shape as
-//  `CrashlyticsCheck`. A non-zero exit here is the expected, healthy outcome.
+//  `CrashlyticsCheck`. A non-zero exit is now a regression, not the expected outcome.
 //  Run:  ./Checks/appsflyer-service-check.sh
 //
 
@@ -104,7 +106,7 @@ final class FakeAdapty: AdaptyServicing {
 	}
 }
 
-/// AF-05 row 2 needs at least one object that survives the cast at `AppsFlyerService.swift:54`.
+/// AF-05 row 2 needs at least one object that survives the filter at `AppsFlyerService.swift:108`.
 /// `UIUserActivityRestoring` carries no requirements, so conforming costs one line.
 final class FakeRestorer: UIUserActivityRestoring {}
 
@@ -134,8 +136,8 @@ enum AppsFlyerServiceCheck {
 		setbuf(stdout, nil)
 
 		// ── AF-01 row 1 — an empty dev key switches the whole layer off ──────────────────────
-		// Executes `AppsFlyerService.swift:29-32`. Green: `:29` returns before anything is
-		// touched.
+		// Executes `AppsFlyerService.swift:51-57`. Green: `:51` returns before anything is
+		// touched, having recorded the cause first.
 		AppsFlyerLib.reset()
 		ConfigurationIssues.shared.reset()
 		let t1Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
@@ -154,8 +156,8 @@ enum AppsFlyerServiceCheck {
 				+ "deepLinkDelegate=\(AppsFlyerLib.shared().deepLinkDelegate == nil ? "nil" : "set"), "
 				+ "customerUserID=\(String(describing: AppsFlyerLib.shared().customerUserID))"
 		)
-		// The observer is proved absent by its effect: had `:41-46` run, this signal would set the
-		// flag at `:67` and reach `start()` at `:68`.
+		// The observer is proved absent by its effect: had `:77-82` run, this signal would set the
+		// flag at `:121` and reach `start()` at `:122`.
 		postForegroundSignal()
 		check(
 			t1Service.didStartAppsFlyer == false && AppsFlyerLib.startCallCount == 0,
@@ -166,8 +168,8 @@ enum AppsFlyerServiceCheck {
 		// The other half of AF-01 row 1 — "the disabled layer must leave a trace visible outside
 		// Xcode". This check builds WITHOUT `-D DEBUG` on purpose, so `debugLog` writes nothing at
 		// all here: what is asserted is the one channel that survives a release build, and the
-		// assert names the cause rather than the fact a line exists. RED until the empty-key branch
-		// records it.
+		// assert names the cause rather than the fact a line exists. Green since the empty-key
+		// branch records it (`:52-55`).
 		check(
 			ConfigurationIssues.shared.all.contains { $0.contains("dev key") },
 			"T26 AF-01 row 1: an empty dev key must record a readable reason, got "
@@ -220,8 +222,8 @@ enum AppsFlyerServiceCheck {
 		// row. The row is an OS-version read, exactly as its schema says.
 
 		// ── AF-01 row 5 — a second `configure` must not stand the SDK up twice ───────────────
-		// Executes `AppsFlyerService.swift:28-47` twice. RED: there is no guard, so `:34` runs
-		// again.
+		// Executes `AppsFlyerService.swift:47-83` twice. Green: the guard at `:60-61` returns before
+		// `:63` can stand the SDK up again.
 		AppsFlyerLib.reset()
 		let t6Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
 		t6Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
@@ -232,8 +234,9 @@ enum AppsFlyerServiceCheck {
 				+ "\(AppsFlyerLib.initializeCallCount)"
 		)
 		// The second half of the row: the duplicate registration must still not double a session.
-		// Green, and green because of the AF-02 flag at `:63-67`, not because of any guard here —
-		// the observer really did run twice.
+		// Green because the second `configure` never reached `:77-82`, so there is only one
+		// observer. It used to be green for a different reason — the AF-02 flag swallowed the
+		// second start — and that reason is gone, which is exactly why this assert stays here.
 		postForegroundSignal()
 		NotificationCenter.default.removeObserver(t6Service)
 		check(
@@ -242,16 +245,16 @@ enum AppsFlyerServiceCheck {
 				+ "once, got \(AppsFlyerLib.startCallCount)"
 		)
 
-		// AF-02 row 1 (start belongs on every foreground return, not once per process) is NOT
-		// covered, deliberately. Its own risk table marks the requirement evidence level 4 — a
-		// typical use of the SDK, unverified against AppsFlyer's documentation — and says the
-		// claim must be confirmed there before a test freezes it. Writing the assert now would
-		// pin a guess, so the row waits on that open question, not on this check.
+		// AF-02 row 1 (start belongs on every foreground return, not once per process) is covered
+		// at the end of this file, by T25. It waited there on purpose: while its requirement was
+		// evidence level 4 — a typical use of the SDK, unverified against the documentation — an
+		// assert would have pinned a guess. The docs closed the question on 2026-09-09, and the
+		// assert followed.
 
 		// ── AF-02 row 2 — the start flag is internal on purpose, and readable ────────────────
-		// Executes `AppsFlyerService.swift:63-67` and reads `:20`. The row is held twice over:
-		// the line below only compiles because `:20` is `var`, not `private var`, and the value
-		// it reads is the guard's own state after exactly one signal. Green.
+		// Executes `AppsFlyerService.swift:120-124` and reads `:24`. The row is held twice over:
+		// the line below only compiles because `:24` is `var`, not `private var`, and the value it
+		// reads is the observable trace the flag was kept for after exactly one signal. Green.
 		AppsFlyerLib.reset()
 		let t8Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
 		t8Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
@@ -287,7 +290,7 @@ enum AppsFlyerServiceCheck {
 		// it. T6 and T7 above are that assert.
 
 		// ── AF-03 row 1 — the event carries the cleaned dictionary, end to end ───────────────
-		// Executes `AppsFlyerService.swift:77` and `:83`. The filter itself is already covered by
+		// Executes `AppsFlyerService.swift:131` and `:136`. The filter itself is already covered by
 		// `appsflyer-attribution-check.sh`; what this adds is the through-the-service half its
 		// schema asks for — that the dictionary reaching analytics is the cleaned one and not the
 		// raw one. Green.
@@ -316,8 +319,8 @@ enum AppsFlyerServiceCheck {
 		)
 
 		// ── AF-03 row 2 — an empty AppsFlyer UID is "no UID", not an identifier ──────────────
-		// Executes `AppsFlyerService.swift:90-91`. RED: `:90` hands whatever the SDK answers
-		// straight to `:91`, so an empty string travels to Adapty as a valid identifier.
+		// Executes `AppsFlyerService.swift:147-148`. Green: `:148` turns an empty answer into `nil`
+		// before it travels, so it can no longer reach Adapty as a valid identifier.
 		AppsFlyerLib.reset()
 		AppsFlyerLib.appsFlyerUID = ""
 		let t11Adapty = FakeAdapty()
@@ -332,10 +335,10 @@ enum AppsFlyerServiceCheck {
 		)
 
 		// ── AF-03 row 3 — event and profile property must not contradict each other ──────────
-		// Executes `AppsFlyerService.swift:79` and `:83`. Both addressees must speak from the one
-		// cleaned dictionary; with a numeric `af_status` they do not — the event keeps 42 (`:83`
-		// via `:77`) while the property says "unknown" (`:79` reads the raw dictionary). T12 pins
-		// the event side and is green; T13 states the spec for the property side and is RED.
+		// Executes `AppsFlyerService.swift:136` and `:139-143`. Both addressees speak from the one
+		// cleaned dictionary at `:131`; a numeric `af_status` used to split them — the event kept
+		// 42 while the property read the raw dictionary and said "unknown". T12 pins the event
+		// side, T13 the property side, and `describe` (`:170-173`) is what makes them agree.
 		// The exact rendering "42" is the implementation's choice — what the row forbids is the
 		// two answers disagreeing, and naming a value is the only way to assert that precisely.
 		AppsFlyerLib.reset()
@@ -366,9 +369,9 @@ enum AppsFlyerServiceCheck {
 		// here. It is asserted once, at the end of this file (T24), where the writing code lives.
 
 		// ── AF-04 row 1 — the `-` placeholder belongs in the event only ──────────────────────
-		// Executes `AppsFlyerService.swift:129-132`. T14 pins the event half (green: the fixed
-		// payload needs every field present). T15 states the spec for the two profile writes and
-		// is RED — `:131` and `:132` both write the same placeholder today.
+		// Executes `AppsFlyerService.swift:201-211`. T14 pins the event half (the fixed payload
+		// needs every field present). T15 held the spec for the two profile writes and is green
+		// since `:208` returns before either of them. Both green.
 		AppsFlyerLib.reset()
 		let t14Analytics = FakeAnalytics()
 		let t14Adapty = FakeAdapty()
@@ -387,7 +390,7 @@ enum AppsFlyerServiceCheck {
 		)
 
 		// ── AF-04 row 2 — "found" with no content is a contradiction, not a deep link ────────
-		// Executes `AppsFlyerService.swift:112-115`. Green: `:112` returns before `:116`.
+		// Executes `AppsFlyerService.swift:181-188`. Green: `:181` returns before `:189`.
 		AppsFlyerLib.reset()
 		let t16Analytics = FakeAnalytics()
 		let t16Adapty = FakeAdapty()
@@ -404,8 +407,8 @@ enum AppsFlyerServiceCheck {
 		// The other half of the row — the contradiction must leave a trace visible outside Xcode.
 		// Not `configurationIssues`: nothing here is misconfigured, the SDK simply contradicted
 		// itself once, and a list meant for "no retry will fix this" would fill up with weather.
-		// A counter on the service is what the schema asks for, and it is the app's to read.
-		// RED until the branch counts what it drops.
+		// A counter on the service is what the schema asks for, and it is the app's to read —
+		// `:185` counts it, and `IntegrationKit.droppedDeepLinks` hands it out. Green.
 		check(
 			t16Service.droppedDeepLinks == 1,
 			"T27 AF-04 row 2: a \"found\" with no content must be counted as a dropped deep link, "
@@ -413,7 +416,7 @@ enum AppsFlyerServiceCheck {
 		)
 
 		// ── AF-04 row 3 — the deep-link event has a fixed eleven-field shape ─────────────────
-		// Executes `AppsFlyerService.swift:129-130` with two of the eleven fields present. The
+		// Executes `AppsFlyerService.swift:202-203` with two of the eleven fields present. The
 		// mapping itself is covered by `appsflyer-attribution-check.sh`; this is the same claim
 		// seen from the analytics end, where the count actually matters. Green.
 		AppsFlyerLib.reset()
@@ -434,8 +437,8 @@ enum AppsFlyerServiceCheck {
 		)
 
 		// ── AF-04 row 4 — the quiet delegate branches are contract, and must stay quiet ──────
-		// Executes `AppsFlyerService.swift:117-118` (T18) and `:119-120` (T19). The row's third
-		// branch — `.found` with no content, `:111-115` — is covered once, by T16 above.
+		// Executes `AppsFlyerService.swift:190-191` (T18) and `:192-193` (T19). The row's third
+		// branch — `.found` with no content, `:181-188` — is covered once, by T16 above.
 		AppsFlyerLib.reset()
 		let t18Analytics = FakeAnalytics()
 		let t18Adapty = FakeAdapty()
@@ -465,7 +468,7 @@ enum AppsFlyerServiceCheck {
 		)
 
 		// ── AF-04 row 5 — the second deep link wins, on purpose ──────────────────────────────
-		// Executes `AppsFlyerService.swift:131-132` twice. This row pins a decision, not a defect:
+		// Executes `AppsFlyerService.swift:209-210` twice. This row pins a decision, not a defect:
 		// the user really did arrive from the newer campaign. Green.
 		AppsFlyerLib.reset()
 		let t20Analytics = FakeAnalytics()
@@ -487,9 +490,9 @@ enum AppsFlyerServiceCheck {
 		)
 
 		// ── AF-05 row 1 — the system gets its answer even when the SDK never calls back ──────
-		// Executes `AppsFlyerService.swift:53-55` with the SDK swallowing the block. RED: `:54`
-		// is the only place `restorationHandler` is ever called, so nothing answers the system and
-		// the app sits on its launch screen.
+		// Executes `AppsFlyerService.swift:85-113` with the SDK swallowing the block. Green: the
+		// answer no longer lives inside the SDK's block alone — `:90-95` lets exactly one through
+		// and `:112` fires it unconditionally, so the app never sits on its launch screen.
 		AppsFlyerLib.reset()
 		AppsFlyerLib.continueBehaviour = .neverCallsBlock
 		let t21Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
@@ -512,9 +515,9 @@ enum AppsFlyerServiceCheck {
 		)
 
 		// ── AF-05 row 2 — one foreign object must not take the whole array with it ───────────
-		// Executes `AppsFlyerService.swift:54` with a mixed array. RED: the cast is applied to the
-		// array as a whole, so a single `String` among the objects turns the entire answer into
-		// nil and the good object never reaches the system.
+		// Executes `AppsFlyerService.swift:108` with a mixed array. Green: the cast runs per
+		// element, so a single `String` among the objects no longer turns the entire answer into
+		// nil and takes the good object with it.
 		AppsFlyerLib.reset()
 		let t22Restorer = FakeRestorer()
 		AppsFlyerLib.continueBehaviour = .callsWith([t22Restorer, "not a restoring object"])
@@ -538,7 +541,8 @@ enum AppsFlyerServiceCheck {
 		// straight on the service takes the branch that has no gate at all, and that branch is the
 		// row: a service that never came up must not reach into an SDK that was never initialized.
 		// The handler still has to be answered — an unconfigured layer that simply returns would
-		// hang the app on its launch screen, which is AF-05 row 1 all over again. RED on both.
+		// hang the app on its launch screen, which is AF-05 row 1 all over again. Both green:
+		// `AppsFlyerService.swift:97-103` gates the forward and answers in the same breath.
 		// The row's trace half is carried once, by T26 above: the reason is recorded when the empty
 		// key arrives, and `ConfigurationIssues` keeps one line per cause, not one per call.
 		AppsFlyerLib.reset()
@@ -565,10 +569,10 @@ enum AppsFlyerServiceCheck {
 		)
 
 		// ── AF-06 row 1 — a failed attribution says which failure it was ─────────────────────
-		// Executes the `onConversionDataFail` branch. `localizedDescription` is what the code keeps
-		// today, and it is exactly what cannot tell a dropped connection from a wrong key — the one
+		// Executes `AppsFlyerService.swift:151-166`. `localizedDescription` is what the code used to
+		// keep, and it is exactly what cannot tell a dropped connection from a wrong key — the one
 		// thing the row exists to distinguish. Both the domain and the code are named, and the
-		// channel asserted is the one that survives a release build. RED.
+		// channel asserted is the one that survives a release build. Green.
 		AppsFlyerLib.reset()
 		ConfigurationIssues.shared.reset()
 		let t29Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
@@ -607,14 +611,14 @@ enum AppsFlyerServiceCheck {
 		)
 
 		// ── AN-03 row 4 / AF-03 row 5 — the package's profile properties must be its own ────
-		// Executes `AppsFlyerService.swift:84-88`. Neither schema's check was covering this row:
+		// Executes `AppsFlyerService.swift:139-143`. Neither schema's check was covering this row:
 		// AF-03 row 5 points at AN-03 row 4 and AN-03 row 4 points back here, so the pointer went
 		// in a circle and nobody asserted it. The code that writes the names lives in this file's
-		// subject, so the assert belongs here. RED: all three names go into the shared profile
-		// namespace unprefixed, and the app's own `status` or `campaign_name` and the package's
-		// overwrite each other, last writer winning, with nothing to tell them apart. The `af_`
-		// prefix itself is the implementation's choice — the two events already carry it — and
-		// naming it is the only way to assert "recognizable" precisely.
+		// subject, so the assert belongs here. Green: all three names carry the `af_` prefix, so
+		// the app's own `status` or `campaign_name` and the package's no longer overwrite each
+		// other with nothing to tell them apart. The prefix itself is the implementation's choice
+		// — the two events already carry it — and naming it is the only way to assert
+		// "recognizable" precisely.
 		AppsFlyerLib.reset()
 		let propertyNameAnalytics = FakeAnalytics()
 		let propertyNameService = AppsFlyerService(analytics: propertyNameAnalytics, adapty: FakeAdapty())
@@ -633,10 +637,11 @@ enum AppsFlyerServiceCheck {
 		// ── AF-02 row 1 — start belongs on every foreground return ───────────────────────────
 		// The open question behind this row was closed against the docs on 2026-09-09: `start` is
 		// documented for `applicationDidBecomeActive`, and near-identical starts are deduped by
-		// the SDK itself (`minTimeBetweenSessions`, 5 s), not by a flag on our side. That makes
-		// the once-per-process guard at `AppsFlyerService.swift:63-67` a defect rather than a
-		// boundary. Two foreground signals with nothing reset in between — unlike T9, which
-		// clears the flag on purpose — so the second one must still reach the SDK. Red.
+		// the SDK itself (`minTimeBetweenSessions`, 5 s), not by a flag on our side. That made the
+		// once-per-process guard a defect rather than a boundary, and it is gone:
+		// `AppsFlyerService.swift:120-124` starts unconditionally. Two foreground signals with
+		// nothing reset in between — unlike T9, which clears the flag on purpose — so the second
+		// one still reaches the SDK. Green.
 		AppsFlyerLib.reset()
 		let t25Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
 		t25Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
