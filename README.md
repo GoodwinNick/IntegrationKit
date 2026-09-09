@@ -54,6 +54,14 @@ kit.analytics.logEvent("app_open")
 kit.crashes.recordNonFatal("launch", someError)
 ```
 
+**Store the returned `IntegrationKit` for the lifetime of the app** — on the
+`AppDelegate`, not in a local that ends with the function: pulling one member
+out of it (`let premium = IntegrationKit.configure(...).premium`) drops the
+struct, and the paywall retries, AppsFlyer attribution, the deep-link forwards
+and the diagnostics go with it, silently. See
+[`docs/Integration.md`](docs/Integration.md#6-call-firebaseintegrationconfigureisdebug-then-integrationkitconfigure)
+for what each of those costs.
+
 `isDebug` and `isTestsRunning` are the package's only two switches, and the app
 computes both: `isDebug` is its own `#if DEBUG`, `isTestsRunning` is
 `ProcessInfo.processInfo.arguments.contains("-uitest")` or

@@ -173,6 +173,38 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 }
 ```
 
+**The `private var kit` above is a requirement, not a style choice — keep the
+returned value for as long as the app runs.** `IntegrationKit` is a struct,
+and the things the package cannot reach on its own are stored inside it. Write
+`let premium = IntegrationKit.configure(...).premium` and the struct dies at
+the end of that line, taking with it:
+
+- **The paywall retry.** `configure` subscribes to
+  `UIApplication.didBecomeActiveNotification` and, on every return to the
+  foreground, re-attempts `getPaywall` for each configured placement that is
+  missing or stale. `NotificationCenter` does not retain the token its
+  block-based API hands back, so the struct is the only thing holding it.
+  Without it, a placement that lost the race at cold start is left to the
+  layer's own backoff alone, and a paywall past its 30-minute freshness never
+  reloads in that launch.
+- **AppsFlyer.** The struct holds the only reference to the attribution
+  service. When it goes, the service's `deinit` unsubscribes it from the
+  foreground notification that starts an AppsFlyer session — no sessions, no
+  install attribution, no conversion data reaching Amplitude and the Adapty
+  profile.
+- **Deep links and the ATT forward.** `handleContinue`, `handleOpen` and
+  `updateTrackingAuthorization` are members of the struct. Without it there is
+  nothing for the `AppDelegate` to forward to, so universal links and
+  URL-scheme links never reach the package at all.
+- **The diagnostics and the other two protocols** — `configurationIssues`,
+  `droppedDeepLinks`, `analytics` and `crashes` all hang off the same value.
+
+What makes this the most expensive mistake in the guide is that `premium`
+keeps working: `PremiumService` holds Adapty itself, so purchases, paywall
+state and `isPremium` behave normally. Nothing throws, nothing is logged,
+`configurationIssues` stays empty, and the only symptom is a campaign whose
+installs arrive unattributed.
+
 `SDKKeys` and `AppDefaults` are app-side types, not part of the package — they
 show where the app is expected to get its keys and stable identifiers from.
 Keys arrive at `configure` as plain strings: an app that ships them obfuscated
