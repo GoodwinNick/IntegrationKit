@@ -1,13 +1,14 @@
 #!/bin/sh
-# CrashReporter/FirebaseIntegration self-check — 9 rows from the approved schemas CR-01 and CR-02.
+# CrashReporter/FirebaseIntegration self-check — 12 rows from the approved schemas CR-01 and CR-02.
 # No XCTest, no Xcode project.
 #
 # `-D DEBUG` on the final build on purpose: it is the build in which the collection flag used to be
 # forced to `false` by an `#if DEBUG` inside the package, so it is the build that proves CR-01
-# row 2 — the app's answer wins over the compiler's.
+# row 2 — the app's answer wins over the compiler's. It is also the build in which `debugLog`
+# prints, which is what lets CR-02 row 9 read a log line back through `debugLogSink`.
 #
-# A non-zero exit here is the expected, healthy outcome until CR-01 rows 1, 2, 3, 4 and CR-02 row 1
-# are implemented. `set -e` still applies to a genuine compile failure, same as every other check.
+# A non-zero exit is a regression, not the expected outcome: every row this covers is implemented.
+# `set -e` still applies to a genuine compile failure, same as every other check.
 set -e
 cd "$(dirname "$0")/.."
 work="${TMPDIR:-/tmp}/crashlytics-check"

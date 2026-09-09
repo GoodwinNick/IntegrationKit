@@ -2,11 +2,14 @@
 //  CrashlyticsCheck.swift
 //  IntegrationKit
 //
-//  Written from the approved schemas CR-01 and CR-02, not from the code. Nine of the ten rows of
-//  those two tables are checked here; the tenth (CR-02 row 6) is a pointer to CR-01 row 1 and says
-//  below why covering it twice would hide something.
+//  Written from the approved schemas CR-01 and CR-02, not from the code. Twelve of the sixteen rows
+//  of those two tables are checked here. The four that are not each say why in the row itself:
+//  CR-02 row 6 is a pointer to CR-01 row 1 (covering it twice would hide which one owns the test),
+//  CR-01 row 6 is a resolver fact with no runtime to observe, and CR-01 row 7 and CR-02 row 8 are
+//  log lines the schema requires and the code does not yet emit — an assert for those goes in with
+//  the code fix, which is a separate phase.
 //
-//  All nine are green as of `60169db`. T1–T5 were written red first, as the spec for behaviour the
+//  All twelve are green as of `b6ac9ef`. T1–T5 were written red first, as the spec for behaviour the
 //  wrapper did not have: a second `FirebaseIntegration.configure()` is a no-op (CR-01 row 3), the
 //  collection flag arrives as a parameter and is written on every launch in both directions (CR-01
 //  rows 2 and 4), a report filed before Firebase is up is counted rather than lost (CR-01 row 1),
@@ -27,7 +30,7 @@ import Foundation
 @main
 enum CrashlyticsCheck {
 	static var failures: [String] = []
-	static var rowCount = 9
+	static var rowCount = 12
 
 	/// Records a failure instead of trapping — one failing row must not stop every row after it
 	/// from running.
@@ -189,6 +192,70 @@ enum CrashlyticsCheck {
 
 		// CR-02 row 6 (Crashlytics never brought up) is NOT covered here on purpose — it is a
 		// pointer to CR-01 row 1, and covering it twice would hide which of the two owns the test.
+
+		// ── CR-01 row 5 — an app that says nothing collects crashes ──────────────────────────
+		// The parameter carries a default, and the default is the whole policy for every app that
+		// never thinks about the argument. Silence from the integrator has to turn a
+		// not-to-be-silent tool ON; a default flipped to `false` in a refactor would take every
+		// such app dark without a single call site changing.
+		reset()
+		FirebaseIntegration.configure()
+		check(
+			Crashlytics.collectionEnabled == true,
+			"T10 CR-01 row 5: configure() with no argument must default to collecting, got "
+				+ "\(String(describing: Crashlytics.collectionEnabled)) (nil = never written)"
+		)
+
+		// ── CR-02 row 7 — the noise filter runs before the Firebase-up guard ─────────────────
+		// Order is contract here, not implementation detail. A filtered network error is not a lost
+		// report — it is a report the contract says not to file — so it must not raise the dropped
+		// counter. If the two guards swapped, an app that forgot `configure()` would show a counter
+		// full of its own offline noise and CR-01 row 1 would stop pointing at what it exists for.
+		reset()
+		let unconfigured = CrashReporter()
+		unconfigured.recordNonFatal("net", NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled), [:])
+		check(
+			unconfigured.droppedReports == 0,
+			"T11 CR-02 row 7: noise raised before configure() is not a lost report and must not "
+				+ "raise droppedReports, got \(unconfigured.droppedReports)"
+		)
+		check(
+			ConfigurationIssues.shared.all.isEmpty,
+			"T11 CR-02 row 7: filtered noise must not manufacture a configuration issue, got "
+				+ "\(issues())"
+		)
+
+		// ── CR-02 row 1, second half — the context still travels beside the tag ──────────────
+		// Moving the tag to a custom key must not cost the caller its context: `info` is the
+		// reference material inside an issue already opened by the tag's filter. T5 pins that the
+		// tag arrives searchable; this pins that nothing was traded away to get it there.
+		reset()
+		FirebaseIntegration.configure(collectsCrashes: true)
+		CrashReporter().recordNonFatal("premium", NSError(domain: "app.premium", code: 42), ["step": "restore"])
+		check(
+			(Crashlytics.recordedErrors.first?.userInfo?["step"] as? String) == "restore",
+			"T12 CR-02 row 1: the context must still reach userInfo beside the tag, got "
+				+ "\(String(describing: Crashlytics.recordedErrors.first?.userInfo))"
+		)
+
+		// ── CR-02 row 9 — the one line this layer logs carries the prefix and the data ───────
+		// The package-wide logging contract: `[IntegrationKit]` plus a service tag, and the data
+		// itself in the line — not "something went wrong". Asserted on the prefix and the payload,
+		// not on the tag string: the schema names the service `CrashReporter` and the code says
+		// `Crashlytics`, and that divergence is what row 9 records rather than blesses.
+		reset()
+		var logged: [String] = []
+		debugLogSink = { logged.append($0) }
+		CrashReporter().recordNonFatal("premium", NSError(domain: "app.premium", code: 7), [:])
+		debugLogSink = nil
+		check(
+			logged.contains {
+				$0.hasPrefix("[IntegrationKit][") && $0.contains("[error]")
+					&& $0.contains("FirebaseIntegration.configure")
+			},
+			"T13 CR-02 row 9: the dropped-report cause must be logged with the [IntegrationKit] "
+				+ "prefix, at error level, naming the call that was missed, got \(logged)"
+		)
 
 		if failures.isEmpty {
 			print("CrashReporter noise filter (CR-02) and configuration (CR-01): \(rowCount)/\(rowCount) OK")
