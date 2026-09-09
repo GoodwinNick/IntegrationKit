@@ -14,16 +14,22 @@ swiftc -emit-module -emit-library -static \
 	Checks/Stubs/AdaptyProfile.swift
 swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty \
 	Checks/PremiumBarrierCheck.swift \
+	Sources/IntegrationKit/Support/LogLevel.swift \
 	Sources/IntegrationKit/Support/DebugLog.swift \
+	Sources/IntegrationKit/Support/ConfigurationIssues.swift \
 	Sources/IntegrationKit/Support/SingleResume.swift \
 	Sources/IntegrationKit/Support/WithTimeout.swift \
 	Sources/IntegrationKit/Premium/PremiumService.swift \
 	Sources/IntegrationKit/Premium/Protocols/PremiumServicing.swift \
 	Sources/IntegrationKit/Premium/Protocols/AdaptyPremiumProviding.swift \
 	Sources/IntegrationKit/Adapty/AdaptyPurchaseResult.swift \
+	Sources/IntegrationKit/Adapty/AdaptyProductsAnswer.swift \
+	Sources/IntegrationKit/Premium/Models/PaywallState.swift \
+	Sources/IntegrationKit/Premium/Models/RemoteValue.swift \
 	Sources/IntegrationKit/Premium/Protocols/AppleSubscribing.swift \
 	Sources/IntegrationKit/Premium/Protocols/PremiumStateStoring.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumState.swift \
+	Sources/IntegrationKit/Premium/Models/ReceiptAnswer.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumSource.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumAccess.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumAccess+Adapty.swift \

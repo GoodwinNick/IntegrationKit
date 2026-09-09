@@ -13,12 +13,21 @@ let package = Package(
 		)
 	],
 	dependencies: [
+		// Firebase and Amplitude keep the full major range on purpose, and the difference from the
+		// three below is a decision, not an oversight. A library that narrows a range narrows it for
+		// every app that consumes it: pinning Firebase to one minor here would stop an app from
+		// taking a Firebase security release, and an app that already asks for a fresher minor would
+		// stop resolving altogether. Apps pin; libraries range. The three SDKs below are the
+		// exception, and each says why in its own comment — their APIs have broken inside a minor.
+		// The cost of this choice is real and belongs to whoever reads a dashboard: the observability
+		// facts in the schemas were verified against Firebase 12.0.0 and Amplitude 1.18.8, so a
+		// resolver that picks a fresher minor is a resolver picking untested behaviour. That risk
+		// lands on Crashlytics collection and on Amplitude batching — never on money.
 		.package(url: "https://github.com/firebase/firebase-ios-sdk.git", from: "12.0.0"),
 		.package(url: "https://github.com/amplitude/Amplitude-Swift.git", from: "1.18.7"),
 		// Adapty змінює API всередині мінорних версій (2.11 переробила remoteConfig),
 		// тому діапазон вужчий за решту: обидві апки сидять на 2.10.x.
 		.package(url: "https://github.com/adaptyteam/AdaptySDK-iOS", .upToNextMinor(from: "2.10.4")),
-		.package(url: "https://github.com/adaptyteam/AdaptyUI-iOS", .upToNextMinor(from: "2.1.5")),
 		// AppsFlyer is a binary xcframework — pinned the same way as Adapty, a fresher minor
 		// broke the previous package once already.
 		.package(url: "https://github.com/AppsFlyerSDK/AppsFlyerFramework", .upToNextMinor(from: "7.0.2")),
@@ -36,7 +45,6 @@ let package = Package(
 				.product(name: "FirebaseCrashlytics", package: "firebase-ios-sdk"),
 				.product(name: "AmplitudeSwift", package: "Amplitude-Swift"),
 				.product(name: "Adapty", package: "AdaptySDK-iOS"),
-				.product(name: "AdaptyUI", package: "AdaptyUI-iOS"),
 				.product(name: "AppsFlyerLib", package: "AppsFlyerFramework"),
 				.product(name: "SwiftyStoreKit", package: "SwiftyStoreKit")
 			]

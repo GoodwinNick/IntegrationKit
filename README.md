@@ -32,7 +32,7 @@ In Xcode: File → Add Package Dependencies → the same URL, product `Integrati
 import IntegrationKit
 
 // Call before IntegrationKit.configure(...).
-FirebaseIntegration.configure()
+FirebaseIntegration.configure(isDebug: isDebug)
 
 let kit = IntegrationKit.configure(
 	deviceId: deviceId,
@@ -42,6 +42,8 @@ let kit = IntegrationKit.configure(
 	sessionsCounter: sessionsCounter,
 	sharedSecret: appStoreSharedSecret,
 	productIds: ["year.sub", "week.sub"],
+	isDebug: isDebug,
+	isTestsRunning: isTestsRunning,
 	levels: ["premium"],
 	firstOpenEvent: "first_open",
 	appsFlyerDevKey: appsFlyerDevKey,
@@ -50,12 +52,66 @@ let kit = IntegrationKit.configure(
 
 kit.analytics.logEvent("app_open")
 kit.crashes.recordNonFatal("launch", someError)
+
+// Premium is announced, not polled: the notification fires only when the flag
+// actually changes, and `kit.premium.isPremium` is the new value.
+NotificationCenter.default.addObserver(
+	forName: .premiumDidChange,
+	object: nil,
+	queue: .main
+) { _ in
+	render(isPremium: kit.premium.isPremium)
+}
+```
+
+`.premiumDidChange` is the only way to observe premium. The value moves without
+the app asking — Adapty pushes a new profile, an interrupted purchase is
+delivered by the payment queue at launch — so a screen that reads `isPremium`
+once and never subscribes goes stale.
+
+**Store the returned `IntegrationKit` for the lifetime of the app** — on the
+`AppDelegate`, not in a local that ends with the function: pulling one member
+out of it (`let premium = IntegrationKit.configure(...).premium`) drops the
+struct, and the paywall retries, AppsFlyer attribution, the deep-link forwards
+and the diagnostics go with it, silently. See
+[`docs/Integration.md`](docs/Integration.md#6-call-firebaseintegrationconfigureisdebug-then-integrationkitconfigure)
+for what each of those costs.
+
+`isDebug` and `isTestsRunning` are the package's only two switches, and the app
+computes both: `isDebug` is its own `#if DEBUG`, `isTestsRunning` is
+`ProcessInfo.processInfo.arguments.contains("-uitest")` or
+`ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil`.
+Neither has a default — the package does not guess the build type or the kind
+of launch. `isDebug` decides Crashlytics collection (on exactly when it is
+`false`, so a debug build can still be made to report a live crash) and
+AppsFlyer's console logging. `isTestsRunning` leaves Amplitude, Adapty and
+AppsFlyer down for the whole run, so a test run cannot poison the analytics or
+spend the attribution budget it is measured by; Firebase and StoreKit are not
+touched by it, because a run meant to catch crashes must not lose them. They
+are separate keys on purpose: one silences, the other reports.
+
+An empty key switches its SDK off for the whole run rather than half-starting
+it — `adaptyKey: ""` leaves the Adapty layer inert and records why,
+`amplitudeKey: ""` sends no events, `appsFlyerDevKey: ""` creates no AppsFlyer
+at all. No `#if` needed for a build flavour without one of them; for a test run
+pass `isTestsRunning: true` instead, which reaches the same three states with
+the real reason recorded rather than a fake key.
+
+Every such cause lands in `kit.configurationIssues` — a plain `[String]`, one
+line per cause, readable in a **release** build. It is the answer to "the SDK is
+silent and I cannot tell whether it is off on purpose":
+
+```swift
+kit.configurationIssues.forEach { print("[IntegrationKit] \($0)") }
 ```
 
 `kit.premium`, `kit.analytics`, `kit.crashes` are the only surfaces the app talks
-to afterwards — `PremiumServicing`, `AnalyticsTracking`, `CrashReporting`. Deep
-links go through `kit.handleContinue(...)` / `kit.handleOpen(...)`, and the ATT
-answer through `kit.updateTrackingAuthorization(_:)`. See
+to afterwards — `PremiumServicing`, `AnalyticsTracking`, `CrashReporting`.
+Besides `logEvent`, `kit.analytics` carries `setUserId(_:)` (re-point analytics
+at another id after a login) and `deviceId` (Amplitude's own id, `nil` until the
+layer is up). Deep links go through `kit.handleContinue(...)` /
+`kit.handleOpen(...)`, and the ATT answer through
+`kit.updateTrackingAuthorization(_:)`. See
 [`docs/Integration.md`](docs/Integration.md) for the full `AppDelegate`, the
 meaning of every `configure` parameter and the paywall-to-purchase flow.
 
@@ -73,8 +129,11 @@ meaning of every `configure` parameter and the paywall-to-purchase flow.
   passed to `configure`, never hardcoded in the package. StoreKit itself is the
   package's job now: receipt validation, restore, the fallback purchase and the
   prices shown on the paywall all live inside it.
-- Calling `FirebaseIntegration.configure()` and `IntegrationKit.configure(...)`
-  at app launch, and forwarding `application(_:continue:restorationHandler:)` /
+- `isDebug` and `isTestsRunning` — the app's own `#if DEBUG` and its own reading
+  of `-uitest` / `XCTestConfigurationFilePath`. The package never derives either.
+- Calling `FirebaseIntegration.configure(isDebug:)` and
+  `IntegrationKit.configure(...)` at app launch, and forwarding
+  `application(_:continue:restorationHandler:)` /
   `application(_:open:options:)` through `kit.handleContinue` / `kit.handleOpen`.
 
 ## Package layout
@@ -103,13 +162,22 @@ xcodegen that links the package and proves the public API is enough:
 cd BuildHost && xcb app-sim
 ```
 
-`Checks/` has self-checks that compile and run without Xcode or XCTest:
+`Checks/` has twelve self-checks. Eleven compile the real source files with
+`swiftc` against stub SDK modules — no Xcode, no XCTest, no network, no real
+SDK linked; `integration-kit-check.sh` is the one of those eleven that also
+*runs* the composition root, the way an app does. The twelfth,
+`buildhost-check.sh`, runs the `BuildHost` build above, because the other
+eleven never link a real SDK:
 
 ```bash
-./Checks/premium-resolver-check.sh
-./Checks/premium-barrier-check.sh
-./Checks/appsflyer-attribution-check.sh
+for s in Checks/*.sh; do "./$s"; done
 ```
+
+Every assert comes from a row of an approved risk table and names the exact
+value that row names. Tests are written before the code that satisfies them, so
+a red assert is a specification not yet met — each names its row. See
+[`docs/Integration.md`](docs/Integration.md#building-and-checks) for what each
+script pins down.
 
 ## License
 

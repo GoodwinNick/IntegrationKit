@@ -75,7 +75,7 @@ final class SpyStore: PremiumStateStoring {
 
 /// An Adapty that answers whatever it is told — trimmed to what PM-05 rows 2 and 5 read.
 final class FakeAdapty: AdaptyPremiumProviding {
-	var premiumObserver: ((AdaptyProfile) -> Void)?
+	var premiumObserver: ((AdaptyProfile, Bool) -> Void)?
 	var answer: AdaptyProfile?
 
 	init(answer: AdaptyProfile?) {
@@ -83,25 +83,27 @@ final class FakeAdapty: AdaptyPremiumProviding {
 	}
 
 	func profile() async -> AdaptyProfile? { answer }
-	func products(placement: String) async -> [PremiumProduct] { [] }
+	func products(placement: String) async -> AdaptyProductsAnswer { .notReady }
 	func buy(productId: String, placement: String) async -> AdaptyPurchaseResult { .failed }
-	func remoteValue<T>(placement: String, key: String) -> T? { nil }
+	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> { .notReady }
 	func logPaywallOpen(placement: String) {}
 	func hasPaywall(placement: String) -> Bool { false }
+	func paywallState(placement: String) -> PaywallState { .unavailable }
+	func syncReceipt() {}
 }
 
 /// The Apple side, same idea. `restoreDelay` is new here — none of the barrier check's cases needed
 /// a slow `restore()`, but PM-05 rows 1 and 4 do.
 final class FakeApple: AppleSubscribing {
-	var receipt: Bool?
+	var receipt: ReceiptAnswer?
 	var restoreResult: RestoreOutcome = .nothingToRestore
 	var restoreDelay: TimeInterval = 0
 
-	init(receipt: Bool?) {
+	init(receipt: ReceiptAnswer?) {
 		self.receipt = receipt
 	}
 
-	func checkReceipt() async -> Bool? { receipt }
+	func checkReceipt() async -> ReceiptAnswer? { receipt }
 
 	func restore() async -> RestoreOutcome {
 		if restoreDelay > 0 {
@@ -149,7 +151,7 @@ enum PremiumStoreKitCheck {
 	static func main() {
 		let now = Date()
 
-		// PM-05 row 1: `PremiumService.swift:163-164` awaits the restore, resolves both sources, and
+		// PM-05 row 1: `PremiumService.swift:194-195` awaits the restore, resolves both sources, and
 		// only THEN schedules the completion — by the time the caller's completion runs, the store
 		// already carries the new verdict, nothing left to chase.
 		let orderingStore = SpyStore()
@@ -168,7 +170,7 @@ enum PremiumStoreKitCheck {
 		let matchedCached = PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: matchedExpiry)
 		let matchedStore = SpyStore(cached: matchedCached, premium: true)
 		let matchedAdapty = FakeAdapty(answer: profile(active: true, expiresAt: matchedExpiry))
-		let matchedApple = FakeApple(receipt: true)
+		let matchedApple = FakeApple(receipt: ReceiptAnswer(isActive: true, expiresAt: nil))
 		matchedApple.restoreResult = .nothingToRestore
 		let matchedService = PremiumService(store: matchedStore, adapty: matchedAdapty, apple: matchedApple, levels: ["premium"], sourceTimeout: 1)
 		var matchedOutcome: RestoreOutcome?
@@ -189,7 +191,7 @@ enum PremiumStoreKitCheck {
 		check(noAppleOutcome == .failed, "PM-05 row 3: no Apple source must fail, got \(String(describing: noAppleOutcome))")
 		check(noAppleElapsed < 0.3, "PM-05 row 3: must arrive without waiting for the timeout, took \(noAppleElapsed)s")
 
-		// PM-05 row 4: `restore` has no timeout of its own (PremiumService.swift:159-161) — a
+		// PM-05 row 4: `restore` has no timeout of its own (PremiumService.swift:190-193) — a
 		// StoreKit restore that never resolves must simply never call back. Documents that choice.
 		let stuckStore = SpyStore()
 		let stuckApple = FakeApple(receipt: nil)
@@ -199,8 +201,9 @@ enum PremiumStoreKitCheck {
 		stuckService.restore { stuckOutcome = $0 }
 		check(!wait(0.5) { stuckOutcome != nil }, "PM-05 row 4: a restore that never resolves must not call back within 0.5s, got \(String(describing: stuckOutcome))")
 
-		// PM-05 row 5: Adapty answered — it wins over a StoreKit restore that just landed, in both
-		// directions (PremiumResolver step 1).
+		// PM-05 row 5: Adapty active still wins outright over a restore (PremiumResolver step 1).
+		// An inactive answer arriving in the same round no longer does: a restore that just landed
+		// carries its own mark, same as PM-03 row 10, and Adapty has not confirmed THIS restore yet.
 		let overriddenStore = SpyStore()
 		let overriddenAdapty = FakeAdapty(answer: profile(active: false))
 		let overriddenApple = FakeApple(receipt: nil)
@@ -209,13 +212,13 @@ enum PremiumStoreKitCheck {
 		var overriddenOutcome: RestoreOutcome?
 		overriddenService.restore { overriddenOutcome = $0 }
 		check(wait { overriddenOutcome != nil }, "PM-05 row 5: restore must call back")
-		check(overriddenService.isPremium == false, "PM-05 row 5: an inactive Adapty must override a fresh restore, got isPremium == \(overriddenService.isPremium)")
+		check(overriddenService.isPremium == true, "PM-05 row 5: a fresh restore's mark must hold against an inactive Adapty answer in the same round, got isPremium == \(overriddenService.isPremium)")
 
 		// PM-05 row 6: an empty shared secret means receipt validation was never configured —
 		// `checkReceipt` answers nil without ever reaching the network.
 		SwiftyStoreKit.reset()
 		let blankSecretService = StoreKitService(sharedSecret: "", productIds: ["a"])
-		var blankSecretReceipt: Bool??
+		var blankSecretReceipt: ReceiptAnswer??
 		Task { blankSecretReceipt = await blankSecretService.checkReceipt() }
 		check(wait { blankSecretReceipt != nil }, "PM-05 row 6: checkReceipt must call back")
 		check(blankSecretReceipt! == nil, "PM-05 row 6: an empty sharedSecret must answer nil, got \(String(describing: blankSecretReceipt!))")
@@ -282,13 +285,17 @@ enum PremiumStoreKitCheck {
 		check(failedQueueFinished == [], "PM-08 row 4: a failed transaction must not be finished by our code — expected finishTransaction calls [], got \(failedQueueFinished)")
 		check(failedQueueDeliveries == 0, "PM-08 row 4: a failed transaction is not a delivery — expected onDelivered called 0 times, got \(failedQueueDeliveries)")
 
-		// PM-08 row 6: an empty queue finishes nothing and delivers nothing.
+		// PM-08, the empty-queue check from the risk table's "how to reproduce" — NOT row 6. Row 6 is
+		// the three-way race between the queue, the profile push and `start()`'s refresh, and it needs
+		// two competing writers, which only the facade check has: `premium-barrier-check.sh` cases 14
+		// and 23 own it. What is pinned here is the boring half nobody would otherwise write down —
+		// a queue with nothing in it finishes nothing and delivers nothing.
 		SwiftyStoreKit.reset()
 		let emptyQueueService = StoreKitService(sharedSecret: "", productIds: ["year.sub"])
 		var emptyQueueCount = 0
 		emptyQueueService.completeTransactions { emptyQueueCount += 1 }
-		check(SwiftyStoreKit.finishTransactionCalls.count == 0, "PM-08 row 6: empty queue — zero finishes, got \(SwiftyStoreKit.finishTransactionCalls.count)")
-		check(emptyQueueCount == 0, "PM-08 row 6: empty queue — onDelivered must not fire, got \(emptyQueueCount)")
+		check(SwiftyStoreKit.finishTransactionCalls.count == 0, "PM-08 empty queue: zero finishes, got \(SwiftyStoreKit.finishTransactionCalls.count)")
+		check(emptyQueueCount == 0, "PM-08 empty queue: onDelivered must not fire, got \(emptyQueueCount)")
 
 		// PM-08 row 5: a purchase lands in the queue, Adapty stays silent, and the receipt still says
 		// "no" (the App Store has not caught up yet) — the delivered purchase itself has to be enough.
@@ -324,8 +331,42 @@ enum PremiumStoreKitCheck {
 		check(wait { cachedNoStore.writes > 0 }, "PM-08 row 5: a delivered purchase must produce a verdict over a cached verified no")
 		check(cachedNoService.isPremium == true, "PM-08 row 5: a delivered purchase must outrank a cached verified 'no premium' while Adapty stays silent, got isPremium == \(cachedNoService.isPremium)")
 
+		// PM-08 row 10: the queue is read on every launch and `completeTransactions` runs
+		// unconditionally, so a delivery that changes nothing must cost nothing. The user whose premium
+		// is already on, held up by the mark from a previous launch, is the common case — the resolve
+		// lands on the very state that is cached, so there is nothing to write and nothing to announce.
+		SwiftyStoreKit.reset()
+		let markedTransaction = StubTransaction(state: .purchased, label: "row10-marked")
+		SwiftyStoreKit.completeTransactionsResult = [Purchase(transaction: markedTransaction, productId: "year.sub", needsFinishTransaction: true)]
+		// A real shared secret on purpose: `verifyReceiptCallCount` is then the discriminator. Zero
+		// writes proves nothing on its own — it is exactly what a delivery that never arrived would
+		// look like too — so the row also pins that the resolve ran all the way out to the receipt.
+		let markedStoreKit = StoreKitService(sharedSecret: "shared-secret", productIds: ["year.sub"])
+		let markedStore = SpyStore(cached: PremiumState(isPremium: true, source: .apple, isVerified: false, expiresAt: nil, localPurchase: true), premium: true)
+		let markedService = PremiumService(store: markedStore, adapty: nil, apple: markedStoreKit, levels: ["premium"], sourceTimeout: 1)
+		markedStoreKit.completeTransactions { [weak markedService] in markedService?.purchaseDelivered() }
+		check(wait { SwiftyStoreKit.verifyReceiptCallCount == 1 }, "PM-08 row 10: the delivery must actually reach a resolve — expected the receipt to be checked once, got \(SwiftyStoreKit.verifyReceiptCallCount)")
+		check(!wait(0.4) { markedStore.writes > 0 }, "PM-08 row 10: re-delivering a purchase the cache already carries must write nothing, got \(markedStore.writes) write(s)")
+		check(markedStore.notified == 0, "PM-08 row 10: nothing changed — expected 0 .premiumDidChange, got \(markedStore.notified)")
+		check(markedService.isPremium == true, "PM-08 row 10: premium must stay on across the re-delivery, got \(markedService.isPremium)")
+
+		// PM-08 row 10, the half that does write: premium Adapty had already verified. The mark demotes
+		// the cached copy for this one resolve (row 5's mechanism), so the state is rewritten as
+		// unverified and marked — one disk write per launch, and nothing the user can see. The
+		// notification is what must stay at zero: the flag never moved.
+		SwiftyStoreKit.reset()
+		let verifiedTransaction = StubTransaction(state: .purchased, label: "row10-verified")
+		SwiftyStoreKit.completeTransactionsResult = [Purchase(transaction: verifiedTransaction, productId: "year.sub", needsFinishTransaction: true)]
+		let verifiedStoreKit = StoreKitService(sharedSecret: "", productIds: ["year.sub"])
+		let verifiedStore = SpyStore(cached: PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: now + hour), premium: true)
+		let verifiedService = PremiumService(store: verifiedStore, adapty: nil, apple: verifiedStoreKit, levels: ["premium"], sourceTimeout: 1)
+		verifiedStoreKit.completeTransactions { [weak verifiedService] in verifiedService?.purchaseDelivered() }
+		check(wait { verifiedStore.writes > 0 }, "PM-08 row 10: the mark demotes the cached copy, so a verified premium is rewritten — expected a write")
+		check(verifiedStore.notified == 0, "PM-08 row 10: the flag never moved — expected 0 .premiumDidChange, got \(verifiedStore.notified)")
+		check(verifiedService.isPremium == true, "PM-08 row 10: a re-delivery must not disturb premium the user already has, got \(verifiedService.isPremium)")
+
 		if failures.isEmpty {
-			print("PremiumService restore (PM-05), prices (PM-07) and unfinished transactions (PM-08): 14/14 OK")
+			print("PremiumService restore (PM-05), prices (PM-07) and unfinished transactions (PM-08): 16/16 OK")
 		} else {
 			print("\(failures.count) check(s) failed:")
 			for failure in failures {
@@ -334,4 +375,11 @@ enum PremiumStoreKitCheck {
 			exit(1)
 		}
 	}
+}
+
+// Appended rather than declared inside `FakeAdapty`, so the line numbers PM-05/07/08 quote in this
+// file do not move. A layer that came up: these rows are about restore, prices and the payment
+// queue, not about activation.
+extension FakeAdapty {
+	var isActive: Bool { true }
 }

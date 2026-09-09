@@ -20,7 +20,24 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 		_ application: UIApplication,
 		didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
 	) -> Bool {
-		FirebaseIntegration.configure()
+		// The app's two keys, and the only two switches the package has. Both are computed here,
+		// because both are facts only the app can see.
+		#if DEBUG
+			let isDebug = true
+		#else
+			let isDebug = false
+		#endif
+		// A UI test run under `-uitest`, or a unit test run, which XCTest announces by putting
+		// `XCTestConfigurationFilePath` in the environment. Either one silences Amplitude, Adapty
+		// and AppsFlyer for the whole run.
+		let isTestsRunning = ProcessInfo.processInfo.arguments.contains("-uitest")
+			|| ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+
+		// Crash collection is on exactly when `isDebug` is false, and it applies from the *next*
+		// launch — Crashlytics writes the flag into NSUserDefaults and reads it while starting up.
+		// Pass `false` from a debug build to check a live crash. `isTestsRunning` deliberately does
+		// not reach here: a test run must not be the run that loses the crashes it went to catch.
+		FirebaseIntegration.configure(isDebug: isDebug)
 
 		let kit = IntegrationKit.configure(
 			deviceId: "00000000-0000-0000-0000-000000000000",
@@ -30,10 +47,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 			sessionsCounter: 1,
 			sharedSecret: "00000000000000000000000000000000",
 			productIds: ["year.sub", "week.sub"],
+			isDebug: isDebug,
+			isTestsRunning: isTestsRunning,
 			levels: ["premium"],
 			firstOpenEvent: "first_open",
 			appsFlyerDevKey: "fakeDevKey",
-			appsFlyerAppId: "1234567890"
+			appsFlyerAppId: "1234567890",
+			attTimeout: 120
 		)
 		self.kit = kit
 
@@ -47,6 +67,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
 		kit.analytics.logEvent("app_open")
 		kit.crashes.recordNonFatal("launch", NSError(domain: "BuildHost", code: 1))
+		// Reports filed before Firebase was up are counted rather than logged away: a release build
+		// can read this and know the two `configure` calls ran in the wrong order.
+		if kit.crashes.droppedReports > 0 {
+			kit.analytics.logEvent("crash_reports_dropped", properties: ["count": kit.crashes.droppedReports])
+		}
 		return true
 	}
 
@@ -61,28 +86,63 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
 	func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
 		kit?.handleOpen(url, options: options)
+		// A deep link AppsFlyer reported as found and then handed over empty is paid traffic that
+		// arrives nowhere. Only the app can see it in a shipping build, so it reads the count here.
+		if let dropped = kit?.droppedDeepLinks, dropped > 0 {
+			kit?.analytics.logEvent("deep_links_dropped", properties: ["count": dropped])
+		}
 		return true
 	}
 
-	/// Everything a paywall screen needs, from the facade alone.
+	/// Everything a paywall screen needs, from the facade alone. Every case of every public enum is
+	/// spelled out rather than defaulted: an exhaustive `switch` is what turns a case added to the
+	/// package into a compile error here instead of a silently unhandled state in a real app.
 	func paywall() {
 		guard let kit else { return }
 		kit.premium.logPaywallOpen(placement: "main")
-		let title: String? = kit.premium.remoteValue(placement: "main", key: "title")
-		print(title ?? "", kit.premium.hasPaywall(placement: "main"))
+
+		let title: RemoteValue<String> = kit.premium.remoteValue(placement: "main", key: "title")
+		switch title {
+			case .value(let text): print(text)
+			case .notReady: print("paywall has not arrived — ask again")
+			case .noConfig: print("paywall carries no remote config")
+			case .notSet: print("no such key in the config")
+			case .wrongType: print("the dashboard set another type — see configurationIssues")
+		}
+
+		switch kit.premium.paywallState(placement: "main") {
+			case .ready: print("draw the paywall")
+			case .loading: print("spinner")
+			case .unavailable: print("fall back to a hardcoded screen")
+		}
+		print(kit.premium.hasPaywall(placement: "main"))
+
 		kit.premium.products(placement: "main") { products in
-			print(products.map(\.localizedPrice))
+			print(products.map { $0.localizedPrice ?? "—" })
 		}
 		kit.premium.product("year.sub", placement: "main") { product in
 			guard let product else { return }
 			kit.premium.purchase(product.id, placement: "main") { outcome in
-				print("purchase: \(outcome)")
+				switch outcome {
+					case .purchased: print("premium is already \(kit.premium.isPremium)")
+					case .cancelled: print("the user said no")
+					case .pending: print("waiting for approval — no error, no second button")
+					case .unavailable: print("hide the button, a retry fails the same way")
+					case .failed: print("temporary — offer a retry")
+				}
 			}
 		}
 		kit.premium.restore { outcome in
-			print("restore: \(outcome), premium: \(kit.premium.isPremium)")
+			switch outcome {
+				case .restored: print("restored, premium: \(kit.premium.isPremium)")
+				case .nothingToRestore: print("nothing to restore")
+				case .failed: print("restore failed")
+			}
 		}
 		kit.premium.refresh()
+
+		// Empty is the healthy state. Anything in here is a cause no retry will fix.
+		kit.premium.configurationIssues.forEach { print("[IntegrationKit] \($0)") }
 	}
 
 	func askTracking() {

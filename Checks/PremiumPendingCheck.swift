@@ -10,10 +10,10 @@
 //  Written red, green since both guards landed in `Sources/PremiumService.swift`: a clean run is now
 //  the expected outcome, and a failure here means one of the two guards was lost.
 //
-//  A third `немає` row is deliberately NOT here: PM-07 row 8 (no "paywalls are loaded" signal exists
-//  anywhere on the public surface). There is no method to call — neither `PremiumServicing` nor
-//  `AdaptyPremiumProviding` carries one — so even a red test would first have to add that method in
-//  `Sources/`, which is out of scope for a check. It stays an open gap in the risk table instead.
+//  PM-07 row 8 used to be listed here as a third gap, on the grounds that no "paywalls are loaded"
+//  signal existed to assert on. That is out of date twice over: the row was rewritten to "retry until
+//  it loads" instead of "wait for it", and `paywallState(placement:)` now answers the question the
+//  missing signal was for. It is covered in `adapty-service-check.sh` (T11-T13), not here.
 //
 //  Nothing here traps: like `PremiumStoreKitCheck`, every case runs, every failure is collected, and
 //  the summary at the end reports all of them with a non-zero exit code. A crashing `assert` would
@@ -66,7 +66,7 @@ final class CountingAdapty: AdaptyPremiumProviding {
 	private var buyCallCount = 0
 	private var observerAssignmentCount = 0
 
-	var premiumObserver: ((AdaptyProfile) -> Void)? {
+	var premiumObserver: ((AdaptyProfile, Bool) -> Void)? {
 		didSet {
 			lock.lock()
 			observerAssignmentCount += 1
@@ -125,10 +125,12 @@ final class CountingAdapty: AdaptyPremiumProviding {
 		return buyResult
 	}
 
-	func products(placement: String) async -> [PremiumProduct] { [] }
-	func remoteValue<T>(placement: String, key: String) -> T? { nil }
+	func products(placement: String) async -> AdaptyProductsAnswer { .notReady }
+	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> { .notReady }
 	func logPaywallOpen(placement: String) {}
 	func hasPaywall(placement: String) -> Bool { false }
+	func paywallState(placement: String) -> PaywallState { .unavailable }
+	func syncReceipt() {}
 }
 
 @main
@@ -170,7 +172,7 @@ enum PremiumPendingCheck {
 		wait(0.5) { startAdapty.profileCalls >= 2 }
 		check(
 			startAdapty.profileCalls == 1,
-			"case 1 (PM-01 row 4): start() twice must do the work exactly once — expected 1 Adapty profile fetch, got \(startAdapty.profileCalls); the push observer was installed \(startAdapty.observerAssignments) time(s), expected 1. The idempotency guard decided on 2026-09-08 is not implemented yet"
+			"case 1 (PM-01 row 4): start() twice must do the work exactly once — expected 1 Adapty profile fetch, got \(startAdapty.profileCalls); the push observer was installed \(startAdapty.observerAssignments) time(s), expected 1. The idempotency guard decided on 2026-09-08 has been lost"
 		)
 
 		// 2. PM-04 row 7 — two `purchase()` calls fired without awaiting the first. Decision
@@ -188,7 +190,7 @@ enum PremiumPendingCheck {
 		wait(2) { completions >= 2 }
 		check(
 			buyAdapty.buyCalls == 1,
-			"case 2 (PM-04 row 7): a second purchase() before the first settled must be rejected without reaching the SDK — expected exactly 1 buy attempt, got \(buyAdapty.buyCalls) for \(completions) completed purchase() call(s). The concurrency guard decided on 2026-09-08 is not implemented yet"
+			"case 2 (PM-04 row 7): a second purchase() before the first settled must be rejected without reaching the SDK — expected exactly 1 buy attempt, got \(buyAdapty.buyCalls) for \(completions) completed purchase() call(s). The concurrency guard decided on 2026-09-08 has been lost"
 		)
 
 		if failures.isEmpty {
@@ -201,4 +203,11 @@ enum PremiumPendingCheck {
 			exit(1)
 		}
 	}
+}
+
+// Appended rather than declared inside `CountingAdapty`, so the line numbers PM-01 row 4 and PM-04
+// row 7 quote in this file do not move. A layer that came up: both cases are about guards, not
+// about activation.
+extension CountingAdapty {
+	var isActive: Bool { true }
 }

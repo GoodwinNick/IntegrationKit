@@ -7,6 +7,7 @@ swiftc -o "$out" \
 	Checks/PremiumResolverCheck.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumSource.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumState.swift \
+	Sources/IntegrationKit/Premium/Models/ReceiptAnswer.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumAccess.swift \
 	Sources/IntegrationKit/Premium/Helpers/PremiumResolver.swift
 exec "$out"

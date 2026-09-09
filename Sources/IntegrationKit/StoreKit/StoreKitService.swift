@@ -55,13 +55,13 @@ final class StoreKitService: AppleSubscribing {
 
 	// MARK: - AppleSubscribing
 
-	/// `nil` means the receipt could not be checked — never "no subscription". `false` is only
-	/// returned when the receipt was read and carries no active subscription of ours.
+	/// `nil` means the receipt could not be checked — never "no subscription". An inactive answer
+	/// is only returned when the receipt was read and carries no active subscription of ours.
 	///
 	/// PM-08 row 5: a purchase the queue just delivered is NOT answered from here — the receipt
 	/// reports only what the receipt says. That mark lives one layer up, in
 	/// `PremiumService.purchaseDelivered()`, the same place `purchase` and `restore` carry it.
-	func checkReceipt() async -> Bool? {
+	func checkReceipt() async -> ReceiptAnswer? {
 		guard !sharedSecret.isEmpty else { return nil }
 		// A sandbox receipt against the production validator can only ever answer 21007, so there
 		// is nothing to learn from asking. TestFlight and the simulator land here.
@@ -83,13 +83,13 @@ final class StoreKitService: AppleSubscribing {
 
 		for productId in productIds {
 			switch SwiftyStoreKit.verifySubscription(ofType: .autoRenewable, productId: productId, inReceipt: receipt) {
-				case .purchased:
-					return true
+				case .purchased(let expiryDate, _):
+					return ReceiptAnswer(isActive: true, expiresAt: expiryDate)
 				case .expired, .notPurchased:
 					continue
 			}
 		}
-		return false
+		return ReceiptAnswer(isActive: false, expiresAt: nil)
 	}
 
 	func restore() async -> RestoreOutcome {
@@ -132,9 +132,10 @@ final class StoreKitService: AppleSubscribing {
 								resume(.failed)
 						}
 					case .deferred:
-						// Ask to buy: neither bought nor refused. Not a purchase now — when the
-						// parent approves it, `completeTransactions` picks it up at the next launch.
-						resume(.failed)
+						// Ask to Buy: neither bought nor refused. `.failed` here made the screen show
+						// an error and offer a retry for a purchase that is alive and waiting for a
+						// parent — when the approval lands, `completeTransactions` picks it up.
+						resume(.pending)
 				}
 			}
 		}
