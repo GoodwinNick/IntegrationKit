@@ -511,6 +511,44 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		}
 	}
 
+	func logOnboardingOpen(step: Int) {
+		// `isActive` first, like every other operation that touches the SDK: the inactive layer has
+		// one shared reason for all of them (AD-06 row 5), and a second, different line for this one
+		// would break the "exactly one" that row is about.
+		guard isActive else {
+			recordInactive(operation: "logOnboardingOpen")
+			return
+		}
+		// AD-07 row 3. Adapty numbers onboarding screens from one and refuses `screenOrder == 0`
+		// outright (`Adapty+Events.swift:63-69`), so an app counting from zero loses its FIRST screen
+		// from the funnel and the dashboard just shows a funnel that starts at step two.
+		//
+		// The guard has to sit before `UInt(step)` below, and not merely before the call: converting a
+		// negative number traps on the caller's own stack, so a miscounted step would take the app
+		// down rather than cost a metric. The cause goes to `ConfigurationIssues` rather than the log
+		// because no retry fixes an integration counting from the wrong number.
+		guard step >= 1 else {
+			ConfigurationIssues.shared.record(
+				"Adapty onboarding step was not sent: steps are numbered from one (got \(step))",
+				tag: Self.tag
+			)
+			return
+		}
+		// The name and order the apps already send to Adapty directly. Changing either would split one
+		// funnel into two on the dashboard the moment an app migrates onto the package, with nothing
+		// to say the halves are the same event.
+		let name = "onboarding_\(step)"
+		Adapty.logShowOnboarding(name: name, screenName: nil, screenOrder: UInt(step)) { error in
+			if let error {
+				// AD-07 row 4's rule, applied to the second event: a dropped one must not look exactly
+				// like a sent one.
+				debugLog(tag: Self.tag, level: .error, "logShowOnboarding failed for '\(name)': \(error)")
+			} else {
+				debugLog(tag: Self.tag, "logShowOnboarding ok for '\(name)'")
+			}
+		}
+	}
+
 	// MARK: - AD-04: purchase.
 
 	func buyProduct(placement: String, id: String, completion: ((AdaptyPurchaseResult) -> Void)?) {

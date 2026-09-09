@@ -229,6 +229,32 @@ public struct IntegrationKit {
 		adapty.updateAppTrackingTransparencyStatus(status)
 	}
 
+	// MARK: - Adapty forwards.
+	// Two operations whose input only the app has, and which no premium protocol should carry — a
+	// profile attribute is not a purchase, and `PremiumServicing` is already the widest surface in
+	// the package. Each is one line: the validation, the traces and the inactive-layer behaviour all
+	// belong to the layer, and a copy of any of them here would drift from it at the first edit.
+
+	/// Writes one custom attribute to the Adapty profile — the app's own, such as the place a
+	/// purchase was made from. The keys the package writes itself (`lastUsedDay`, `launchSession`,
+	/// `deep_link_value`) do not need to be passed in.
+	///
+	/// A pair Adapty would refuse — a key outside 1…30 characters of `A-Za-z0-9._-`, a value outside
+	/// 1…50 characters — is not sent, and the reason lands in ``configurationIssues`` instead of the
+	/// attribute quietly disappearing.
+	public func setProfileValue(value: String, key: String) {
+		adapty.setProfileValue(value: value, key: key)
+	}
+
+	/// Reports one onboarding screen to Adapty, as `onboarding_<step>`.
+	///
+	/// `step` is numbered from ONE. Adapty refuses `screenOrder == 0`, so a screen counted from zero
+	/// is simply missing from the funnel; a step below one is therefore not sent, and the value
+	/// received lands in ``configurationIssues``.
+	public func logOnboardingOpen(step: Int) {
+		adapty.logOnboardingOpen(step: step)
+	}
+
 	/// AF-04 row 2: how many times AppsFlyer answered "deep link found" and handed over nothing.
 	/// A deep link the campaign was paid for disappears each time, and the only other trace is a
 	/// `debugLog` line no shipping build prints. Zero without AppsFlyer — there are no deep links

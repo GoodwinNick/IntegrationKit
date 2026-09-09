@@ -54,6 +54,12 @@ protocol AdaptyServicing: AnyObject {
 	func getRemoteValue<Type>(placement: String, key: String) -> RemoteValue<Type>
 
 	func logPaywallOpen(placement: String)
+
+	/// One onboarding screen, reported to Adapty. `step` is numbered from ONE: the SDK refuses
+	/// `screenOrder == 0` with `wrongParamOnboardingScreenOrder`, so a screen counted from zero is
+	/// missing from the funnel with nothing to say so — and `UInt` of a negative number traps on the
+	/// caller's own stack, which is the app going down, not the package (AD-07 row 3).
+	func logOnboardingOpen(step: Int)
 	func buyProduct(placement: String, id: String, completion: ((AdaptyPurchaseResult) -> Void)?)
 
 	/// Pushes the ATT answer to the Adapty profile. Sent by `configure` on every launch as well —
