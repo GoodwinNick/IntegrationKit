@@ -1,10 +1,11 @@
 #!/bin/sh
-# AmplitudeAnalytics/AmplitudeIDFAPlugin self-check — 11 rows from the approved schemas AN-01
-# through AN-04. No XCTest, no Xcode project.
+# AmplitudeAnalytics/AmplitudeIDFAPlugin self-check — 14 asserts over 13 rows of the approved
+# schemas AN-01 through AN-04. No XCTest, no Xcode project.
 #
-# A non-zero exit here is the expected, healthy outcome until AN-01 rows 1-2 (the first-open gate)
-# and AN-04 rows 1-2 (double-add/pre-configure guard for the IDFA plugin) are implemented. `set -e`
-# still applies to a genuine compile failure, same as every other check.
+# A non-zero exit here is the expected, healthy outcome until AN-01 rows 1-4 (the first-open gate,
+# the reason an inactive layer is inactive, the missing-receipt environment) and AN-04 rows 1-2
+# (double-add/pre-configure guard for the IDFA plugin) are implemented. `set -e` still applies to a
+# genuine compile failure, same as every other check.
 set -e
 cd "$(dirname "$0")/.."
 work="${TMPDIR:-/tmp}/amplitude-analytics-check"
@@ -22,6 +23,7 @@ swiftc -o "$work/check" -I "$work" -L "$work" -lAmplitudeSwift \
 	Checks/AmplitudeAnalyticsCheck.swift \
 	Sources/IntegrationKit/Support/LogLevel.swift \
 	Sources/IntegrationKit/Support/DebugLog.swift \
+	Sources/IntegrationKit/Support/ConfigurationIssues.swift \
 	Sources/IntegrationKit/Amplitude/AnalyticsTracking.swift \
 	Sources/IntegrationKit/Amplitude/AmplitudeAnalytics.swift \
 	Sources/IntegrationKit/Amplitude/AmplitudeIDFAPlugin.swift

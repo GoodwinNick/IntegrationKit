@@ -2,33 +2,33 @@
 //  AmplitudeAnalyticsCheck.swift
 //  IntegrationKit
 //
-//  Written from the approved schemas AN-01..AN-04, not from the code. Twelve rows across the four
+//  Written from the approved schemas AN-01..AN-04, not from the code. Thirteen rows across the four
 //  risk tables are testable with the `AmplitudeSwift` stub (plus real `AppTrackingTransparency`
 //  enum literals for the two ATT-parameter rows); two more are carried by
-//  `AppsFlyerServiceCheck.swift`, because the code they name lives there; the remaining eight say
+//  `AppsFlyerServiceCheck.swift`, because the code they name lives there; the remaining seven say
 //  why in the comment above them rather than being closed by a lookalike assert.
 //
-//  T1, T2, T10, T11, T12 are red on purpose — they are the spec for behaviour the wrapper does not have
-//  yet: the first-open gate must close only after the event ships, not before it (AN-01 row 1); a
-//  configure() that finally names the event must still send it even after an earlier unnamed call
-//  (AN-01 row 2); a second `.authorized` call must not add a second IDFA plugin (AN-04 row 1); and
-//  an `.authorized` call that arrives before configure() must still take effect once configure()
-//  runs (AN-04 row 2); and a missing App Store receipt must read as "unknown" rather than as a
-//  production install (AN-01 row 4). T3, T4, T5, T6, T7, T8, T9 are green and pin exactly what the contract
-//  already gets right, so a later change cannot loosen it silently — including AN-01 row 6, whose
-//  own reproduction step only asks to confirm the SDK reinitialises on a second configure() (one of
+//  T1, T2, T10, T11, T12, T13 are red on purpose — they are the spec for behaviour the wrapper does
+//  not have yet: the first-open gate must close only after the event ships, not before it (AN-01
+//  row 1); a configure() that finally names the event must still send it even after an earlier
+//  unnamed call (AN-01 row 2); a second `.authorized` call must not add a second IDFA plugin (AN-04
+//  row 1); an `.authorized` call that arrives before configure() must still take effect once
+//  configure() runs (AN-04 row 2); a missing App Store receipt must read as "unknown" rather than
+//  as a production install (AN-01 row 4); and an inactive layer must name the reason it is inactive
+//  (AN-01 row 3). T3, T4, T5, T6, T7, T8, T9 are green and pin exactly what the contract already
+//  gets right, so a later change cannot loosen it silently — including AN-01 row 6, whose own
+//  reproduction step only asks to confirm the SDK reinitialises on a second configure() (one of
 //  the two contract-legal outcomes for that row), not to demand a guard that does not exist.
 //
-//  Eight rows are NOT covered here, for three distinct reasons:
-//   - AN-01 rows 3 and 7, and AN-03 row 5, are read-by-code per their own "Як відтворити": no
-//     assert invents what the schema itself says to verify by reading. AN-01 row 3 also has no
-//     readable channel — its trace goes through `debugLog` to stdout.
+//  Seven rows are NOT covered here, for three distinct reasons:
+//   - AN-01 row 7 and AN-03 row 5 are read-by-code per their own "Як відтворити": no assert invents
+//     what the schema itself says to verify by reading.
 //   - AN-04 rows 3-5 need a real `ATTrackingManager`/`ASIdentifierManager` read this process cannot
 //     force (confirmed empirically to always answer `.notDetermined` outside an app bundle), so the
 //     `.authorized` branch they live in never fires here.
-//   - AN-02 row 1 is a pure pointer to AN-01 row 3, and AN-03 row 2 is the Adapty side of the same
-//     missing device id — it belongs to `AdaptyServiceCheck.swift` (T02, AD-01 row 2), which
-//     already compiles `AdaptyService`.
+//   - AN-02 row 1 is a pure pointer to AN-01 row 3 (asserted once, by T13), and AN-03 row 2 is the
+//     Adapty side of the same missing device id — it belongs to `AdaptyServiceCheck.swift` (T02,
+//     AD-01 row 2), which already compiles `AdaptyService`.
 //  AN-02 row 4 and AN-03 row 4 name `AppsFlyerService.swift` and are asserted in
 //  `AppsFlyerServiceCheck.swift` (the `af_` event names, and the unprefixed profile properties).
 //
@@ -103,12 +103,28 @@ enum AmplitudeAnalyticsCheck {
 				+ "send it, got \(Amplitude.trackedEvents.map { $0.eventType })"
 		)
 
-		// AN-01 row 3 is NOT covered: the spec asks for one trace in the logs naming why the layer
-		// stayed inactive. `debugLog` only ever calls `print`, which this check has no way to read
-		// — same limitation as `CrashlyticsCheck`'s CR-01 row 1. The test-run half of the row has
-		// no branch in the code yet either (decision 2026-09-08, task 1218288104081038), so there
-		// is nothing to route a setup at. The "stays inactive" half is not in question — AN-01
-		// row 8 below already exercises that same guard from the state side.
+		// ── AN-01 row 3 — an inactive layer must say which of the two reasons it is ────────
+		// Executes the empty-key guard in `AmplitudeAnalytics.configure`. The row asks for the
+		// cause, not the fact: an empty key and a test run are cured differently, so "analytics is
+		// off" alone is useless to whoever reads it. Only the empty-key half is asserted — the
+		// test-run branch has no code yet (decision 2026-09-08, task 1218288104081038), and an
+		// assert for a branch that cannot be reached would be a lookalike. The "stays inactive"
+		// half is AN-01 row 8's, further down. RED until the guard records anything.
+		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
+		Amplitude.reset()
+		ConfigurationIssues.shared.reset()
+		let row3 = AmplitudeAnalytics()
+		row3.configure(apiKey: "", deviceId: "device-3", firstOpenEvent: "first_open")
+		check(
+			ConfigurationIssues.shared.all.contains { $0.contains("API key") },
+			"T13 AN-01 row 3: an empty Amplitude key must record the cause, got "
+				+ "\(ConfigurationIssues.shared.all)"
+		)
+		check(
+			Amplitude.initCount == 0,
+			"T13 AN-01 row 3: an empty key must not stand the SDK up, got "
+				+ "\(Amplitude.initCount) initialization(s)"
+		)
 
 		// ── AN-01 row 4 — a missing receipt is "unknown", not a production install ────────
 		// Executes `AmplitudeAnalytics.swift:52-53`. The schema's own "Як відтворити" calls this
@@ -178,8 +194,8 @@ enum AmplitudeAnalyticsCheck {
 				+ "still sends it, got trackedEvents=\(Amplitude.trackedEvents.map { $0.eventType })"
 		)
 
-		// AN-02 row 1 is NOT covered: its own text is a pointer to AN-01 row 3, not a separate
-		// test — asserting it again here would hide that AN-01 row 3 has no assert of its own.
+		// AN-02 row 1 carries no assert of its own: its own text is a pointer to AN-01 row 3, and
+		// that row is asserted once, by T13 above. Asserting it twice would hide which one owns it.
 
 		// ── AN-02 setup — one configured instance, reused by rows 2 and 3 ──────────────────
 		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
@@ -318,9 +334,9 @@ enum AmplitudeAnalyticsCheck {
 		// a lookalike assert, not coverage.
 
 		if failures.isEmpty {
-			print("AmplitudeAnalytics (AN-01..AN-04): 12/12 OK")
+			print("AmplitudeAnalytics (AN-01..AN-04): 14/14 OK")
 		} else {
-			print("\(failures.count) of 12 rows FAILED")
+			print("\(failures.count) of 14 asserts FAILED")
 			exit(1)
 		}
 	}

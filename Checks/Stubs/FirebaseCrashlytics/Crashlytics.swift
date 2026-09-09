@@ -24,11 +24,15 @@ public final class Crashlytics {
 	/// `nil` means "never set" — CR-01 row 4 has to tell an explicit `true` from a flag nobody
 	/// touched, and a plain `Bool` cannot say that.
 	public static private(set) var collectionEnabled: Bool?
+	/// The searchable half of a report. CR-02 row 1 turns on the difference between this and
+	/// `userInfo`: only what lands here can be filtered in the dashboard.
+	public static private(set) var customValues: [String: Any] = [:]
 
 	public static func reset() {
 		recordedErrors = []
 		recordCallCount = 0
 		collectionEnabled = nil
+		customValues = [:]
 	}
 
 	private init() {}
@@ -41,5 +45,9 @@ public final class Crashlytics {
 
 	public func setCrashlyticsCollectionEnabled(_ enabled: Bool) {
 		Crashlytics.collectionEnabled = enabled
+	}
+
+	public func setCustomValue(_ value: Any, forKey key: String) {
+		Crashlytics.customValues[key] = value
 	}
 }

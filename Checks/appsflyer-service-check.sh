@@ -1,5 +1,5 @@
 #!/bin/sh
-# AppsFlyerService self-check — 24 asserts over 18 of the 25 rows of the approved schemas
+# AppsFlyerService self-check — 30 asserts over 22 of the 25 rows of the approved schemas
 # AF-01…AF-06. No XCTest, no Xcode project.
 #
 # `AppsFlyerService` also names `AnalyticsTracking` and `AdaptyServicing`, so both come straight
@@ -41,6 +41,7 @@ swiftc -o "$work/check" -I "$work" -L "$work" -lAppsFlyerLib -lUIKit \
 	Checks/AppsFlyerServiceCheck.swift \
 	Sources/IntegrationKit/Support/LogLevel.swift \
 	Sources/IntegrationKit/Support/DebugLog.swift \
+	Sources/IntegrationKit/Support/ConfigurationIssues.swift \
 	Sources/IntegrationKit/Amplitude/AnalyticsTracking.swift \
 	Sources/IntegrationKit/Adapty/AdaptyPurchaseResult.swift \
 	Sources/IntegrationKit/Adapty/AdaptyServicing.swift \

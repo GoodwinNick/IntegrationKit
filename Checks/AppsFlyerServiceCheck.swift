@@ -2,14 +2,14 @@
 //  AppsFlyerServiceCheck.swift
 //  IntegrationKit
 //
-//  Written from the approved schemas AF-01…AF-06, not from the code. Twenty-four asserts carry
-//  seventeen of the twenty-five rows plus AN-03 row 4, whose code lives here rather than in
-//  Amplitude's; the eight rows that carry none say why in a comment above the block they belong
+//  Written from the approved schemas AF-01…AF-06, not from the code. Thirty asserts carry
+//  twenty-one of the twenty-five rows plus AN-03 row 4, whose code lives here rather than in
+//  Amplitude's; the four rows that carry none say why in a comment above the block they belong
 //  to, rather than being closed by a lookalike assert.
 //
 //  Red on purpose — the spec for behaviour the wrapper does not have yet:
-//    T4  AF-01 row 2 — the ATT wait limit must be the app's, not the constant 60 at `:38`.
-//    T5  AF-01 row 3 — SDK debug logging must follow the app's key, not the `false` at `:39`.
+//    T4  AF-01 row 2 — the ATT wait limit must be the app's, not the constant 60.
+//    T5  AF-01 row 3 — SDK debug logging must follow the app's key, not a hardwired `false`.
 //    T6  AF-01 row 5 — a second `configure` must not initialize the SDK a second time.
 //    T11 AF-03 row 2 — an empty AppsFlyer UID must reach Adapty as nil, not as "".
 //    T13 AF-03 row 3 — the profile property and the event must not contradict each other.
@@ -17,15 +17,21 @@
 //    T21 AF-05 row 1 — the restoration handler must answer even when the SDK never calls back.
 //    T22 AF-05 row 2 — one foreign object must not take the whole restoration array with it.
 //    T24 AN-03 row 4 — the profile properties the package writes must be recognizably its own.
-//  The other fifteen are green and pin behaviour that is already correct — the silence of the
-//  failure callbacks (T23), the fixed eleven-field deep-link payload (T17), last-attribution-wins
-//  (T20) — so a later change cannot loosen any of it silently.
+//    T25 AF-02 row 1 — a second foreground return must start a new session.
+//    T26 AF-01 row 1 — an empty dev key must record a reason a release build can read.
+//    T27 AF-04 row 2 — a "found" deep link with no content must be counted, not just skipped.
+//    T28 AF-05 row 3 — the forwards must not touch an SDK that was never initialized, and must
+//        still answer the system.
+//    T29 AF-06 row 1 — a failed attribution must keep the error's domain and code.
+//  The rest are green and pin behaviour that is already correct — the silence of the failure
+//  callbacks (T23), the fixed eleven-field deep-link payload (T17), last-attribution-wins (T20) —
+//  so a later change cannot loosen any of it silently.
 //
 //  Built WITHOUT `-D DEBUG` on purpose: every row that asks for "a trace visible outside Xcode"
-//  (AF-01 row 1, AF-04 row 2, AF-05 row 3, AF-06 rows 1-2) is measured against exactly the build
-//  the user gets. None of those trace halves is asserted — see the comments; `debugLog` writes to
-//  stdout, which this check has no way to read, and covering them needs an observable warning
-//  channel in the package first.
+//  (AF-01 row 1, AF-04 row 2, AF-05 row 3, AF-06 row 1) is measured against exactly the build the
+//  user gets. `debugLog` writes nothing at all in this build, so none of those asserts can pass by
+//  accident: what they read is `ConfigurationIssues` and a counter on the service, both of which
+//  an app can read too.
 //
 //  This check does not stop at the first failing row: every row runs, every failure is collected,
 //  and the summary at the end reports all of them with a non-zero exit code — same shape as
@@ -126,6 +132,7 @@ enum AppsFlyerServiceCheck {
 		// Executes `AppsFlyerService.swift:29-32`. Green: `:29` returns before anything is
 		// touched.
 		AppsFlyerLib.reset()
+		ConfigurationIssues.shared.reset()
 		let t1Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
 		t1Service.configure(devKey: "", appId: "id-1", deviceId: "device-1")
 		check(
@@ -152,10 +159,15 @@ enum AppsFlyerServiceCheck {
 				+ "didStartAppsFlyer=\(t1Service.didStartAppsFlyer)"
 		)
 		// The other half of AF-01 row 1 — "the disabled layer must leave a trace visible outside
-		// Xcode" — is NOT covered: the only trace `:30` leaves goes through `debugLog`, which
-		// compiles to nothing in this build and to stdout in a DEBUG one. Neither is readable from
-		// inside the process, so covering it needs an observable warning channel in the package
-		// first. Same reason as `CrashlyticsCheck`'s CR-01 row 1.
+		// Xcode". This check builds WITHOUT `-D DEBUG` on purpose, so `debugLog` writes nothing at
+		// all here: what is asserted is the one channel that survives a release build, and the
+		// assert names the cause rather than the fact a line exists. RED until the empty-key branch
+		// records it.
+		check(
+			ConfigurationIssues.shared.all.contains { $0.contains("dev key") },
+			"T26 AF-01 row 1: an empty dev key must record a readable reason, got "
+				+ "\(ConfigurationIssues.shared.all)"
+		)
 
 		// ── AF-01 row 2 — the ATT wait limit is the app's parameter, not a package constant ───
 		// Executes `AppsFlyerService.swift:38`. RED: `:38` hardwires `timeoutInterval: 60`, and
@@ -374,8 +386,16 @@ enum AppsFlyerServiceCheck {
 				+ "profiles and 0 Adapty profiles, got \(t16Analytics.events.count), "
 				+ "\(t16Analytics.userProperties.count), \(t16Adapty.profileValues.count)"
 		)
-		// The other half of the row — the contradiction must leave a trace visible outside Xcode —
-		// is NOT covered, same reason as AF-01 row 1: `:113` writes through `debugLog`.
+		// The other half of the row — the contradiction must leave a trace visible outside Xcode.
+		// Not `configurationIssues`: nothing here is misconfigured, the SDK simply contradicted
+		// itself once, and a list meant for "no retry will fix this" would fill up with weather.
+		// A counter on the service is what the schema asks for, and it is the app's to read.
+		// RED until the branch counts what it drops.
+		check(
+			t16Service.droppedDeepLinks == 1,
+			"T27 AF-04 row 2: a \"found\" with no content must be counted as a dropped deep link, "
+				+ "got \(t16Service.droppedDeepLinks)"
+		)
 
 		// ── AF-04 row 3 — the deep-link event has a fixed eleven-field shape ─────────────────
 		// Executes `AppsFlyerService.swift:129-130` with two of the eleven fields present. The
@@ -489,18 +509,52 @@ enum AppsFlyerServiceCheck {
 				+ "conforming one — got \(String(describing: t22Received?.count)) object(s)"
 		)
 
-		// AF-05 row 3 (the forwards are silent while the layer is off) is NOT covered: the gate it
-		// names lives at `IntegrationKit.swift:80-85`/`:124`/`:129`, and this check does not
-		// compile `IntegrationKit.swift` — it would drag in Adapty, Amplitude, StoreKit and
-		// Premium. Calling `handleContinue`/`handleOpen` straight on the service instead takes the
-		// opposite branch: neither method has a gate of its own, so both do reach the SDK. Its
-		// other half — the first forward through a disabled layer must leave a trace visible
-		// outside Xcode — has no trace at all to observe, same reason as AF-01 row 1.
+		// ── AF-05 row 3 — the forwards stay silent while the layer is off ────────────────────
+		// The gate the schema names lives in `IntegrationKit.swift`, which this check does not
+		// compile — it would drag in Adapty, Amplitude, StoreKit and Premium. Calling the forwards
+		// straight on the service takes the branch that has no gate at all, and that branch is the
+		// row: a service that never came up must not reach into an SDK that was never initialized.
+		// The handler still has to be answered — an unconfigured layer that simply returns would
+		// hang the app on its launch screen, which is AF-05 row 1 all over again. RED on both.
+		// The row's trace half is carried once, by T26 above: the reason is recorded when the empty
+		// key arrives, and `ConfigurationIssues` keeps one line per cause, not one per call.
+		AppsFlyerLib.reset()
+		let t28Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
+		t28Service.configure(devKey: "", appId: "id-1", deviceId: "device-1")
+		var t28HandlerCalls = 0
+		var t28Received: [UIUserActivityRestoring]?
+		t28Service.handleContinue(NSUserActivity(activityType: "check.continue")) { restoring in
+			t28HandlerCalls += 1
+			t28Received = restoring
+		}
+		t28Service.handleOpen(URL(string: "https://example.com/promo")!, options: [:])
+		NotificationCenter.default.removeObserver(t28Service)
+		check(
+			AppsFlyerLib.continueCallCount == 0 && AppsFlyerLib.handleOpenCallCount == 0,
+			"T28 AF-05 row 3: with the layer off both forwards must reach the SDK 0 times, got "
+				+ "\(AppsFlyerLib.continueCallCount) continue(s) and "
+				+ "\(AppsFlyerLib.handleOpenCallCount) open(s)"
+		)
+		check(
+			t28HandlerCalls == 1 && (t28Received?.count ?? 0) == 0,
+			"T28 AF-05 row 3: the system must still get exactly one empty answer, got "
+				+ "\(t28HandlerCalls) call(s) carrying \(t28Received?.count ?? 0) object(s)"
+		)
 
-		// AF-06 row 1 (a failed attribution must leave a trace carrying the error's domain and
-		// code) is NOT covered: `:95` and `:103` write through `debugLog` and flatten the error to
-		// `localizedDescription` on the way. Both the channel and the lost fields are invisible
-		// from inside the process — same reason as AF-01 row 1.
+		// ── AF-06 row 1 — a failed attribution says which failure it was ─────────────────────
+		// Executes the `onConversionDataFail` branch. `localizedDescription` is what the code keeps
+		// today, and it is exactly what cannot tell a dropped connection from a wrong key — the one
+		// thing the row exists to distinguish. Both the domain and the code are named, and the
+		// channel asserted is the one that survives a release build. RED.
+		AppsFlyerLib.reset()
+		ConfigurationIssues.shared.reset()
+		let t29Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
+		t29Service.onConversionDataFail(NSError(domain: "AppsFlyerErrorDomain", code: -1009))
+		check(
+			ConfigurationIssues.shared.all.contains { $0.contains("AppsFlyerErrorDomain") && $0.contains("-1009") },
+			"T29 AF-06 row 1: a failed attribution must record both the error domain and its code, "
+				+ "got \(ConfigurationIssues.shared.all)"
+		)
 
 		// AF-06 row 2 (the legacy open-attribution callback discards its data) is covered by T23
 		// below as far as it can be: its assert — 0 events, 0 profiles, 0 Adapty writes — is
@@ -573,9 +627,9 @@ enum AppsFlyerServiceCheck {
 		)
 
 		if failures.isEmpty {
-			print("AppsFlyerService (AF-01…AF-06): 25/25 OK")
+			print("AppsFlyerService (AF-01…AF-06): 30/30 OK")
 		} else {
-			print("\(failures.count) of 25 asserts FAILED:")
+			print("\(failures.count) of 30 asserts FAILED:")
 			for failure in failures {
 				print("  - \(failure)")
 			}

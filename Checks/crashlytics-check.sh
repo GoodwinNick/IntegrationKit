@@ -1,13 +1,13 @@
 #!/bin/sh
-# CrashReporter/FirebaseIntegration self-check — 7 rows from the approved schemas CR-01 and CR-02.
+# CrashReporter/FirebaseIntegration self-check — 9 rows from the approved schemas CR-01 and CR-02.
 # No XCTest, no Xcode project.
 #
-# `-D DEBUG` on the final build so FirebaseIntegration's `#if DEBUG` block — the one line that
-# calls `setCrashlyticsCollectionEnabled` — is actually type-checked and not silently skipped.
+# `-D DEBUG` on the final build on purpose: it is the build in which the collection flag used to be
+# forced to `false` by an `#if DEBUG` inside the package, so it is the build that proves CR-01
+# row 2 — the app's answer wins over the compiler's.
 #
-# A non-zero exit here is the expected, healthy outcome until CR-01 row 3 (a second configure must
-# be a no-op) and CR-02 row 1 (the tag must reach Crashlytics) are implemented. `set -e` still
-# applies to a genuine compile failure, same as every other check.
+# A non-zero exit here is the expected, healthy outcome until CR-01 rows 1, 2, 3, 4 and CR-02 row 1
+# are implemented. `set -e` still applies to a genuine compile failure, same as every other check.
 set -e
 cd "$(dirname "$0")/.."
 work="${TMPDIR:-/tmp}/crashlytics-check"
@@ -27,5 +27,8 @@ swiftc -D DEBUG -o "$work/check" -I "$work" -L "$work" -lFirebaseCore -lFirebase
 	Checks/CrashlyticsCheck.swift \
 	Sources/IntegrationKit/Firebase/CrashReporting.swift \
 	Sources/IntegrationKit/Firebase/CrashReporter.swift \
-	Sources/IntegrationKit/Firebase/FirebaseIntegration.swift
+	Sources/IntegrationKit/Firebase/FirebaseIntegration.swift \
+	Sources/IntegrationKit/Support/ConfigurationIssues.swift \
+	Sources/IntegrationKit/Support/DebugLog.swift \
+	Sources/IntegrationKit/Support/LogLevel.swift
 exec "$work/check"
