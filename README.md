@@ -111,7 +111,20 @@ Besides `logEvent`, `kit.analytics` carries `setUserId(_:)` (re-point analytics
 at another id after a login) and `deviceId` (Amplitude's own id, `nil` until the
 layer is up). Deep links go through `kit.handleContinue(...)` /
 `kit.handleOpen(...)`, and the ATT answer through
-`kit.updateTrackingAuthorization(_:)`. See
+`kit.updateTrackingAuthorization(_:)`. Two more forwards reach Adapty directly:
+
+```swift
+// The app's own profile attributes — the place a purchase was made from, say.
+// `lastUsedDay`, `launchSession` and `deep_link_value` the package writes itself.
+kit.setProfileValue(value: "onboarding_paywall", key: "purchasePlace")
+
+// One onboarding screen, sent as `onboarding_1`. Steps are numbered from ONE:
+// Adapty refuses screen order 0, so a screen counted from zero is missing from
+// the funnel — a step below one is not sent and says why in configurationIssues.
+kit.logOnboardingOpen(step: 1)
+```
+
+See
 [`docs/Integration.md`](docs/Integration.md) for the full `AppDelegate`, the
 meaning of every `configure` parameter and the paywall-to-purchase flow.
 

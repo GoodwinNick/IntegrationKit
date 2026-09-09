@@ -353,6 +353,62 @@ of: `premium: PremiumServicing`, `analytics: AnalyticsTracking`,
 behind the facade — the app cannot reach them even by trying, since 0.2.0
 they are not public types.
 
+### The facade's own API
+
+Six members besides those three protocols. The first three the `AppDelegate`
+calls; the last two are diagnostics:
+
+```swift
+public func handleContinue(_ userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void)
+public func handleOpen(_ url: URL, options: [UIApplication.OpenURLOptionsKey: Any])
+public func updateTrackingAuthorization(_ status: ATTrackingManager.AuthorizationStatus)
+
+public func setProfileValue(value: String, key: String)
+public func logOnboardingOpen(step: Int)
+
+public var droppedDeepLinks: Int { get }
+public var configurationIssues: [String] { get }
+```
+
+**`setProfileValue(value:key:)`** writes one custom attribute to the Adapty
+profile — the app's own, such as the place a purchase was made from:
+
+```swift
+kit.setProfileValue(value: "onboarding_paywall", key: "purchasePlace")
+```
+
+The keys the package writes by itself — `lastUsedDay` and `launchSession` at
+activation, `deep_link_value` when AppsFlyer resolves one — do **not** need to
+be passed in, and passing them again only overwrites what is already correct.
+
+Adapty's own rules apply and are checked before anything is sent: a key is 1…30
+characters of `A-Za-z0-9._-`, a string value is 1…50 characters, and a profile
+holds at most 30 non-empty attributes. A pair that breaks one of them is not
+sent, and the reason — with the key and what was wrong with it — lands in
+`configurationIssues`. Values that come off the network are the reason this
+matters: a deep-link value simply disappears at character 51, and without the
+check it would disappear silently.
+
+**`logOnboardingOpen(step:)`** reports one onboarding screen to Adapty, as the
+event `onboarding_<step>`:
+
+```swift
+// First screen. Not 0.
+kit.logOnboardingOpen(step: 1)
+```
+
+**Steps are numbered from ONE.** Adapty refuses `screenOrder == 0` outright
+(`wrongParamOnboardingScreenOrder`), so an app counting its screens from zero
+loses its first screen from the funnel and the dashboard shows a funnel that
+begins at step two — with nothing anywhere saying why. A step below one is
+therefore not sent at all, and the value received is recorded in
+`configurationIssues`: no retry fixes an integration counting from the wrong
+number.
+
+Both calls are no-ops when the Adapty layer is inert (`adaptyKey: ""` or
+`isTestsRunning: true`), with the layer's single reason already in
+`configurationIssues` — neither needs an `#if` or a guard on the app's side.
+
 ## Analytics
 
 ```swift
