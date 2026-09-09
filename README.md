@@ -52,6 +52,11 @@ kit.analytics.logEvent("app_open")
 kit.crashes.recordNonFatal("launch", someError)
 ```
 
+An empty key switches its SDK off for the whole run rather than half-starting
+it — `adaptyKey: ""` leaves the Adapty layer inert and records why,
+`amplitudeKey: ""` sends no events, `appsFlyerDevKey: ""` creates no AppsFlyer
+at all. No `#if` needed for a test run or a build flavour without one of them.
+
 `kit.premium`, `kit.analytics`, `kit.crashes` are the only surfaces the app talks
 to afterwards — `PremiumServicing`, `AnalyticsTracking`, `CrashReporting`. Deep
 links go through `kit.handleContinue(...)` / `kit.handleOpen(...)`, and the ATT
@@ -103,13 +108,18 @@ xcodegen that links the package and proves the public API is enough:
 cd BuildHost && xcb app-sim
 ```
 
-`Checks/` has self-checks that compile and run without Xcode or XCTest:
+`Checks/` has ten self-checks that compile the real source files with `swiftc`
+against stub SDK modules — no Xcode, no XCTest, no network, no real SDK linked:
 
 ```bash
-./Checks/premium-resolver-check.sh
-./Checks/premium-barrier-check.sh
-./Checks/appsflyer-attribution-check.sh
+for s in Checks/*.sh; do "./$s"; done
 ```
+
+Every assert comes from a row of an approved risk table and names the exact
+value that row names. Tests are written before the code that satisfies them, so
+a red assert is a specification not yet met — each names its row. See
+[`docs/Integration.md`](docs/Integration.md#building-and-checks) for what each
+script pins down.
 
 ## License
 

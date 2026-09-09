@@ -184,7 +184,8 @@ public static func configure(
 	levels: Set<String> = ["premium"],
 	firstOpenEvent: String? = nil,
 	appsFlyerDevKey: String = "",
-	appsFlyerAppId: String = ""
+	appsFlyerAppId: String = "",
+	sourceTimeout: TimeInterval = 5
 ) -> IntegrationKit
 ```
 
@@ -192,7 +193,7 @@ public static func configure(
 |---|---|---|---|
 | `deviceId` | One stable id, shared by Amplitude, Adapty and AppsFlyer so all three describe the same user | An app-generated/stored UUID, stable across launches | Required — no default. Amplitude, Adapty and AppsFlyer end up describing different users. |
 | `amplitudeKey` | Amplitude project API key | Amplitude dashboard, per app | Required — no default. Amplitude never activates. |
-| `adaptyKey` | Adapty public SDK key (`public_live_...`) | Adapty dashboard, per app | Required — no default. Adapty never activates, so premium can only ever come from the App Store receipt. |
+| `adaptyKey` | Adapty public SDK key (`public_live_...`) | Adapty dashboard, per app | Required — no default, but `""` is legal and makes the whole Adapty layer **inert** for the run (see below). Premium can then only come from the App Store receipt. |
 | `placements` | Adapty placement ids to preload paywalls/products for | Adapty dashboard, per app | An empty array means no placement is warmed up — `hasPaywall`/`products` for any placement return empty until Adapty is asked directly through a refresh. |
 | `sessionsCounter` | The app's own session counter, incremented once per launch before this call | App-owned persistent counter | Required — no default. Written into the Adapty profile as-is; passing a stale or constant value just means that field in the profile stops being meaningful. |
 | `sharedSecret` | App Store Connect shared secret, used to validate the receipt against Apple's production endpoint | App Store Connect → Subscriptions → App-Specific Shared Secret | Required — no default, but `""` is legal and means the receipt is never checked (`checkReceipt` answers "not checked"). Premium then relies on Adapty alone. |
@@ -201,6 +202,23 @@ public static func configure(
 | `firstOpenEvent` | Analytics event name logged exactly once per install | App's own event naming | `nil` (default) — no first-open event is logged at all. |
 | `appsFlyerDevKey` | AppsFlyer dev key | AppsFlyer dashboard, per app | Defaults to `""`. An empty dev key means **AppsFlyer is not created at all** — no attribution, `kit.handleContinue`/`kit.handleOpen` become no-ops. |
 | `appsFlyerAppId` | Numeric App Store id | App Store Connect / `itunes.apple.com/lookup` | Defaults to `""`. Only meaningful together with a non-empty `appsFlyerDevKey`; without a confirmed App ID, AppsFlyer attribution can end up pointed at the wrong app. |
+| `sourceTimeout` | How long one premium refresh waits for a single source — Adapty, or the Apple receipt — before deciding without it | The app's own judgement about its users' networks | Defaults to `5` seconds. That number comes from practice, not from anything Adapty documents; an app whose users are on worse networks passes a larger one instead of patching the package. Neither source answering within it is not "no premium" — it is "unknown", and the cached state stands. |
+
+**An empty key makes a whole SDK inert, on purpose.** All three behave the
+same way, so a test run, a build flavour without analytics, or an app that
+ships without one of the SDKs needs no `#if` anywhere:
+
+| Empty argument | What happens |
+|---|---|
+| `adaptyKey: ""` | Adapty is never activated. Every call into the layer becomes a no-op, one line lands in `configurationIssues`, and no purchase is ever pushed through Adapty behind the app's back. |
+| `amplitudeKey: ""` | Amplitude is never activated; events go nowhere. |
+| `appsFlyerDevKey: ""` | No `AppsFlyerService` is created at all; `handleContinue`/`handleOpen` become no-ops. |
+
+For `adaptyKey` this is a hard guard, not a courtesy: `Adapty.activate` runs
+`assert(apiKey.count >= 41 && apiKey.starts(with: "public_live"))` on the
+caller's own stack, so a key that is empty — or that was obfuscated and
+decrypted wrong — would take a DEBUG build down before any network call. The
+package checks the shape first and records the reason instead of trapping.
 
 The returned `IntegrationKit` exposes exactly three things to build UI on top
 of: `premium: PremiumServicing`, `analytics: AnalyticsTracking`,
@@ -259,6 +277,14 @@ ATTrackingManager.requestTrackingAuthorization { status in
 plugin once the answer is `.authorized`) and Adapty's own ATT status update,
 in that order.
 
+**The current status also goes to Adapty on every launch, by itself.**
+`IntegrationKit.configure(...)` reads `ATTrackingManager.trackingAuthorizationStatus`
+and hands it to Adapty — the status is state, not install data, and a user who
+changes it later in Settings would otherwise stay on the answer they gave at
+the first dialog forever. So the app has exactly one job here: forward the
+result of the system dialog when it shows. The every-launch resend is not
+something to call, or to remember.
+
 **First-open event.** Pass a name through `firstOpenEvent` at `configure`
 time and the package logs it once per install, gated internally so a
 reinstall or a relaunch never double-logs it. Pass `nil` to opt out.
@@ -314,8 +340,10 @@ public protocol PremiumServicing: AnyObject {
 	func product(_ productId: String, placement: String, completion: @escaping (PremiumProduct?) -> Void)
 	func products(placement: String, completion: @escaping ([PremiumProduct]) -> Void)
 	func hasPaywall(placement: String) -> Bool
-	func remoteValue<T>(placement: String, key: String) -> T?
+	func paywallState(placement: String) -> PaywallState
+	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T>
 	func logPaywallOpen(placement: String)
+	var configurationIssues: [String] { get }
 }
 ```
 
@@ -330,12 +358,17 @@ receipt as a fallback when Adapty has not answered yet.
 func paywall() {
 	kit.premium.logPaywallOpen(placement: "main")
 
-	let title: String? = kit.premium.remoteValue(placement: "main", key: "title")
-	let paywallExists = kit.premium.hasPaywall(placement: "main")
+	// Four different reasons for "no title", not one nil.
+	let title: RemoteValue<String> = kit.premium.remoteValue(placement: "main", key: "title")
+	switch kit.premium.paywallState(placement: "main") {
+		case .ready: break          // draw the paywall
+		case .loading: break        // spinner — ask again in a moment
+		case .unavailable: break    // nothing is coming; fall back to a hardcoded screen
+	}
 
 	kit.premium.products(placement: "main") { products in
 		for product in products {
-			print(product.localizedTitle, product.localizedPrice)
+			print(product.localizedTitle, product.localizedPrice ?? "—")
 		}
 	}
 
@@ -347,6 +380,13 @@ func paywall() {
 					// kit.premium.isPremium is already true by this point.
 					break
 				case .cancelled:
+					break
+				case .pending:
+					// Ask to Buy, or paid and not confirmed yet. Show waiting, never an error, and
+					// do not offer to buy again — the answer arrives through .premiumDidChange.
+					break
+				case .unavailable:
+					// Permanent for this device/product. Hide the button instead of retrying.
 					break
 				case .failed:
 					break
@@ -362,9 +402,27 @@ func paywall() {
   this placement at all. `false` for a placement that was never preloaded
   (see `placements` at `configure` time) or does not exist in the Adapty
   dashboard.
+- **`paywallState(placement:)`** — *why* there is no paywall, which one
+  boolean cannot say: `.ready`, `.loading` (an attempt is in flight or
+  scheduled — draw a spinner and ask again) or `.unavailable` (the placement
+  was never configured, or Adapty answered that it does not exist — retrying
+  will not change it). Use this to choose between a spinner and an empty
+  state; keep `hasPaywall` for the plain yes/no.
 - **`remoteValue<T>(placement:key:)`** — reads a value out of the paywall's
-  remote config by key; returns `nil` if the placement, the key, or the type
-  cast does not match.
+  remote config by key. Answers a `RemoteValue<T>`, not a bare optional,
+  because four different situations used to collapse into one `nil`:
+  `.value(T)`, `.notReady` (the paywall has not arrived — ask again),
+  `.noConfig` (the paywall carries no remote config at all), `.notSet` (the
+  config has no such key) and `.wrongType` (the dashboard set it to another
+  type — that one also lands in `configurationIssues`). `.value` gives the
+  plain optional back when the distinction does not matter, and `.isPending`
+  is the "ask again later" test.
+- **`configurationIssues`** — every cause the package could not work around
+  and no retry will fix: an empty key, a device id that arrived too late, a
+  placement that does not exist, a product the paywall does not sell, a
+  profile attribute Adapty refused. One line per cause, oldest first. Empty
+  is the healthy state; print it in DEBUG, ship it to Crashlytics as a
+  non-fatal, or assert on it in an integration test.
 - **`products(placement:completion:)`** / **`product(_:placement:completion:)`**
   — `PremiumProduct` values for a placement, or a single one by product id.
   Two sources, one list: **Adapty decides which products the placement carries**
@@ -390,7 +448,9 @@ func paywall() {
 public struct PremiumProduct: Equatable, Sendable {
 	public let id: String
 	public let localizedTitle: String
-	public let localizedPrice: String
+	/// `nil` when the store gave no formatted price. Deliberately not `""` — an empty string
+	/// renders as a blank button and cannot be told from a real price.
+	public let localizedPrice: String?
 	public let price: Decimal
 	public let currencyCode: String?
 	public let subscriptionPeriod: PremiumPeriod?
@@ -414,7 +474,15 @@ public struct PremiumOffer: Equatable, Sendable {
 
 public enum PurchaseOutcome: Equatable, Sendable {
 	case purchased
+	/// The user said no.
 	case cancelled
+	/// Neither bought nor refused **yet**: Ask to Buy waiting for a parent, or paid and still being
+	/// confirmed. Show waiting, not an error, and do not offer to buy again.
+	case pending
+	/// Not possible on this device or for this product: payments disabled, product missing from the
+	/// storefront, a promotional offer the store refuses to sign. Hide the button.
+	case unavailable
+	/// Everything else that is neither a purchase nor a user cancel.
 	case failed
 }
 
@@ -427,8 +495,16 @@ public enum RestoreOutcome: Equatable, Sendable {
 
 `PurchaseOutcome.failed` and `RestoreOutcome.failed` both cover the StoreKit
 fallback path too — the "retry through StoreKit" signal from Adapty never
-leaves the package, it always resolves to one of these three/three cases
+leaves the package, it always resolves to one of these five/three cases
 before reaching the app.
+
+Three of the five need a UI decision that `failed` would get wrong:
+
+| Outcome | What the screen should do |
+|---|---|
+| `.pending` | "Waiting for approval" — no error, no second buy button. The real answer arrives through `.premiumDidChange`. Treating it as a failure is how a paid user gets charged twice. |
+| `.unavailable` | Hide or disable the button. A retry fails identically every time. |
+| `.failed` | Show an error and let the user try again — this one really is temporary. |
 
 ### Reacting to premium changes
 
@@ -532,45 +608,74 @@ cd BuildHost && xcb app-sim
 
 Changed `BuildHost/project.yml`? Run `xcodegen generate` first.
 
-`Checks/` are self-checks that compile pure Swift types directly with
-`swiftc` — no XCTest, no Xcode project, no SDK imports:
+`Checks/` are self-checks that compile the real source files directly with
+`swiftc`, against stub SDK modules in `Checks/Stubs/` — no XCTest, no Xcode
+project, no network, no real SDK ever linked. Each script exits non-zero and
+prints every failing assert, not just the first.
+
+Every assert is written from a row of an approved risk table and names the
+exact value that row names — a verdict, a journal entry, a trace line. `count
+== 0` and "something exists" close no row.
 
 ```bash
-./Checks/premium-resolver-check.sh
+for s in Checks/*.sh; do "./$s"; done
 ```
-Compiles `PremiumResolver` plus `PremiumAccess`/`PremiumState`/`PremiumSource`
-and runs assertions on the arbitration order: a verified Adapty answer beats
-the cache in both directions; a false receipt does not revoke an unverified
-local purchase; a stale cache plus a true receipt yields unverified state
-with no `expiresAt`; silence everywhere yields `.free`.
 
-```bash
-./Checks/premium-barrier-check.sh
-```
-Compiles `PremiumService` against a stub `Adapty` module (built first as a
-static library so the real SDK is never linked) and checks the `refresh()`
-concurrency barrier, the StoreKit-fallback path, and the price merge — the
-store's price winning where it answered, Adapty's kept where it did not.
+| Script | What it pins down |
+|---|---|
+| `adapty-service-check.sh` | The whole of AD-01…AD-07: activation guards, paywall de-duplication and TTL, the four `PaywallState` answers, purchase verdict mapping, the attribution queue, the ATT resend, remote-config parsing done once. |
+| `premium-resolver-check.sh` | Arbitration order: a verified Adapty answer beats the cache both ways; a false receipt does not revoke an unverified local purchase; a stale cache plus a true receipt yields unverified state with no `expiresAt`; silence yields `.free`. |
+| `premium-barrier-check.sh` | The `refresh()` concurrency barrier, restore, the StoreKit-fallback path, and the price merge — the store's price winning where it answered, Adapty's kept where it did not. |
+| `premium-local-purchase-check.sh` | The local-purchase mark: what sets it, what may clear it, and what must never clear it. |
+| `premium-pending-check.sh` | That one hung purchase does not refuse every later purchase in the process. |
+| `premium-storekit-check.sh` | Restore, price lookup, and unfinished transactions delivered by the payment queue. |
+| `crashlytics-check.sh` | Double `configure`, the network-noise filter, and the tags a non-fatal carries. |
+| `amplitude-analytics-check.sh` | First-open gating, the IDFA plugin attached exactly once, the environment property. |
+| `appsflyer-service-check.sh` | Session start, attribution mapping, the ATT wait limit, deep-link values. |
+| `appsflyer-attribution-check.sh` | `cleanedAttributionData`: `NSNull`/non-scalar values and non-string keys dropped, an empty input staying empty, a `nil` deep link value becoming `"-"`, `clickEvent` fields flowing through. |
 
-```bash
-./Checks/appsflyer-attribution-check.sh
-```
-Compiles `AppsFlyerAttributionMapping` and checks that `NSNull`/non-scalar
-values and non-string keys are dropped from `cleanedAttributionData`; that an
-empty input stays empty; that a `nil` deep link value becomes `"-"`; that
-`clickEvent` fields flow through into the payload.
+Some rows are red on purpose. A test written from an approved schema goes in
+before the code that satisfies it, so a red assert here is a specification
+waiting to be met, not a regression — each one names its row, and the row's
+"Стан у коді" column says where it stands.
 
 ## Troubleshooting
+
+**Start here:** print `kit.premium.configurationIssues`. Every cause the
+package could not work around and no retry will fix writes one line into it —
+an empty or malformed key, a device id that arrived too late, a placement that
+does not exist, a product the paywall does not sell, a profile attribute Adapty
+refused, a profile that never arrived. Most of the entries below have a line
+waiting in there already.
+
+```swift
+#if DEBUG
+kit.premium.configurationIssues.forEach { print("[IntegrationKit] \($0)") }
+#endif
+```
 
 - **`hasPaywall(placement:)` is always `false`.** Either the placement was
   never in `placements` at `configure` time, or the placement id does not
   match the Adapty dashboard exactly (case-sensitive, no trailing
   whitespace).
+  `paywallState(placement:)` says which of the two it is: `.loading` means the
+  request is still in flight or scheduled, `.unavailable` means it is never
+  coming.
 - **`products(placement:)` returns an empty array on a paywall that has
   products in the dashboard.** Usually a wrong `adaptyKey` — a key copied
   from a different app or a different Adapty project resolves placements
   that do not exist. Confirm the key against this app's Adapty dashboard, not
   a sibling app's.
+- **Nothing Adapty-related happens at all, and there are no errors.** Check
+  `configurationIssues` for a line about the key: an empty key, or one that
+  does not start with `public_live` and run to at least 41 characters, leaves
+  the whole layer inert by design. An app that ships its keys obfuscated is
+  most likely decrypting this one wrong.
+- **A purchase "fails" but the user was charged.** `.pending` is not `.failed`.
+  If the UI collapses the five `PurchaseOutcome` cases into two, an Ask to Buy
+  approval or a paid-but-unconfirmed purchase reads as an error and the user
+  is invited to pay twice. Handle `.pending` as waiting, and wait for
+  `.premiumDidChange`.
 - **`isPremium` stays `false` after a real purchase.** Check `levels` at
   `configure` time against the Adapty access level id actually granted by
   the paywall — a mismatch here means a genuinely successful Adapty purchase
@@ -609,6 +714,10 @@ empty input stays empty; that a `nil` deep link value becomes `"-"`; that
 - [ ] AppsFlyer App ID confirmed against App Store Connect, not guessed
 - [ ] `levels` matches the Adapty access level id actually granted by the
       paywall
-- [ ] `./Checks/premium-resolver-check.sh`, `./Checks/premium-barrier-check.sh`
-      and `./Checks/appsflyer-attribution-check.sh` all pass
+- [ ] `kit.premium.purchase(...)` handles all five `PurchaseOutcome` cases —
+      `.pending` shows waiting, `.unavailable` hides the button
+- [ ] `kit.premium.configurationIssues` is empty on a real launch (print it in
+      DEBUG, or ship it as a Crashlytics non-fatal)
+- [ ] `for s in Checks/*.sh; do "./$s"; done` — no failures other than the rows
+      already marked red in the risk tables
 - [ ] `cd BuildHost && xcb app-sim` builds

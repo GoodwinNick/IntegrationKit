@@ -64,25 +64,55 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 		return true
 	}
 
-	/// Everything a paywall screen needs, from the facade alone.
+	/// Everything a paywall screen needs, from the facade alone. Every case of every public enum is
+	/// spelled out rather than defaulted: an exhaustive `switch` is what turns a case added to the
+	/// package into a compile error here instead of a silently unhandled state in a real app.
 	func paywall() {
 		guard let kit else { return }
 		kit.premium.logPaywallOpen(placement: "main")
-		let title: String? = kit.premium.remoteValue(placement: "main", key: "title")
-		print(title ?? "", kit.premium.hasPaywall(placement: "main"))
+
+		let title: RemoteValue<String> = kit.premium.remoteValue(placement: "main", key: "title")
+		switch title {
+			case .value(let text): print(text)
+			case .notReady: print("paywall has not arrived — ask again")
+			case .noConfig: print("paywall carries no remote config")
+			case .notSet: print("no such key in the config")
+			case .wrongType: print("the dashboard set another type — see configurationIssues")
+		}
+
+		switch kit.premium.paywallState(placement: "main") {
+			case .ready: print("draw the paywall")
+			case .loading: print("spinner")
+			case .unavailable: print("fall back to a hardcoded screen")
+		}
+		print(kit.premium.hasPaywall(placement: "main"))
+
 		kit.premium.products(placement: "main") { products in
-			print(products.map(\.localizedPrice))
+			print(products.map { $0.localizedPrice ?? "—" })
 		}
 		kit.premium.product("year.sub", placement: "main") { product in
 			guard let product else { return }
 			kit.premium.purchase(product.id, placement: "main") { outcome in
-				print("purchase: \(outcome)")
+				switch outcome {
+					case .purchased: print("premium is already \(kit.premium.isPremium)")
+					case .cancelled: print("the user said no")
+					case .pending: print("waiting for approval — no error, no second button")
+					case .unavailable: print("hide the button, a retry fails the same way")
+					case .failed: print("temporary — offer a retry")
+				}
 			}
 		}
 		kit.premium.restore { outcome in
-			print("restore: \(outcome), premium: \(kit.premium.isPremium)")
+			switch outcome {
+				case .restored: print("restored, premium: \(kit.premium.isPremium)")
+				case .nothingToRestore: print("nothing to restore")
+				case .failed: print("restore failed")
+			}
 		}
 		kit.premium.refresh()
+
+		// Empty is the healthy state. Anything in here is a cause no retry will fix.
+		kit.premium.configurationIssues.forEach { print("[IntegrationKit] \($0)") }
 	}
 
 	func askTracking() {
