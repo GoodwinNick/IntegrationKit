@@ -17,14 +17,22 @@ swiftc -emit-module -emit-library -static \
 	-emit-module-path "$work/Adapty.swiftmodule" \
 	-o "$work/libAdapty.a" \
 	Checks/Stubs/AdaptyProfile.swift \
-	Checks/Stubs/AdaptyPaywall.swift \
+	Checks/Stubs/AdaptyError.swift \
+	Checks/Stubs/AdaptyConfiguration.swift \
+	Checks/Stubs/AdaptyRemoteConfig.swift \
+	Checks/Stubs/AdaptyFlow.swift \
+	Checks/Stubs/AdaptySubscriptionPeriod.swift \
+	Checks/Stubs/AdaptySubscriptionOfferType.swift \
+	Checks/Stubs/AdaptySubscriptionOffer.swift \
 	Checks/Stubs/AdaptyPaywallProduct.swift \
-	Checks/Stubs/AdaptyProductSubscriptionPeriod.swift \
-	Checks/Stubs/AdaptyProductDiscount.swift \
+	Checks/Stubs/AdaptyPromotedProduct.swift \
+	Checks/Stubs/AdaptyPurchaseResult.swift \
+	Checks/Stubs/AdaptyUnfinishedTransaction.swift \
+	Checks/Stubs/AdaptyInstallationDetails.swift \
+	Checks/Stubs/AdaptyExternalAttributionProvider.swift \
+	Checks/Stubs/AdaptyIntegrationIdentifier.swift \
 	Checks/Stubs/AdaptyProfileParameters.swift \
 	Checks/Stubs/AdaptyDelegate.swift \
-	Checks/Stubs/AdaptyError.swift \
-	Checks/Stubs/AdaptyAttributionSource.swift \
 	Checks/Stubs/Adapty.swift
 swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty \
 	Checks/Cases/AdaptyServiceCheck.swift \

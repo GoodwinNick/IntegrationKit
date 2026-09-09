@@ -104,18 +104,28 @@ enum IntegrationKitCheck {
 		check(Adapty.updateProfileJournal.count == beforeAttribute + 1,
 		      "AD-06 r8: setProfileValue on the facade must reach the SDK exactly once — journal \(beforeAttribute) → \(Adapty.updateProfileJournal.count)")
 		let written = Adapty.updateProfileJournal.last?.customAttributes["purchasePlace"]
-		check(written == "onboarding_paywall",
-		      "AD-06 r8: the forward must carry the app's own value and key, not a rewritten pair — got \(written ?? "nil")")
+		check(written == .string("onboarding_paywall"),
+		      "AD-06 r8: the forward must carry the app's own value and key, not a rewritten pair — got \(String(describing: written))")
 
-		// AD-07 row 3, the same argument for the other new forward. The guard on the step and the two
-		// traps behind it are `AdaptyServiceCheck`'s (T46…T50); this is the one place that can show the
-		// public method exists and lands on the service at all.
-		let beforeOnboarding = Adapty.logShowOnboardingCount
+		// AD-07 row 3, inverted by the migration. 4.1.3 deleted `logShowOnboarding` outright — the
+		// event does not exist in the SDK any more, and the Onboarding Builder that replaced it needs a
+		// placement, a fetched onboarding and a hosted view controller, none of which this package has
+		// or wants. So the method stays on the facade as a DEPRECATED no-op: an app that still calls it
+		// keeps compiling and keeps working, with a warning telling it the call now does nothing.
+		//
+		// This is the only place that can prove the no-op is really a no-op. The three asserts are the
+		// three ways it could stop being one: it could reach the SDK, it could write a reason nobody can
+		// act on, or it could trap on a step number the old guard used to reject — and the ТЗ asks for
+		// an empty body with no guards at all, so all three must stay flat.
+		let beforeOnboardingWrites = Adapty.updateProfileJournal.count
+		let beforeOnboardingIssues = kit.configurationIssues.count
 		kit.logOnboardingOpen(step: 1)
-		check(Adapty.logShowOnboardingCount == beforeOnboarding + 1,
-		      "AD-07 r3: logOnboardingOpen on the facade must reach the SDK exactly once — \(beforeOnboarding) → \(Adapty.logShowOnboardingCount)")
-		check(Adapty.lastOnboardingName == "onboarding_1",
-		      "AD-07 r3: the forward must keep the event name the apps already send — got \(Adapty.lastOnboardingName ?? "nil")")
+		kit.logOnboardingOpen(step: 0)
+		kit.logOnboardingOpen(step: -1)
+		check(Adapty.updateProfileJournal.count == beforeOnboardingWrites && Adapty.logShowFlowJournal.isEmpty,
+		      "AD-07 r3: the deprecated logOnboardingOpen must reach the SDK with nothing at all — journal \(beforeOnboardingWrites) → \(Adapty.updateProfileJournal.count), impressions \(Adapty.logShowFlowJournal)")
+		check(kit.configurationIssues.count == beforeOnboardingIssues,
+		      "AD-07 r3: a no-op has nothing to report — configurationIssues \(beforeOnboardingIssues) → \(kit.configurationIssues.count)")
 
 		if failures.isEmpty {
 			print("IntegrationKit composition root: \(10) checks OK")

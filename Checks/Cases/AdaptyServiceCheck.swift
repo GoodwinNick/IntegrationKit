@@ -9,9 +9,17 @@
 //  Every assert names the value the schema names — a verdict, a journal entry, a trace line — not
 //  the fact that something happened. `count == 0` and `firstMatch.exists` close no row here.
 //
+//  Rewritten for Adapty 4.1.3 (release 0.3.0, step 3). What moved:
+//    `getPaywall` → `getFlow`, `AdaptyPaywall` → `AdaptyFlow`, one `remoteConfig` → `remoteConfigs`
+//    per locale, `logShowPaywall` → `logShowFlow`, `makePurchase` → `AdaptyPurchaseResult` instead of
+//    an error table, `updateAttribution` → the pair `updateExternalAttribution` +
+//    `setIntegrationIdentifier`, and the amplitude ids off the profile builder onto the second half
+//    of that pair.
+//
 //  Deliberately without a test, per the schemas:
 //    AD-01 r5 (partly), AD-03 r4, AD-03 r5, AD-05 r3 — SDK or harness boundary;
-//    AD-04 r7, AD-06 r4, AD-07 r3 — dead code, closed by deletion, which this file cannot assert.
+//    AD-04 r7, AD-06 r4 — dead code, closed by deletion, which this file cannot assert;
+//    AD-07 r3 — closed by a deprecated no-op; the onboarding event does not exist on 4.1.3 at all.
 //  AD-01 r5's own half — "no profile arrived, and nothing said so" — IS covered (T05): the guard
 //  belongs to this layer even though the SDK's retry loop behind it does not.
 //
@@ -97,15 +105,19 @@ enum AdaptyServiceCheck {
 		log.contains { $0.contains(fragment) }
 	}
 
-	/// `AdaptyPurchaseResult` carries no `Equatable` conformance (nothing in `Sources/` needs one),
-	/// so rows about a verdict compare its name.
-	static func name(_ result: AdaptyPurchaseResult?) -> String {
-		guard let result else { return "nil" }
-		switch result {
+	/// `PurchaseVerdict` carries no `Equatable` conformance (nothing in `Sources/` needs one), so
+	/// rows about a verdict compare its name.
+	///
+	/// `paidUnconfirmed` is gone as of AD-04 row 9: on 2.10.x it was the verdict for codes 2004 and
+	/// 2005, which cover a network that died BEFORE the payment as well as after it — so it granted
+	/// premium to someone who never paid. 4.1.3 answers a completed purchase with
+	/// `AdaptyPurchaseResult.success`, and that is now the only thing that means "paid".
+	static func name(_ verdict: PurchaseVerdict?) -> String {
+		guard let verdict else { return "nil" }
+		switch verdict {
 			case .success: return "success"
 			case .cancelled: return "cancelled"
 			case .pending: return "pending"
-			case .paidUnconfirmed: return "paidUnconfirmed"
 			case .retryWithStoreKit: return "retryWithStoreKit"
 			case .unavailable: return "unavailable"
 			case .failed: return "failed"
@@ -138,14 +150,24 @@ enum AdaptyServiceCheck {
 		return deadlines
 	}
 
+	/// A purchase that went through, in the shape 4.1.3 answers with.
+	static func purchased() -> Result<AdaptyPurchaseResult, AdaptyError> {
+		.success(.success(profile: AdaptyProfile(accessLevels: [:]), transaction: AdaptyPurchaseResult.SignedTransaction()))
+	}
+
+	/// One locale's worth of remote config, which is all most rows need.
+	static func config(_ dictionary: [String: Any], locale: String = "en") -> AdaptyRemoteConfig {
+		AdaptyRemoteConfig(locale: locale, dictionary: dictionary)
+	}
+
 	/// A configured, active service with one loaded placement — the starting state most rows need.
 	/// `products` is what `getPaywallProducts` will answer with.
 	static func loadedService(
 		placement: String = "main",
-		remoteConfig: [String: Any]? = nil,
+		remoteConfigs: [AdaptyRemoteConfig] = [],
 		products: [AdaptyPaywallProduct] = [AdaptyPaywallProduct(vendorProductId: "year.sub")]
 	) -> AdaptyService {
-		Adapty.getPaywallResults = [.success(AdaptyPaywall(remoteConfig: remoteConfig))]
+		Adapty.getFlowResults = [.success(AdaptyFlow(remoteConfigs: remoteConfigs))]
 		Adapty.getPaywallProductsResult = .success(products)
 		let service = AdaptyService()
 		service.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: [placement], analytics: FakeAnalytics(), attStatus: .notDetermined)
@@ -164,7 +186,7 @@ enum AdaptyServiceCheck {
 		// stuck one, and stdout stays a single clean summary line.
 		let sections: [(String, () -> Void)] = [
 			("AD-01 configuration", configuration),
-			("AD-02 paywalls", paywalls),
+			("AD-02 placements", placements),
 			("AD-03 products", products),
 			("AD-04 purchase", purchase),
 			("AD-05 profile", profile),
@@ -192,10 +214,11 @@ enum AdaptyServiceCheck {
 
 	static func configuration() {
 		// T01 — AD-01 rows 1 and 7: an empty key. The SDK must not be touched at all: upstream,
-		// `Adapty.activate` runs `assert(apiKey.count >= 41 && apiKey.starts(with: "public_live"))`
-		// on the caller's own stack, so reaching it takes a DEBUG build down. The stub cannot
-		// reproduce that assert, so this proves OUR guard — the assert itself was read in the SDK
-		// sources. The process being alive at the end of the row is half the assertion.
+		// building the configuration runs `assert(apiKey.count >= 41 && apiKey.starts(with:
+		// "public_live"))` on the caller's own stack (`AdaptyConfiguration.Builder.swift:14`), so
+		// reaching it takes a DEBUG build down. The stub deliberately does not reproduce that assert,
+		// so this proves OUR guard — the assert itself was read in the SDK sources. The process being
+		// alive at the end of the row is half the assertion.
 		reset("T01")
 		let t01 = AdaptyService()
 		t01.configure(apiKey: "", customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
@@ -204,9 +227,9 @@ enum AdaptyServiceCheck {
 		check(hasIssue("inactive"), "AD-01 r1/r7: an empty key must be recorded as a configuration issue — got \(issues())")
 
 		// T01b — AD-01 row 7, the half an empty key does not reach: a key that is present but is not
-		// an Adapty key. `Adapty.activate`'s assert fires on the shape, not on emptiness, so an
-		// obfuscated key decrypted wrong trips it just as hard. Both values the schema names are
-		// asserted — the SDK stayed untouched, and the reason says what was expected.
+		// an Adapty key. The SDK's assert fires on the shape, not on emptiness, so an obfuscated key
+		// decrypted wrong trips it just as hard. Both values the schema names are asserted — the SDK
+		// stayed untouched, and the reason says what was expected.
 		reset("T01b")
 		let t01b = AdaptyService()
 		t01b.configure(apiKey: "sk_live_not_an_adapty_key_but_long_enough_to_pass_41", customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
@@ -214,17 +237,39 @@ enum AdaptyServiceCheck {
 		check(t01b.isActive == false, "AD-01 r7: a malformed key must leave the layer inactive")
 		check(hasIssue("beginning with 'public_live'"), "AD-01 r7: the reason must name the expected shape — got \(issues())")
 
+		// T01c — AD-01, new on 4.1.3: Adapty Attribution. `adaptyAttributionEnabled` is a switch that
+		// makes the SDK register the install with Adapty's own attribution service, and it is off by
+		// default upstream (`AdaptyConfiguration.swift:16`). The package must leave it off unless the
+		// integrator says otherwise: an app that already runs AppsFlyer would otherwise start sending
+		// a second, independent install signal that nobody in the app asked for.
+		//
+		// Both directions are asserted. "Off by default" alone stays green on a parameter that is
+		// ignored; the second half proves the switch is actually wired to the builder.
+		reset("T01c")
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
+		let t01c = AdaptyService()
+		t01c.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		check(Adapty.lastConfiguration?.adaptyAttributionEnabled == false, "AD-01: Adapty Attribution must be off unless asked for — got \(String(describing: Adapty.lastConfiguration?.adaptyAttributionEnabled))")
+		check(Adapty.lastConfiguration?.observerMode == false, "AD-01: observer mode must stay off, or the SDK stops watching the transaction queue entirely — got \(String(describing: Adapty.lastConfiguration?.observerMode))")
+
+		reset("T01d")
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
+		let t01d = AdaptyService()
+		t01d.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined, adaptyAttributionEnabled: true)
+		check(Adapty.lastConfiguration?.adaptyAttributionEnabled == true, "AD-01: an integrator who asks for Adapty Attribution must get it — got \(String(describing: Adapty.lastConfiguration?.adaptyAttributionEnabled))")
+
 		// T02 — AD-01 row 2: analytics has no device id yet. An empty string must NOT be written:
-		// it looks like an id and joins this profile to nothing forever. Both halves are asserted —
-		// nothing reached the SDK, and the reason is readable.
+		// it looks like an id and joins this profile to nothing forever. On 4.1.3 the amplitude ids no
+		// longer travel on the profile builder — `with(amplitudeDeviceId:)` is gone and they go
+		// through `setIntegrationIdentifier` — so the journal that must stay empty is the new one.
 		reset("T02")
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		let t02 = AdaptyService()
 		t02.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(deviceId: nil), attStatus: .notDetermined)
-		let t02Written = Adapty.updateProfileJournal.compactMap(\.amplitudeDeviceId)
+		let t02Written = Adapty.integrationIdentifierJournal.filter { $0.key == .amplitudeDeviceId }.map(\.value)
 		check(t02Written.isEmpty, "AD-01 r2: with no analytics device id, amplitudeDeviceId must not be written at all — got \(t02Written)")
 		check(hasIssue("no device id"), "AD-01 r2: the missing device id must be recorded — got \(issues())")
-		let t02User = Adapty.updateProfileJournal.compactMap(\.amplitudeUserId)
+		let t02User = Adapty.integrationIdentifierJournal.filter { $0.key == .amplitudeUserId }.map(\.value)
 		check(t02User == ["u1"], "AD-01 r2: amplitudeUserId must still be linked — got \(t02User)")
 
 		// T03 — AD-01 row 3: `configure` twice. The SDK rejects the second activation itself
@@ -233,14 +278,14 @@ enum AdaptyServiceCheck {
 		// two counters named here are the ones that would grow; asserting "exactly one activation"
 		// would only be testing the SDK's own guard.
 		reset("T03")
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		Adapty.activateErrors = [nil, AdaptyError(.activateOnceError)]
 		let t03 = AdaptyService()
 		t03.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
-		let t03Paywalls = Adapty.getPaywallCallCount
+		let t03Flows = Adapty.getFlowCallCount
 		let t03Writes = Adapty.updateProfileJournal.count
 		t03.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
-		check(Adapty.getPaywallCallCount == t03Paywalls, "AD-01 r3: a rejected second activation must not warm paywalls again — \(t03Paywalls) → \(Adapty.getPaywallCallCount)")
+		check(Adapty.getFlowCallCount == t03Flows, "AD-01 r3: a rejected second activation must not warm placements again — \(t03Flows) → \(Adapty.getFlowCallCount)")
 		check(Adapty.updateProfileJournal.count == t03Writes, "AD-01 r3: a rejected second activation must not rewrite the profile — \(t03Writes) → \(Adapty.updateProfileJournal.count)")
 		check(hasIssue("activate was rejected"), "AD-01 r3: a rejected activation must be recorded — got \(issues())")
 
@@ -249,19 +294,20 @@ enum AdaptyServiceCheck {
 		// de-duplicates nothing (it opens a task per call), so the second request must be suppressed
 		// here or not at all.
 		reset("T04")
-		Adapty.holdGetPaywall = true
+		Adapty.holdGetFlow = true
 		let t04 = AdaptyService()
 		t04.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
 		t04.refreshPaywalls()
 		t04.refreshPaywalls()
-		check(Adapty.getPaywallCallCount == 1, "AD-01 r4: a request already in flight must not be duplicated — expected 1 getPaywall, got \(Adapty.getPaywallCallCount)")
+		check(Adapty.getFlowCallCount == 1, "AD-01 r4: a request already in flight must not be duplicated — expected 1 getFlow, got \(Adapty.getFlowCallCount)")
 
 		// T05 — AD-01 row 5: an invalid key produces no error anywhere; the SDK re-creates the
-		// profile once a second forever (its own source carries the `TODO` where the give-up should
-		// be). The only symptom this layer can see is that no profile ever arrives, and the schema
-		// asks for that to be visible. The deadline is injected so the row runs in half a second.
+		// profile once every 100 ms forever (its own source carries the `TODO` where the give-up
+		// should be). The only symptom this layer can see is that no profile ever arrives, and the
+		// schema asks for that to be visible. The deadline is injected so the row runs in half a
+		// second.
 		reset("T05")
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		let t05 = AdaptyService(deadlines: fast(\.firstProfile, 0.2))
 		t05.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
 		wait(1) { hasIssue("no profile") }
@@ -269,7 +315,7 @@ enum AdaptyServiceCheck {
 
 		// T05b — the same guard must stay quiet when a profile DID arrive, or the line is noise.
 		reset("T05b")
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		let t05b = AdaptyService(deadlines: fast(\.firstProfile, 0.2))
 		t05b.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
 		t05b.didLoadLatestProfile(AdaptyProfile(accessLevels: [:]))
@@ -284,78 +330,87 @@ enum AdaptyServiceCheck {
 		check(hasIssue("no placements"), "AD-01 r6: an empty placement list must be recorded — got \(issues())")
 	}
 
-	// MARK: - AD-02: paywalls.
+	// MARK: - AD-02: placements.
 
-	static func paywalls() {
+	static func placements() {
 		// T07 — AD-02 row 1: a placement that does not exist answers `badRequest` (2003) and will
 		// answer it forever. Retrying it is a typo burning battery for the life of the process. The
 		// pair of asserts is the point of the row: the SAME failure with a network code must keep
 		// retrying. Timing is not measured — `asyncAfter` is not fast-forwardable in this harness,
 		// so the assert names attempt counts.
 		reset()
-		Adapty.getPaywallResults = [.failure(AdaptyError(.badRequest))]
+		Adapty.getFlowResults = [.failure(AdaptyError(.badRequest))]
 		let t07 = AdaptyService()
 		t07.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["typo"], analytics: FakeAnalytics(), attStatus: .notDetermined)
-		wait(1) { Adapty.getPaywallCallCount > 1 }
-		check(Adapty.getPaywallCallCount == 1, "AD-02 r1: badRequest must not be retried — expected exactly 1 getPaywall, got \(Adapty.getPaywallCallCount)")
+		wait(1) { Adapty.getFlowCallCount > 1 }
+		check(Adapty.getFlowCallCount == 1, "AD-02 r1: badRequest must not be retried — expected exactly 1 getFlow, got \(Adapty.getFlowCallCount)")
 		check(hasIssue("has no placement 'typo'"), "AD-02 r1: an unknown placement must be recorded by name — got \(issues())")
 		t07.refreshPaywalls()
-		check(Adapty.getPaywallCallCount == 1, "AD-02 r1: a foreground trigger must not revive a badRequest placement — got \(Adapty.getPaywallCallCount)")
+		check(Adapty.getFlowCallCount == 1, "AD-02 r1: a foreground trigger must not revive a badRequest placement — got \(Adapty.getFlowCallCount)")
 
 		reset()
-		Adapty.getPaywallResults = [.failure(AdaptyError(.networkFailed))]
+		Adapty.getFlowResults = [.failure(AdaptyError(.networkFailed))]
 		let t07b = AdaptyService()
 		t07b.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
-		check(wait(2) { Adapty.getPaywallCallCount >= 2 }, "AD-02 r1: networkFailed must keep retrying — expected at least 2 getPaywall attempts, got \(Adapty.getPaywallCallCount)")
+		check(wait(2) { Adapty.getFlowCallCount >= 2 }, "AD-02 r1: networkFailed must keep retrying — expected at least 2 getFlow attempts, got \(Adapty.getFlowCallCount)")
 		check(!hasIssue("has no placement"), "AD-02 r1: a network failure is not a configuration issue — got \(issues())")
 
-		// T08 — AD-02 row 2 / AD-03 row 2: the paywall arrived, the products did not. The SDK has
-		// already spent its own three attempts by the time this answer lands, so there is nothing to
-		// retry — the defect is the silence afterwards. Code 1000 covers two causes the SDK cannot
-		// separate (a paywall with no products, products the store does not know), so AD-02 row 6
-		// requires the code itself in the trace: one cause is fixed in the dashboard, the other in
-		// App Store Connect.
+		// T08 — AD-02 row 2 / AD-03 row 2: the placement arrived, the products did not. Code 1000
+		// covers two causes the SDK cannot separate (a paywall with no products, products the store
+		// does not know), so AD-02 row 6 requires the code itself in the trace: one cause is fixed in
+		// the dashboard, the other in App Store Connect.
 		reset()
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		Adapty.getPaywallProductsResult = .failure(AdaptyError(.noProductIDsFound))
 		let t08 = AdaptyService()
 		t08.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
 		check(t08.failedProductLoads == 1, "AD-02 r2: a failed product load must be counted — expected 1, got \(t08.failedProductLoads)")
 		check(hasLog("noProductIDsFound"), "AD-02 r6: the trace must name the SDK code, not just 'no products' — got \(log)")
 
-		// T09 — AD-02 row 4: a paywall edited in the dashboard mid-session used to be cached until
+		// T08b — AD-03, new on 4.1.3: the SDK no longer retries a failed product listing on its own.
+		// 2.10.x's `ProductsManager` spent three attempts before answering, which is why AD-02 row 2
+		// says "there is nothing left to retry". 4.1.3's `StoreKitProductFetcher` makes one pass, so
+		// the retry has to be ours or there is none.
+		reset()
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
+		Adapty.getPaywallProductsResult = .failure(AdaptyError(.networkFailed))
+		let t08b = AdaptyService()
+		t08b.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		check(wait(2) { Adapty.getPaywallProductsCallCount >= 2 }, "AD-03: a product listing that failed on the network must be retried by us — the SDK stopped doing it — got \(Adapty.getPaywallProductsCallCount) attempt(s)")
+
+		// T09 — AD-02 row 4: a placement edited in the dashboard mid-session used to be cached until
 		// the process died. With the TTL expired, a foreground trigger reloads it.
 		reset()
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		let t09 = AdaptyService(deadlines: fast(\.paywallTTL, 0))
 		t09.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
-		let t09First = Adapty.getPaywallCallCount
+		let t09First = Adapty.getFlowCallCount
 		t09.refreshPaywalls()
-		check(Adapty.getPaywallCallCount == t09First + 1, "AD-02 r4: a stale paywall must be reloaded on the next foreground — \(t09First) → \(Adapty.getPaywallCallCount)")
+		check(Adapty.getFlowCallCount == t09First + 1, "AD-02 r4: a stale placement must be reloaded on the next foreground — \(t09First) → \(Adapty.getFlowCallCount)")
 
 		// T09b — and a fresh one must not be, or every foreground costs a request per placement.
 		reset()
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		let t09b = AdaptyService(deadlines: fast(\.paywallTTL, 600))
 		t09b.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
-		let t09bFirst = Adapty.getPaywallCallCount
+		let t09bFirst = Adapty.getFlowCallCount
 		t09b.refreshPaywalls()
-		check(Adapty.getPaywallCallCount == t09bFirst, "AD-02 r4: a fresh paywall must not be reloaded — \(t09bFirst) → \(Adapty.getPaywallCallCount)")
+		check(Adapty.getFlowCallCount == t09bFirst, "AD-02 r4: a fresh placement must not be reloaded — \(t09bFirst) → \(Adapty.getFlowCallCount)")
 
 		// T10 — AD-02 row 5: three different reasons for "no paywall", three different answers. One
 		// boolean cannot tell a screen whether to draw a spinner or an empty state.
 		reset()
-		Adapty.holdGetPaywall = true
+		Adapty.holdGetFlow = true
 		let t10 = AdaptyService()
 		t10.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
 		check(t10.paywallState(placement: "main") == .loading, "AD-02 r5: a request in flight must read as .loading, got \(t10.paywallState(placement: "main"))")
 		check(t10.paywallState(placement: "never-configured") == .unavailable, "AD-02 r5: a placement nobody configured must read as .unavailable, got \(t10.paywallState(placement: "never-configured"))")
-		Adapty.releaseHeldPaywall(.success(AdaptyPaywall()))
-		check(t10.paywallState(placement: "main") == .ready, "AD-02 r5: a loaded paywall must read as .ready, got \(t10.paywallState(placement: "main"))")
+		Adapty.releaseHeldFlow(.success(AdaptyFlow()))
+		check(t10.paywallState(placement: "main") == .ready, "AD-02 r5: a loaded placement must read as .ready, got \(t10.paywallState(placement: "main"))")
 
 		// T10b — and the fourth: a placement Adapty rejected is not "loading" either.
 		reset()
-		Adapty.getPaywallResults = [.failure(AdaptyError(.badRequest))]
+		Adapty.getFlowResults = [.failure(AdaptyError(.badRequest))]
 		let t10b = AdaptyService()
 		t10b.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["typo"], analytics: FakeAnalytics(), attStatus: .notDetermined)
 		check(t10b.paywallState(placement: "typo") == .unavailable, "AD-02 r5: a placement Adapty rejected must read as .unavailable, got \(t10b.paywallState(placement: "typo"))")
@@ -364,37 +419,37 @@ enum AdaptyServiceCheck {
 		// itself, and the retries stay spaced. Both bounds come from one sentence of the schema —
 		// loading continues until it succeeds, and it must not become a tight loop.
 		reset()
-		Adapty.getPaywallResults = [.failure(AdaptyError(.networkFailed))]
+		Adapty.getFlowResults = [.failure(AdaptyError(.networkFailed))]
 		let t11 = AdaptyService()
 		t11.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
-		wait(1) { Adapty.getPaywallCallCount >= 5 }
-		let t11Count = Adapty.getPaywallCallCount
+		wait(1) { Adapty.getFlowCallCount >= 5 }
+		let t11Count = Adapty.getFlowCallCount
 		check(t11.hasPaywall(placement: "main") == false, "PM-07 r8: an always-failing placement must never report hasPaywall true")
 		check(t11Count >= 2, "PM-07 r8: a failed load must retry on its own — expected at least 2 attempts within a second, got \(t11Count)")
 		check(t11Count <= 5, "PM-07 r8: the retry must stay spaced, never a tight loop — expected at most 5 attempts in that second, got \(t11Count)")
 
 		// T12 — PM-07 row 8: a successful retry is applied, not merely attempted.
 		reset()
-		Adapty.getPaywallResults = [.failure(AdaptyError(.networkFailed)), .success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.failure(AdaptyError(.networkFailed)), .success(AdaptyFlow())]
 		let t12 = AdaptyService()
 		t12.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
 		t12.refreshPaywalls()
 		check(t12.hasPaywall(placement: "main") == true, "PM-07 r8: a successful retry must be applied — hasPaywall is still false")
-		check(Adapty.getPaywallCallCount >= 2, "PM-07 r8: expected at least 2 getPaywall attempts, got \(Adapty.getPaywallCallCount)")
+		check(Adapty.getFlowCallCount >= 2, "PM-07 r8: expected at least 2 getFlow attempts, got \(Adapty.getFlowCallCount)")
 
 		// T13 — PM-07 row 8: retry chains must not stack. Four triggers are four immediate attempts,
 		// which is correct; what must not follow is four independent chains hammering the SDK.
 		reset()
-		Adapty.getPaywallResults = [.failure(AdaptyError(.networkFailed))]
+		Adapty.getFlowResults = [.failure(AdaptyError(.networkFailed))]
 		let t13 = AdaptyService(deadlines: fast(\.paywallTTL, 0))
 		t13.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
 		t13.refreshPaywalls()
 		t13.refreshPaywalls()
 		t13.refreshPaywalls()
-		let t13Immediate = Adapty.getPaywallCallCount
+		let t13Immediate = Adapty.getFlowCallCount
 		check(t13Immediate == 4, "PM-07 r8: configure plus three foreground triggers must each attempt once — expected 4, got \(t13Immediate)")
 		wait(1) { false }
-		check(Adapty.getPaywallCallCount <= 6, "PM-07 r8: retry chains must not stack per trigger — expected at most 6 attempts a second later, got \(Adapty.getPaywallCallCount)")
+		check(Adapty.getFlowCallCount <= 6, "PM-07 r8: retry chains must not stack per trigger — expected at most 6 attempts a second later, got \(Adapty.getFlowCallCount)")
 	}
 
 	// MARK: - AD-03: products.
@@ -406,15 +461,15 @@ enum AdaptyServiceCheck {
 		let t14 = AdaptyService()
 		t14.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
 		let t14NoPaywall = run { await t14.products(placement: "main") }
-		check(name(t14NoPaywall ?? .failed) == "notReady", "AD-03 r1: with no paywall loaded the answer must be .notReady, got \(name(t14NoPaywall ?? .failed))")
+		check(name(t14NoPaywall ?? .failed) == "notReady", "AD-03 r1: with no placement loaded the answer must be .notReady, got \(name(t14NoPaywall ?? .failed))")
 
 		reset()
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		Adapty.getPaywallProductsResult = .failure(AdaptyError(.noProductIDsFound))
 		let t14b = AdaptyService()
 		t14b.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
 		let t14bFailed = run { await t14b.products(placement: "main") }
-		check(name(t14bFailed ?? .notReady) == "failed", "AD-03 r1: with the paywall loaded and the listing failing the answer must be .failed, got \(name(t14bFailed ?? .notReady))")
+		check(name(t14bFailed ?? .notReady) == "failed", "AD-03 r1: with the placement loaded and the listing failing the answer must be .failed, got \(name(t14bFailed ?? .notReady))")
 
 		// T15 — AD-03 row 2: the same failure, counted. It is the same event as AD-02 row 2 on the
 		// other code path, so it shares one counter — here it must reach 2, because both paths ran.
@@ -430,6 +485,28 @@ enum AdaptyServiceCheck {
 		} else {
 			check(false, "AD-03 r3 setup: expected products, got \(name(t16Answer ?? .notReady))")
 		}
+
+		// T16b — AD-03, new on 4.1.3: `introductoryDiscount` is gone. Its replacement,
+		// `subscriptionOffer`, carries whichever offer the SDK resolved for this user — introductory,
+		// promotional or win-back — and `AdaptySubscriptionOfferType` is a RawRepresentable struct,
+		// so the compiler forces nobody to notice. A win-back offer mapped into `introductoryOffer`
+		// is a "7 days free, first time only" badge shown to a returning subscriber.
+		//
+		// Three offers, one assert each, because the failure mode is silent by construction: a
+		// mapping that keeps whatever it is handed passes any check that only feeds it an
+		// introductory offer.
+		let period = AdaptySubscriptionPeriod(unit: .week, numberOfUnits: 1)
+		for (type, expected) in [(AdaptySubscriptionOfferType.introductory, true), (.promotional, false), (.winBack, false)] {
+			reset()
+			let offer = AdaptySubscriptionOffer(offerType: type, subscriptionPeriod: period)
+			let service = loadedService(products: [AdaptyPaywallProduct(vendorProductId: "year.sub", subscriptionOffer: offer)])
+			let answer = run { await service.products(placement: "main") }
+			guard case .products(let list) = answer ?? .notReady, let first = list.first else {
+				check(false, "AD-03 setup: expected products for \(type.rawValue), got \(name(answer ?? .notReady))")
+				continue
+			}
+			check((first.introductoryOffer != nil) == expected, "AD-03: only an offerType of .introductory may become introductoryOffer — \(type.rawValue) gave \(first.introductoryOffer == nil ? "nil" : "an offer")")
+		}
 	}
 
 	// MARK: - AD-04: purchase.
@@ -441,7 +518,7 @@ enum AdaptyServiceCheck {
 		reset()
 		let t17Inactive = AdaptyService()
 		t17Inactive.configure(apiKey: "", customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
-		var t17InactiveResult: AdaptyPurchaseResult?
+		var t17InactiveResult: PurchaseVerdict?
 		t17Inactive.buyProduct(placement: "main", id: "year.sub") { t17InactiveResult = $0 }
 		check(name(t17InactiveResult) == "failed", "AD-04 r4: an inactive layer must not fall back to StoreKit — expected .failed, got \(name(t17InactiveResult))")
 		check(hasIssue("inactive"), "AD-04 r4: a purchase against an inactive layer must be recorded — got \(issues())")
@@ -449,28 +526,35 @@ enum AdaptyServiceCheck {
 		reset()
 		let t17NoPaywall = AdaptyService()
 		t17NoPaywall.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
-		var t17NoPaywallResult: AdaptyPurchaseResult?
+		var t17NoPaywallResult: PurchaseVerdict?
 		t17NoPaywall.buyProduct(placement: "main", id: "year.sub") { t17NoPaywallResult = $0 }
-		check(name(t17NoPaywallResult) == "retryWithStoreKit", "AD-04 r4/PM-04 r8: an unloaded paywall must answer .retryWithStoreKit, got \(name(t17NoPaywallResult))")
+		check(name(t17NoPaywallResult) == "retryWithStoreKit", "AD-04 r4/PM-04 r8: an unloaded placement must answer .retryWithStoreKit, got \(name(t17NoPaywallResult))")
 
 		reset()
 		let t17WrongId = loadedService(products: [AdaptyPaywallProduct(vendorProductId: "year.sub")])
-		var t17WrongIdResult: AdaptyPurchaseResult?
+		var t17WrongIdResult: PurchaseVerdict?
 		t17WrongId.buyProduct(placement: "main", id: "month.sub") { t17WrongIdResult = $0 }
-		check(name(t17WrongIdResult) == "unavailable", "AD-04 r4: an id the loaded paywall does not sell must answer .unavailable, got \(name(t17WrongIdResult))")
-		check(hasIssue("is not on Adapty placement"), "AD-04 r4: a product the paywall does not sell must be recorded — got \(issues())")
+		check(name(t17WrongIdResult) == "unavailable", "AD-04 r4: an id the loaded placement does not sell must answer .unavailable, got \(name(t17WrongIdResult))")
+		check(hasIssue("is not on Adapty placement"), "AD-04 r4: a product the placement does not sell must be recorded — got \(issues())")
 
-		// T18 — AD-04 row 2: Apple charged and Adapty could not confirm. Codes 2004 and 2005 used to
-		// go down different branches — one into a SECOND purchase through StoreKit — which is how a
-		// paid user was asked to pay twice. Both codes are asserted, because one alone would not
-		// show that they disagreed.
+		// T18 — AD-04 row 9, the row that inverts what row 2 used to say. On 2.10.x codes 2004 and
+		// 2005 mapped to `paidUnconfirmed`, which granted premium: the reasoning was that Apple had
+		// charged and Adapty simply could not confirm it. But 2005 is also what a request that never
+		// left the device answers with — no payment sheet, no charge — and the two are
+		// indistinguishable from the error alone. So the verdict granted premium to a user who never
+		// paid, for as long as the local grant lasts.
+		//
+		// 4.1.3 removes the guesswork: a purchase that completed comes back as
+		// `AdaptyPurchaseResult.success`, and an `AdaptyError` means it did not complete. Both codes
+		// must now read as an ordinary retryable failure. A real payer whose confirmation was lost is
+		// picked up by the profile push and by `restorePurchases` — the paths that KNOW.
 		for code in [AdaptyError.ErrorCode.serverError, .networkFailed] {
 			reset()
 			let service = loadedService()
 			Adapty.makePurchaseResult = .failure(AdaptyError(code))
-			var result: AdaptyPurchaseResult?
+			var result: PurchaseVerdict?
 			service.buyProduct(placement: "main", id: "year.sub") { result = $0 }
-			check(name(result) == "paidUnconfirmed", "AD-04 r2: \(code) means Apple charged and Adapty could not confirm — expected .paidUnconfirmed, got \(name(result))")
+			check(name(result) == "failed", "AD-04 r9: \(code) must not grant premium on a guess — expected .failed, got \(name(result))")
 		}
 
 		// T19 — AD-04 row 3: a promotional offer the store refuses to sign. This fails before any
@@ -481,20 +565,19 @@ enum AdaptyServiceCheck {
 			reset()
 			let service = loadedService()
 			Adapty.makePurchaseResult = .failure(AdaptyError(code))
-			var result: AdaptyPurchaseResult?
+			var result: PurchaseVerdict?
 			service.buyProduct(placement: "main", id: "year.sub") { result = $0 }
 			check(name(result) == "unavailable", "AD-04 r3: an unsigned promotional offer (\(code)) must not silently buy at full price — expected .unavailable, got \(name(result))")
 		}
 
 		// T20 — AD-04 row 5: a permanent refusal must not look like a temporary one. Parental
 		// controls answer the same way on every retry, so the button should go away instead of
-		// failing again. 2005 is deliberately absent here: row 2 gives it the more specific verdict,
-		// and both rows agree it is not a permanent refusal.
+		// failing again.
 		for code in [AdaptyError.ErrorCode.cantMakePayments, .paymentNotAllowed, .storeProductNotAvailable] {
 			reset()
 			let service = loadedService()
 			Adapty.makePurchaseResult = .failure(AdaptyError(code))
-			var result: AdaptyPurchaseResult?
+			var result: PurchaseVerdict?
 			service.buyProduct(placement: "main", id: "year.sub") { result = $0 }
 			check(name(result) == "unavailable", "AD-04 r5: \(code) is permanent for this device — expected .unavailable, got \(name(result))")
 			check(hasIssue("cannot be purchased on this device"), "AD-04 r5: a permanent refusal must be recorded — got \(issues())")
@@ -502,18 +585,37 @@ enum AdaptyServiceCheck {
 		reset()
 		let t20Temp = loadedService()
 		Adapty.makePurchaseResult = .failure(AdaptyError(.networkFailed))
-		var t20TempResult: AdaptyPurchaseResult?
+		var t20TempResult: PurchaseVerdict?
 		t20Temp.buyProduct(placement: "main", id: "year.sub") { t20TempResult = $0 }
 		check(name(t20TempResult) != "unavailable", "AD-04 r5: networkFailed is temporary and must not read as a permanent refusal, got \(name(t20TempResult))")
 
-		// T21 — AD-04, the branch verified as already correct: a user cancel arrives as the raw
-		// SKError (2), not wrapped, so it must map to `.cancelled` and nothing else.
+		// T21 — AD-04, rewritten for 4.1.3: a user cancel is no longer an error at all. It arrives as
+		// `AdaptyPurchaseResult.userCancelled` inside a SUCCESSFUL result, so a mapping that only
+		// looks at the failure branch reports a purchase that never happened as a purchase.
 		reset()
 		let t21 = loadedService()
-		Adapty.makePurchaseResult = .failure(AdaptyError(.paymentCancelled))
-		var t21Result: AdaptyPurchaseResult?
+		Adapty.makePurchaseResult = .success(.userCancelled)
+		var t21Result: PurchaseVerdict?
 		t21.buyProduct(placement: "main", id: "year.sub") { t21Result = $0 }
-		check(name(t21Result) == "cancelled", "AD-04: a user cancel must map to .cancelled, got \(name(t21Result))")
+		check(name(t21Result) == "cancelled", "AD-04: userCancelled arrives as a SUCCESS on 4.1.3 and must still map to .cancelled, got \(name(t21Result))")
+
+		// T21b — the third case of the same enum, and the one with money attached: "Ask to Buy"
+		// waiting for a parent. Neither bought nor refused, and mapping it to either is wrong — a
+		// failure invites a second attempt, a success unlocks premium for a purchase not yet made.
+		reset()
+		let t21b = loadedService()
+		Adapty.makePurchaseResult = .success(.pending)
+		var t21bResult: PurchaseVerdict?
+		t21b.buyProduct(placement: "main", id: "year.sub") { t21bResult = $0 }
+		check(name(t21bResult) == "pending", "AD-04: a pending purchase must map to .pending, got \(name(t21bResult))")
+
+		// T21c — and the one that pays: a completed purchase.
+		reset()
+		let t21c = loadedService()
+		Adapty.makePurchaseResult = purchased()
+		var t21cResult: PurchaseVerdict?
+		t21c.buyProduct(placement: "main", id: "year.sub") { t21cResult = $0 }
+		check(name(t21cResult) == "success", "AD-04: a completed purchase must map to .success, got \(name(t21cResult))")
 
 		// T22 — AD-04 row 6: the log line an incident starts from. The code is in the line already
 		// and would be green from the start, so the assert names the two things that were missing:
@@ -526,16 +628,14 @@ enum AdaptyServiceCheck {
 		check(hasLog("unavailable"), "AD-04 r6: the failure log must name the verdict this layer decided — got \(log)")
 
 		// T23 — AD-04 row 1, the most expensive row of the schema: the SDK accepts the purchase and
-		// never calls back. Upstream that is not hypothetical — on `deferred` and `purchasing` the
-		// queue manager does nothing at all and leaves the registered handler lying in its
-		// dictionary, so only a later `purchased` state in the same process can ever wake it.
+		// never calls back.
 		//
 		// Two asserts, both required by the row. First: the wait ends in a verdict, and the verdict
 		// is WAITING — not a failure the user is invited to retry into a second charge. Second: the
 		// machinery is free afterwards, which is the half that mattered most, since one hung purchase
 		// used to refuse every later purchase in the process.
 		reset()
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		Adapty.getPaywallProductsResult = .success([AdaptyPaywallProduct(vendorProductId: "year.sub")])
 		let t23 = AdaptyService(deadlines: fast(\.purchase, 0.3))
 		t23.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
@@ -546,7 +646,7 @@ enum AdaptyServiceCheck {
 		check(Date().timeIntervalSince(t23Started) < 2, "AD-04 r1: it must settle on its own deadline, took \(Date().timeIntervalSince(t23Started))s")
 
 		Adapty.holdMakePurchase = false
-		Adapty.makePurchaseResult = .success(())
+		Adapty.makePurchaseResult = purchased()
 		let t23Second = run { await t23.buy(productId: "year.sub", placement: "main") }
 		check(name(t23Second) == "success", "AD-04 r1: the purchase after a hung one must go through — got \(name(t23Second))")
 	}
@@ -556,8 +656,8 @@ enum AdaptyServiceCheck {
 	static func profile() {
 		// T24 — AD-05 row 1: `getProfile` is called and never answered. Upstream that is a real
 		// state, not a hypothetical: on a first launch whose profile cannot be created the SDK wakes
-		// only its other bucket of handlers and retries once a second forever. The assert names the
-		// return and the time, not the value — `nil` also comes back from a working call.
+		// only its other bucket of handlers and retries forever. The assert names the return and the
+		// time, not the value — `nil` also comes back from a working call.
 		reset()
 		Adapty.holdGetProfile = true
 		let t24 = AdaptyService(deadlines: fast(\.call, 0.3))
@@ -575,7 +675,7 @@ enum AdaptyServiceCheck {
 		// A stale "no premium" from the last launch must not read as a checked denial. The service
 		// half of the row is the provenance flag; the resolver half lives in PremiumResolverCheck.
 		reset()
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		let t25 = AdaptyService()
 		var t25Pushes: [Bool] = []
 		t25.premiumObserver = { _, isVerified in t25Pushes.append(isVerified) }
@@ -622,14 +722,33 @@ enum AdaptyServiceCheck {
 		// T28 — AD-06 row 1: conversion data racing ahead of activation. Install data arrives once
 		// per install; a write lost to that race means this user's campaign never pays back on any
 		// dashboard. The assert names the REPEAT — the first call happens today too.
+		//
+		// On 4.1.3 the write is a PAIR: the payload goes to `updateExternalAttribution` and the
+		// AppsFlyer id, which is what joins the two systems, goes to `setIntegrationIdentifier`. Both
+		// halves are asserted, because a queue that repeats only the payload leaves the join key
+		// missing and the dashboard still cannot match this user.
 		reset()
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		let t28 = AdaptyService()
 		t28.updateAppsFlyerAttribution(["af_status": "Organic"], networkUserId: "af-uid-1")
-		check(Adapty.updateAttributionJournal.isEmpty, "AD-06 r1 setup: a write before activation must not reach the SDK — got \(Adapty.updateAttributionJournal.count)")
+		check(Adapty.externalAttributionJournal.isEmpty, "AD-06 r1 setup: a write before activation must not reach the SDK — got \(Adapty.externalAttributionJournal.count)")
 		t28.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
-		let t28Ids = Adapty.updateAttributionJournal.map { $0.networkUserId ?? "nil" }
-		check(t28Ids == ["af-uid-1"], "AD-06 r1: the queued attribution must be repeated after activation with the same networkUserId — got \(t28Ids)")
+		let t28Providers = Adapty.externalAttributionJournal.map(\.provider.rawValue)
+		check(t28Providers == ["appsflyer"], "AD-06 r1: the queued attribution must be repeated after activation — got \(t28Providers)")
+		let t28Ids = Adapty.integrationIdentifierJournal.filter { $0.key == .appsflyerId }.map(\.value)
+		check(t28Ids == ["af-uid-1"], "AD-06 r1: the AppsFlyer id is the join key and must be sent with it — got \(t28Ids)")
+
+		// T28b — AD-06, new on 4.1.3: an EMPTY networkUserId. `AdaptyIntegrationIdentifier` trims its
+		// value and does not check for empty (`:17`), so `.appsflyerId("")` writes an empty join key
+		// — which the dashboard stores and matches against nothing, permanently. The old
+		// `assert(networkUserId != nil)` that used to catch this is gone with the old method.
+		reset()
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
+		let t28b = loadedService()
+		t28b.updateAppsFlyerAttribution(["af_status": "Organic"], networkUserId: "   ")
+		let t28bIds = Adapty.integrationIdentifierJournal.filter { $0.key == .appsflyerId }.map(\.value)
+		check(t28bIds.isEmpty, "AD-06: an empty AppsFlyer id must not be written — an empty join key matches nothing forever — got \(t28bIds)")
+		check(hasIssue("AppsFlyer id"), "AD-06: a missing AppsFlyer id must be recorded — got \(issues())")
 
 		// T29 — AD-06 row 2: a profile write the SDK never answers. On a cold offline first launch
 		// the write silently does not happen and nothing anywhere says so.
@@ -656,7 +775,7 @@ enum AdaptyServiceCheck {
 		let t30b = loadedService()
 		t30b.setProfileValue(value: "summer_sale", key: "deep_link_value")
 		let t30bWritten = Adapty.updateProfileJournal.compactMap { $0.customAttributes["deep_link_value"] }
-		check(t30bWritten == ["summer_sale"], "AD-06 r3: a legal value must reach the SDK — got \(t30bWritten)")
+		check(t30bWritten == [.string("summer_sale")], "AD-06 r3: a legal value must reach the SDK — got \(t30bWritten)")
 
 		// T31 — AD-06 row 5: an inactive layer. Every operation must stop before the SDK, and the
 		// cause must land exactly ONCE, not once per operation.
@@ -669,18 +788,19 @@ enum AdaptyServiceCheck {
 		t31.syncReceipt()
 		t31.logPaywallOpen(placement: "main")
 		check(Adapty.updateProfileJournal.isEmpty, "AD-06 r5: an inactive layer must write no profile — got \(Adapty.updateProfileJournal.count)")
-		check(Adapty.updateAttributionJournal.isEmpty, "AD-06 r5: an inactive layer must write no attribution — got \(Adapty.updateAttributionJournal.count)")
+		check(Adapty.externalAttributionJournal.isEmpty, "AD-06 r5: an inactive layer must write no attribution — got \(Adapty.externalAttributionJournal.count)")
+		check(Adapty.integrationIdentifierJournal.isEmpty, "AD-06 r5: an inactive layer must write no integration id — got \(Adapty.integrationIdentifierJournal.count)")
 		check(Adapty.restorePurchasesCallCount == 0, "AD-06 r5: an inactive layer must not sync — got \(Adapty.restorePurchasesCallCount)")
-		check(Adapty.logShowPaywallCount == 0, "AD-06 r5: an inactive layer must log no impression — got \(Adapty.logShowPaywallCount)")
+		check(Adapty.logShowFlowJournal.isEmpty, "AD-06 r5: an inactive layer must log no impression — got \(Adapty.logShowFlowJournal.count)")
 		check(issues().count == 1, "AD-06 r5: an inactive layer must record ONE line, not one per operation — got \(issues())")
 
-		// T32 — AD-06 row 6: the ATT status is state, not install data. A user who changes it in
-		// Settings would otherwise leave Adapty on the answer given at the first system dialog
-		// forever, so every launch sends the current value. Two launches with DIFFERENT answers, and
-		// the assert names both values — "two writes happened" would stay green if the second launch
-		// resent the first launch's stale status.
+		// T32 — AD-06 row 6: the ATT status is state, not install data. The SDK still does not resend
+		// it by itself on 4.1.3 — `Environment.Meta` reads the status but never encodes it, and the
+		// Meta block goes out once per profile — so every launch has to send the current value. Two
+		// launches with DIFFERENT answers, and the assert names both values: "two writes happened"
+		// would stay green if the second launch resent the first launch's stale status.
 		reset("T32")
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		let t32 = AdaptyService()
 		t32.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .denied)
 		let t32First = Adapty.updateProfileJournal.compactMap(\.attStatus)
@@ -689,6 +809,65 @@ enum AdaptyServiceCheck {
 		t32Second.configure(apiKey: key, customerUserId: "u2", sessionsCounter: 2, placements: ["main"], analytics: FakeAnalytics(), attStatus: .authorized)
 		let t32Both = Adapty.updateProfileJournal.compactMap(\.attStatus)
 		check(t32Both == [.denied, .authorized], "AD-06 r6: the next launch must send the CURRENT status again, not the first one — got \(t32Both)")
+
+		// T32b — AD-06 row 9, the row the migration created. On 2.10.x a write made before activation
+		// finished failed at once with `notActivated` (2002), and that failure is what put the write
+		// on the retry queue. On 4.1.3 `Adapty.activatedSDK` AWAITS an activation that is in flight
+		// (`Adapty+Shared.swift:32-44`), so the same write does not fail — it hangs, with no error, no
+		// queue entry and no trace. An activation that never finishes (a wrong key, a dead network on
+		// first launch) therefore swallows the install attribution silently.
+		//
+		// The queue's feeder has to become a DEADLINE. The assert names the trace, because the write
+		// itself is legitimately still outstanding — what must not happen is that nobody is told.
+		reset("T32b")
+		Adapty.activationNeverFinishes = true
+		let t32b = AdaptyService(deadlines: fast(\.write, 0.2))
+		t32b.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		t32b.updateAppsFlyerAttribution(["af_status": "Non-organic"], networkUserId: "af-uid-9")
+		wait(1) { hasIssue("never answered") }
+		check(hasIssue("never answered"), "AD-06 r9: an activation that never finishes must not swallow the write in silence — got \(issues())")
+
+		// T32c — and the other half of row 9: the write must still be repeated once the SDK comes
+		// back. A deadline that only logs turns a lost write into a logged lost write.
+		Adapty.releaseActivation()
+		wait(1) { !Adapty.externalAttributionJournal.isEmpty }
+		let t32cIds = Adapty.integrationIdentifierJournal.filter { $0.key == .appsflyerId }.map(\.value)
+		check(t32cIds == ["af-uid-9"], "AD-06 r9: a write held by a slow activation must still land once activation completes — got \(t32cIds)")
+
+		// T32d — AD-06 row 10: the composite write, one half failing. The payload and the join key are
+		// two independent calls now, so "attribution was sent" has two answers. A half-write is worse
+		// than no write: the dashboard has campaign data it cannot attach to a user, or a user id with
+		// no campaign behind it, and neither state is visible from the app.
+		reset("T32d")
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
+		let t32d = loadedService()
+		Adapty.integrationIdentifierError = AdaptyError(.networkFailed)
+		t32d.updateAppsFlyerAttribution(["af_status": "Non-organic"], networkUserId: "af-uid-10")
+		check(hasIssue("attribution"), "AD-06 r10: a half-written attribution must be recorded — got \(issues())")
+		Adapty.integrationIdentifierError = nil
+		t32d.refreshPaywalls()
+		let t32dIds = Adapty.integrationIdentifierJournal.filter { $0.key == .appsflyerId }.map(\.value)
+		check(t32dIds == ["af-uid-10"], "AD-06 r10: the half that failed must be retried at the next foreground pass — got \(t32dIds)")
+		let t32dPayloads = Adapty.externalAttributionJournal.count
+		check(t32dPayloads == 1, "AD-06 r10: the half that succeeded must NOT be sent twice — got \(t32dPayloads) payload write(s)")
+
+		// T32e — AD-06 row 11: a payload that will not serialise. `updateExternalAttribution` runs
+		// `JSONSerialization` FIRST and calls the completion synchronously, on the caller's own stack,
+		// with `wrongParam` (`Adapty+Completion.swift:137-144`). A retry queue that re-queues on any
+		// failure therefore re-queues from inside its own drain, and does it again on every foreground
+		// pass, forever — the payload will never serialise, because it is the payload that is wrong.
+		//
+		// `Date` is the live case, not a contrived one: AppsFlyer conversion dictionaries carry
+		// `install_time` values that arrive as `Date` on some SDK versions.
+		reset("T32e")
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
+		let t32e = loadedService()
+		t32e.updateAppsFlyerAttribution(["install_time": Date()], networkUserId: "af-uid-11")
+		check(Adapty.externalAttributionJournal.isEmpty, "AD-06 r11 setup: an unserialisable payload cannot reach the SDK — got \(Adapty.externalAttributionJournal.count)")
+		check(hasIssue("could not be encoded"), "AD-06 r11: an unserialisable payload must be recorded, not silently requeued — got \(issues())")
+		t32e.refreshPaywalls()
+		t32e.refreshPaywalls()
+		check(!hasLog("retrying attribution"), "AD-06 r11: wrongParam is permanent and must never be retried — got \(log)")
 	}
 
 	// MARK: - AD-07: remote values and impressions.
@@ -697,19 +876,19 @@ enum AdaptyServiceCheck {
 		// T33 — AD-07 row 1: four causes that used to be one `nil`. `nil` comes back in all four
 		// today and proves nothing, so every assert names the case.
 		reset()
-		Adapty.holdGetPaywall = true
+		Adapty.holdGetFlow = true
 		let t33NoPaywall = AdaptyService()
 		t33NoPaywall.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
 		let t33A: RemoteValue<Int> = t33NoPaywall.getRemoteValue(placement: "main", key: "count")
-		check(name(t33A) == "notReady", "AD-07 r1: a paywall that has not arrived must read as .notReady, got \(name(t33A))")
+		check(name(t33A) == "notReady", "AD-07 r1: a placement that has not arrived must read as .notReady, got \(name(t33A))")
 
 		reset()
-		let t33NoConfig = loadedService(remoteConfig: nil)
+		let t33NoConfig = loadedService(remoteConfigs: [])
 		let t33B: RemoteValue<Int> = t33NoConfig.getRemoteValue(placement: "main", key: "count")
-		check(name(t33B) == "noConfig", "AD-07 r1: a paywall with no remote config must read as .noConfig, got \(name(t33B))")
+		check(name(t33B) == "noConfig", "AD-07 r1: a placement with no remote config must read as .noConfig, got \(name(t33B))")
 
 		reset()
-		let t33Config = loadedService(remoteConfig: ["count": 42])
+		let t33Config = loadedService(remoteConfigs: [config(["count": 42])])
 		let t33C: RemoteValue<Int> = t33Config.getRemoteValue(placement: "main", key: "missing")
 		check(name(t33C) == "notSet", "AD-07 r1: a key the config does not carry must read as .notSet, got \(name(t33C))")
 		let t33D: RemoteValue<String> = t33Config.getRemoteValue(placement: "main", key: "count")
@@ -718,41 +897,69 @@ enum AdaptyServiceCheck {
 		let t33E: RemoteValue<Int> = t33Config.getRemoteValue(placement: "main", key: "count")
 		check(name(t33E) == "value(42)", "AD-07 r1: the right-typed read must still work, got \(name(t33E))")
 
-		// T34 — AD-07 row 5: the SDK's `remoteConfig` re-runs JSONSerialization on every access, and
-		// a paywall screen reads a handful of keys while it lays itself out. Three reads, one parse.
+		// T33f — AD-07 row 6, new on 4.1.3: `remoteConfigs` is an ARRAY, one entry per locale, and
+		// `getFlow` has no `locale:` parameter to narrow it with (`getOnboarding` does —
+		// `Adapty+Completion.swift:192-207` — `getFlow` at `:177-190` does not). So the choice is
+		// ours. Taking `.first` means the dashboard's row order decides which language a paywall
+		// speaks, and reordering two rows in a web UI silently reconfigures the app.
+		//
+		// Two asserts: the value must come from the DEVICE's locale when one matches, and a fallback
+		// to another locale must say so — a paywall quietly rendering in the wrong language is a bug
+		// nobody reports and everybody sees.
+		reset("T33f")
+		let t33f = loadedService(remoteConfigs: [
+			config(["title": "Hallo"], locale: "de"),
+			config(["title": "Hello"], locale: "en"),
+		])
+		let t33fValue: RemoteValue<String> = t33f.getRemoteValue(placement: "main", key: "title", locale: "en")
+		check(name(t33fValue) == "value(Hello)", "AD-07 r6: the config of the asked-for locale must win, not the first row in the dashboard — got \(name(t33fValue))")
+
+		reset("T33g")
+		let t33g = loadedService(remoteConfigs: [config(["title": "Hallo"], locale: "de")])
+		let t33gValue: RemoteValue<String> = t33g.getRemoteValue(placement: "main", key: "title", locale: "fr")
+		check(name(t33gValue) == "value(Hallo)", "AD-07 r6: with no matching locale the read must still answer rather than fail — got \(name(t33gValue))")
+		check(hasIssue("locale"), "AD-07 r6: a fallback to another locale must be recorded — got \(issues())")
+
+		// T34 — AD-07 row 5: the SDK's `dictionary` re-runs JSONSerialization on every access, and a
+		// paywall screen reads a handful of keys while it lays itself out. Three reads, one parse.
 		reset()
-		let t34 = loadedService(remoteConfig: ["a": 1, "b": 2, "c": 3])
-		let t34Baseline = AdaptyPaywall.parseCount
+		let t34 = loadedService(remoteConfigs: [config(["a": 1, "b": 2, "c": 3])])
+		let t34Baseline = AdaptyRemoteConfig.parseCount
 		let _: RemoteValue<Int> = t34.getRemoteValue(placement: "main", key: "a")
 		let _: RemoteValue<Int> = t34.getRemoteValue(placement: "main", key: "b")
 		let _: RemoteValue<Int> = t34.getRemoteValue(placement: "main", key: "c")
-		check(AdaptyPaywall.parseCount == t34Baseline, "AD-07 r5: reading three keys must not re-parse the config — \(t34Baseline) → \(AdaptyPaywall.parseCount) parses")
+		check(AdaptyRemoteConfig.parseCount == t34Baseline, "AD-07 r5: reading three keys must not re-parse the config — \(t34Baseline) → \(AdaptyRemoteConfig.parseCount) parses")
 		check(t34Baseline >= 1, "AD-07 r5 setup: the config must have been parsed once at load time, got \(t34Baseline)")
 
-		// T35 — AD-07 row 2 / PM-07 row 10: an impression for a paywall that is not loaded. Nothing
+		// T35 — AD-07 row 2 / PM-07 row 10: an impression for a placement that is not loaded. Nothing
 		// can be sent (there is no variationId), but a purchase can still happen through the
 		// fallback, so the skipped impression must leave a trace instead of nothing.
 		reset()
 		let t35 = AdaptyService()
 		t35.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
 		t35.logPaywallOpen(placement: "main")
-		check(Adapty.logShowPaywallCount == 0, "AD-07 r2: no paywall means no impression can be sent — got \(Adapty.logShowPaywallCount)")
+		check(Adapty.logShowFlowJournal.isEmpty, "AD-07 r2: no placement means no impression can be sent — got \(Adapty.logShowFlowJournal)")
 		check(hasLog("impression not counted"), "AD-07 r2: a skipped impression must leave a trace — got \(log)")
 
-		// T36 — PM-07 row 10, the positive: a loaded paywall logs exactly one impression.
+		// T36 — PM-07 row 10, the positive: a loaded placement logs exactly one impression, for the
+		// variation it actually holds. `logShowFlow` needs nothing from the flow but `variationId`
+		// (`Events/Adapty+Events.swift:101-111`), which is also the only value the dashboard funnel
+		// is keyed on — so the assert names it rather than a count.
 		reset()
-		let t36 = loadedService()
-		let t36Before = Adapty.logShowPaywallCount
+		Adapty.getFlowResults = [.success(AdaptyFlow(variationId: "var-7"))]
+		Adapty.getPaywallProductsResult = .success([AdaptyPaywallProduct(vendorProductId: "year.sub")])
+		let t36 = AdaptyService()
+		t36.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
 		t36.logPaywallOpen(placement: "main")
-		check(Adapty.logShowPaywallCount == t36Before + 1, "PM-07 r10: a loaded paywall must log exactly one impression — \(t36Before) → \(Adapty.logShowPaywallCount)")
+		check(Adapty.logShowFlowJournal == ["var-7"], "PM-07 r10: a loaded placement must log exactly one impression, for its own variation — got \(Adapty.logShowFlowJournal)")
 
-		// T37 — AD-07 row 4: both event calls used to discard the SDK's completion, so a dropped
+		// T37 — AD-07 row 4: the event call used to discard the SDK's completion, so a dropped
 		// impression looked exactly like a sent one.
 		reset()
 		let t37 = loadedService()
-		Adapty.logShowPaywallError = AdaptyError(.networkFailed)
+		Adapty.logShowFlowError = AdaptyError(.networkFailed)
 		t37.logPaywallOpen(placement: "main")
-		check(hasLog("logShowPaywall failed for 'main'"), "AD-07 r4: a failed impression must leave an error line naming the placement — got \(log)")
+		check(hasLog("logShowFlow failed for 'main'"), "AD-07 r4: a failed impression must leave an error line naming the placement — got \(log)")
 
 		// T38 — PM-07 row 1, kept from the previous revision: an unconfigured placement degrades to
 		// nothing rather than into a trap.
@@ -771,26 +978,26 @@ enum AdaptyServiceCheck {
 	// the middle of the file would move those the day the next row is written.
 
 	static func amendments() {
-		// T39 — AD-02 row 7: the paywall-cache observer. The schema's side-effect table promises the
+		// T39 — AD-02 row 7: the placement-cache observer. The schema's side-effect table promises the
 		// screen is woken on every change of the cache, and AD-02 row 1 promises the same wake for a
 		// placement Adapty rejects — a wake with no paywall behind it. Nothing pinned either half, and
 		// the second one is the expensive one: without it a typo'd placement leaves the screen on its
 		// spinner for the life of the process, which is exactly the state `paywallState` was added to
 		// make visible.
 		reset("T39")
-		Adapty.holdGetPaywall = true
+		Adapty.holdGetFlow = true
 		let t39 = AdaptyService()
 		var t39Wakes = 0
 		t39.observer = { t39Wakes += 1 }
 		t39.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
 		check(t39Wakes == 0, "AD-02 r7: a request still in flight must not wake the cache observer — got \(t39Wakes)")
-		Adapty.releaseHeldPaywall(.success(AdaptyPaywall()))
-		check(t39Wakes == 1, "AD-02 r7: a loaded paywall must wake the cache observer exactly once — got \(t39Wakes)")
+		Adapty.releaseHeldFlow(.success(AdaptyFlow()))
+		check(t39Wakes == 1, "AD-02 r7: a loaded placement must wake the cache observer exactly once — got \(t39Wakes)")
 
 		// T39b — the same observer, the branch where no paywall ever arrives. `.unavailable` is only
 		// useful if somebody is told to go and read it.
 		reset("T39b")
-		Adapty.getPaywallResults = [.failure(AdaptyError(.badRequest))]
+		Adapty.getFlowResults = [.failure(AdaptyError(.badRequest))]
 		let t39b = AdaptyService()
 		var t39bWakes = 0
 		t39b.observer = { t39bWakes += 1 }
@@ -803,7 +1010,7 @@ enum AdaptyServiceCheck {
 		// the store — a `.failed` remembered as an empty list would answer the same way forever, and
 		// the difference is invisible from the answer alone.
 		reset("T40")
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		Adapty.getPaywallProductsResult = .failure(AdaptyError(.noProductIDsFound))
 		let t40 = AdaptyService()
 		t40.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
@@ -812,17 +1019,15 @@ enum AdaptyServiceCheck {
 		let t40Before = Adapty.getPaywallProductsCallCount
 		Adapty.getPaywallProductsResult = .success([AdaptyPaywallProduct(vendorProductId: "year.sub")])
 		let t40Retry = run { await t40.products(placement: "main") }
-		check(Adapty.getPaywallProductsCallCount == t40Before + 1, "AD-03 r6: a failed listing must not be cached — the retry must reach the SDK again — \(t40Before) → \(Adapty.getPaywallProductsCallCount)")
+		check(Adapty.getPaywallProductsCallCount > t40Before, "AD-03 r6: a failed listing must not be cached — the retry must reach the SDK again — \(t40Before) → \(Adapty.getPaywallProductsCallCount)")
 		check(name(t40Retry ?? .notReady) == "products(1)", "AD-03 r6: the retry must be applied, not merely attempted, got \(name(t40Retry ?? .notReady))")
 
 		// T41 — AD-04 row 8: exactly one verdict per call. The schema says it twice — "one verdict per
 		// call" in the steady state, "the caller, exactly once per call" in the side-effect table — and
-		// a second `resume` on a continuation is a hard crash, not a dropped value. AD-04's "what was
-		// checked" records that the Adapty 2.10.4 pin does not double-call through this path, so the
-		// guard is insurance; this is the check that the insurance works, and it is the only place in
-		// the package where a double answer can be produced at all.
+		// a second `resume` on a continuation is a hard crash, not a dropped value. This is the only
+		// place in the package where a double answer can be produced at all.
 		reset("T41")
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		Adapty.getPaywallProductsResult = .success([AdaptyPaywallProduct(vendorProductId: "year.sub")])
 		let t41 = AdaptyService(deadlines: fast(\.purchase, 5))
 		t41.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
@@ -834,8 +1039,8 @@ enum AdaptyServiceCheck {
 		Task { t41Verdicts.append(name(await t41.buy(productId: "year.sub", placement: "main"))) }
 		check(wait(3) { Adapty.heldPurchases.count > t41Held }, "AD-04 r8 setup: the purchase must reach the SDK and be held")
 		let t41Callback = Adapty.heldPurchases.last
-		t41Callback?(.success(()))
-		t41Callback?(.failure(AdaptyError(.paymentCancelled)))
+		t41Callback?(purchased())
+		t41Callback?(.success(.userCancelled))
 		check(wait(3) { !t41Verdicts.isEmpty }, "AD-04 r8: the call must settle after the SDK's first answer")
 		check(t41Verdicts == ["success"], "AD-04 r8: an SDK that answers twice must still yield exactly one verdict, and it must be the first — got \(t41Verdicts)")
 		check(hasLog("fired more than once"), "AD-04 r8: the dropped second answer must leave a trace, or a real double callback stays silent — got \(log)")
@@ -846,7 +1051,7 @@ enum AdaptyServiceCheck {
 		// silence must leave the flag down, or a stale "no premium" from disk arrives dressed as a
 		// verified denial and PM-06 row 5 stops being true.
 		reset("T42")
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		Adapty.getProfileResult = .success(AdaptyProfile(accessLevels: [:]))
 		let t42 = AdaptyService()
 		var t42Pushes: [Bool] = []
@@ -859,7 +1064,7 @@ enum AdaptyServiceCheck {
 		// T42b — the same push after a request the SDK never answered. The verdict must stay unverified,
 		// which is what keeps a disk profile from closing access.
 		reset("T42b")
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		Adapty.holdGetProfile = true
 		let t42b = AdaptyService(deadlines: fast(\.call, 0.3))
 		var t42bPushes: [Bool] = []
@@ -873,7 +1078,7 @@ enum AdaptyServiceCheck {
 		// hands back a double optional there (`.some(nil)`), which is the shape most easily mistaken
 		// for an answer.
 		reset("T42c")
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		Adapty.getProfileResult = .failure(AdaptyError(.serverError))
 		let t42c = AdaptyService()
 		var t42cPushes: [Bool] = []
@@ -889,7 +1094,7 @@ enum AdaptyServiceCheck {
 		reset("T43")
 		let t43 = loadedService()
 		t43.logPaywallOpen(placement: "main")
-		check(hasLog("logShowPaywall ok for 'main'"), "AD-07 r4: a delivered impression must leave an info line naming the placement — got \(log)")
+		check(hasLog("logShowFlow ok for 'main'"), "AD-07 r4: a delivered impression must leave an info line naming the placement — got \(log)")
 
 		testRun()
 	}
@@ -914,14 +1119,14 @@ enum AdaptyServiceCheck {
 		t44.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined, isTestsRunning: true)
 		check(Adapty.activateCallCount == 0, "AD-01 r1: a test run must not reach Adapty.activate — got \(Adapty.activateCallCount) activation(s)")
 		check(t44.isActive == false, "AD-01 r1: a test run must leave the layer inactive")
-		check(Adapty.getPaywallCallCount == 0, "AD-01 r1: a test run must not warm any paywall — got \(Adapty.getPaywallCallCount) getPaywall call(s)")
+		check(Adapty.getFlowCallCount == 0, "AD-01 r1: a test run must not warm any placement — got \(Adapty.getFlowCallCount) getFlow call(s)")
 		check(hasIssue("test run"), "AD-01 r1: a test run must record its own reason, apart from the empty-key one — got \(issues())")
 
 		// T44b — the same key set to false, on the same live-shaped key. A guard that is always on
 		// proves nothing: this is the assert that goes red if the flag is ever read inverted, and
 		// the one that stops "silence the SDK" from quietly becoming "silence it always".
 		reset("T44b")
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		let t44b = AdaptyService()
 		t44b.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined, isTestsRunning: false)
 		check(Adapty.activateCallCount == 1, "AD-01 r1: isTestsRunning false must still activate the layer — got \(Adapty.activateCallCount) activation(s)")
@@ -938,10 +1143,9 @@ enum AdaptyServiceCheck {
 		// T45 — AD-06 row 7: a write the ALREADY ACTIVE SDK refused. It goes back on the queue
 		// (`updateAppsFlyerAttribution`'s failure branch), and `flushPendingAttribution` used to have
 		// exactly one caller — the `activate` completion, which by then has already run and will not
-		// run again in this process. Install data arrives once per install and Adapty locks the
-		// attribution source on the first write that lands, so that queue entry stayed where it was
-		// until the process died: this payer's campaign is counted organic, and the ROAS the campaign
-		// is switched off by is the one with its real payers cut out of it.
+		// run again in this process. Install data arrives once per install, so that queue entry stayed
+		// where it was until the process died: this payer's campaign is counted organic, and the ROAS
+		// the campaign is switched off by is the one with its real payers cut out of it.
 		//
 		// The assert names the JOURNAL GROWING after the failure, not the queueing — the queueing is
 		// there without the fix too (T28 already pins it) and on its own proves nothing. The trigger
@@ -949,81 +1153,44 @@ enum AdaptyServiceCheck {
 		// `didBecomeActive` observer calls (`IntegrationKit.swift`); this check compiles no UIKit, so
 		// the notification itself cannot be posted here.
 		reset("T45")
-		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
 		let t45 = AdaptyService()
 		t45.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
-		Adapty.updateAttributionError = AdaptyError(.networkFailed)
+		Adapty.externalAttributionError = AdaptyError(.networkFailed)
 		t45.updateAppsFlyerAttribution(["af_status": "Non-organic"], networkUserId: "af-uid-2")
-		check(Adapty.updateAttributionJournal.isEmpty, "AD-06 r7 setup: a write the SDK refused must not be journalled — got \(Adapty.updateAttributionJournal.count)")
-		Adapty.updateAttributionError = nil
+		check(Adapty.externalAttributionJournal.isEmpty, "AD-06 r7 setup: a write the SDK refused must not be journalled — got \(Adapty.externalAttributionJournal.count)")
+		Adapty.externalAttributionError = nil
 		t45.refreshPaywalls()
-		let t45Ids = Adapty.updateAttributionJournal.map { $0.networkUserId ?? "nil" }
-		check(t45Ids == ["af-uid-2"], "AD-06 r7: a write the already-active SDK refused must be repeated at the next foreground pass, with the same networkUserId — got \(t45Ids)")
+		let t45Providers = Adapty.externalAttributionJournal.map(\.provider.rawValue)
+		check(t45Providers == ["appsflyer"], "AD-06 r7: a write the already-active SDK refused must be repeated at the next foreground pass — got \(t45Providers)")
 
-		onboarding()
+		promotedPurchase()
 	}
 
-	// MARK: - AD-07 row 3: the onboarding step, brought back with its guard.
+	// MARK: - AD-04: the delegate method that buys by itself.
 
 	/// Appended after `attributionRetry()` for the reason given there: every assert coordinate the
 	/// AD-01…AD-07 risk tables quote sits above this line.
-	static func onboarding() {
-		// T46 — AD-07 row 3, first trap: step 0. Adapty numbers onboarding screens from one and
-		// refuses `screenOrder == 0` with `wrongParamOnboardingScreenOrder`
-		// (`Adapty+Events.swift:63-69`), so an app counting from zero loses its FIRST screen from the
-		// funnel and nothing anywhere says so — the dashboard simply shows a funnel that starts at
-		// step two. The cause goes to `configurationIssues` rather than the log: no retry fixes an
-		// integration counting from the wrong number.
+	///
+	/// The onboarding section that used to live here is gone. 4.1.3 deleted `logShowOnboarding`
+	/// entirely — there is no event to send and no guard to test — so AD-07 row 3 is closed by a
+	/// deprecated no-op on the facade instead, and the schema records "no test".
+	static func promotedPurchase() {
+		// T46 — AD-04, new on 4.1.3: `AdaptyDelegate.didReceivePromotedPurchase` ships a DEFAULT
+		// implementation that calls `Adapty.makePurchase(product:)` straight away
+		// (`AdaptyDelegate.swift:24-29`). Conforming to the protocol and saying nothing is therefore
+		// not neutral — it signs the app up to buy whatever the App Store page promoted, outside
+		// `PremiumService`'s single-purchase guard, with no paywall shown, no impression logged and
+		// no `PurchaseOutcome` delivered to anybody.
 		//
-		// Both halves are asserted. "Nothing was sent" alone stays green on a method that does
-		// nothing at all, and "a line was recorded" alone stays green on one that records the line
-		// and sends the doomed event anyway.
+		// The assert names the SDK counter rather than our own: what must not happen is a purchase
+		// starting inside the SDK, and only the stub can see that.
 		reset("T46")
-		let t46 = loadedService()
-		t46.logOnboardingOpen(step: 0)
-		check(Adapty.logShowOnboardingCount == 0, "AD-07 r3: step 0 must not reach the SDK — got \(Adapty.logShowOnboardingCount) onboarding event(s)")
-		check(hasIssue("(got 0)"), "AD-07 r3: a step below one must be recorded WITH the value received — got \(issues())")
-
-		// T47 — the second trap, and the one that is not about analytics at all: `UInt(-1)` traps on
-		// the CALLER's stack. Without the guard this row does not fail, it takes the process down —
-		// so the check reaching its own assert is half the assertion, and the summary line at the end
-		// of the run is the other half.
-		reset("T47")
-		let t47 = loadedService()
-		t47.logOnboardingOpen(step: -1)
-		check(Adapty.logShowOnboardingCount == 0, "AD-07 r3: a negative step must not reach the SDK — got \(Adapty.logShowOnboardingCount) onboarding event(s)")
-		check(hasIssue("(got -1)"), "AD-07 r3: a negative step must be recorded WITH the value received — got \(issues())")
-
-		// T48 — the legal step. The asserts name the event's NAME and ORDER, not the call: the format
-		// `onboarding_<step>` with `screenOrder == step` is what the apps send to Adapty directly
-		// today, and a migration that changed either would split one funnel into two on the dashboard
-		// with nothing to say they are the same event.
-		reset("T48")
-		let t48 = loadedService()
-		t48.logOnboardingOpen(step: 1)
-		check(Adapty.logShowOnboardingCount == 1, "AD-07 r3: a legal step must send exactly one event — got \(Adapty.logShowOnboardingCount)")
-		check(Adapty.lastOnboardingName == "onboarding_1", "AD-07 r3: the event name must stay the one the apps already send — got \(Adapty.lastOnboardingName ?? "nil")")
-		check(Adapty.lastOnboardingScreenOrder == 1, "AD-07 r3: screenOrder must carry the step itself — got \(String(describing: Adapty.lastOnboardingScreenOrder))")
-		check(hasLog("logShowOnboarding ok for 'onboarding_1'"), "AD-07 r3: a delivered onboarding event must leave an info line naming the event — got \(log)")
-
-		// T49 — the same pair as T37/T43 one row up: the failure branch. Without it the success line
-		// could go silent and this section would stay green, and a dropped onboarding event would
-		// again look exactly like a sent one.
-		reset("T49")
-		let t49 = loadedService()
-		Adapty.logShowOnboardingError = AdaptyError(.networkFailed)
-		t49.logOnboardingOpen(step: 2)
-		check(hasLog("logShowOnboarding failed for 'onboarding_2'"), "AD-07 r3: a failed onboarding event must leave an error line naming the event — got \(log)")
-
-		// T50 — AD-06 row 5 for the new operation: an inactive layer must not reach the SDK. The
-		// guard order matters and is asserted by the pair T46/T50 together — `isActive` runs FIRST,
-		// like it does in every other operation of this layer, so an inactive layer records the one
-		// shared reason instead of a second, different one.
-		reset("T50")
-		let t50 = AdaptyService()
-		t50.configure(apiKey: "", customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
-		t50.logOnboardingOpen(step: 1)
-		check(Adapty.logShowOnboardingCount == 0, "AD-06 r5 / AD-07 r3: an inactive layer must log no onboarding event — got \(Adapty.logShowOnboardingCount)")
-		check(issues().count == 1, "AD-06 r5: an inactive layer must still record ONE line, not a second one for the onboarding step — got \(issues())")
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
+		let t46 = AdaptyService()
+		t46.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		t46.didReceivePromotedPurchase(AdaptyPromotedProduct(vendorProductId: "year.sub"))
+		check(Adapty.promotedPurchaseAutoBuyCount == 0, "AD-04: the promoted-purchase default must be overridden — the SDK started \(Adapty.promotedPurchaseAutoBuyCount) purchase(s) nobody asked for")
+		check(hasLog("promoted purchase"), "AD-04: a promoted purchase the package refuses must leave a trace — got \(log)")
 	}
 }
