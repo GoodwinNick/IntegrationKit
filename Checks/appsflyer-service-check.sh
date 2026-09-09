@@ -1,5 +1,5 @@
 #!/bin/sh
-# AppsFlyerService self-check — 36 asserts over 24 of the 28 rows of the approved schemas
+# AppsFlyerService self-check — 36 asserts over 24 of the 32 rows of the approved schemas
 # AF-01…AF-06. No XCTest, no Xcode project.
 #
 # `AppsFlyerService` also names `AnalyticsTracking` and `AdaptyServicing`, so both come straight

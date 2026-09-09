@@ -3,9 +3,9 @@
 //  IntegrationKit
 //
 //  Written from the approved schemas AF-01…AF-06, not from the code. Thirty-six asserts carry
-//  twenty-four of the twenty-eight rows plus AN-03 row 4, whose code lives here rather than in
-//  Amplitude's; the four rows that carry none say why in a comment above the block they belong
-//  to, rather than being closed by a lookalike assert.
+//  twenty-four of the thirty-two rows plus AN-03 row 4, whose code lives here rather than in
+//  Amplitude's; the eight rows that carry none say why — four in a comment above their block,
+//  four (the logging rows of 2026-09-09) in the risk row itself — not with a lookalike assert.
 //
 //  The last five (T30…T34) came out of the 2026-09-09 schema/code re-check, which found three
 //  rules the schemas state and no assert held: what a successful `configure` hands the SDK and in
