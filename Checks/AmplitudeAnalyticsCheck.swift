@@ -2,11 +2,22 @@
 //  AmplitudeAnalyticsCheck.swift
 //  IntegrationKit
 //
-//  Written from the approved schemas AN-01..AN-04, not from the code. Thirteen rows across the four
-//  risk tables are testable with the `AmplitudeSwift` stub (plus real `AppTrackingTransparency`
-//  enum literals for the two ATT-parameter rows); two more are carried by
-//  `AppsFlyerServiceCheck.swift`, because the code they name lives there; the remaining seven say
-//  why in the comment above them rather than being closed by a lookalike assert.
+//  Written from the approved schemas AN-01..AN-04, not from the code. Sixteen of the twenty-seven
+//  rows across the four risk tables are testable with the `AmplitudeSwift` stub (plus real
+//  `AppTrackingTransparency` enum literals for the two ATT-parameter rows); three more are carried
+//  by `AppsFlyerServiceCheck.swift` and `AdaptyServiceCheck.swift`, because the code they name
+//  lives there; the remaining eight say why in the comment above them rather than being closed by
+//  a lookalike assert.
+//
+//  T14..T18 were added on `b6ac9ef`, after the schemas were re-read against the decisions taken
+//  since they were written. They are appended at the end on purpose: renumbering would move every
+//  assert coordinate already quoted in the four risk tables. T14 and T15 pin the shared logging
+//  decision of 2026-09-09 (`[IntegrationKit][<tag>]`, `info`/`error`, the data rather than the
+//  fact of the call) on the two places that already obey it; T16 and T17 pin the two outputs the
+//  schemas described less precisely than the code produces them — a configured layer whose device
+//  id is still nil, and a `configure()` that attaches the IDFA plugin without being told the ATT
+//  status; T18 pins that `environment` belongs to the gate rather than to the first-open event,
+//  which the AN-01 side-effect table had backwards.
 //
 //  All of them are green as of `60169db`. T1, T2, T10, T11, T12, T13 were written red first, as the
 //  spec for behaviour the wrapper did not have: the first-open gate closes only after the event
@@ -21,7 +32,7 @@
 //  reproduction step only asks to confirm the SDK reinitialises on a second configure() (one of
 //  the two contract-legal outcomes for that row), not to demand a guard that does not exist.
 //
-//  Seven rows are NOT covered here, for three distinct reasons:
+//  Eight rows are NOT covered here, for four distinct reasons:
 //   - AN-01 row 7 and AN-03 row 5 are read-by-code per their own "Як відтворити": no assert invents
 //     what the schema itself says to verify by reading.
 //   - AN-04 rows 3-5 need a real `ATTrackingManager`/`ASIdentifierManager` read this process cannot
@@ -30,6 +41,10 @@
 //   - AN-02 row 1 is a pure pointer to AN-01 row 3 (asserted once, by T13), and AN-03 row 2 is the
 //     Adapty side of the same missing device id — it belongs to `AdaptyServiceCheck.swift` (T02,
 //     AD-01 row 2), which already compiles `AdaptyService`.
+//   - AN-03 row 6 and AN-04 row 6 name log lines `AmplitudeAnalytics` does not write yet (Asana
+//     1218282418284338). The assert exists in shape — install a `debugLogSink`, call the operation,
+//     read the line back, exactly as T14 and T15 do — but it would be red, and this phase does not
+//     touch `Sources/`. The rows carry that reason instead of a lookalike.
 //  AN-02 row 4 and AN-03 row 4 name `AppsFlyerService.swift` and are asserted in
 //  `AppsFlyerServiceCheck.swift` (the `af_` event names, and the unprefixed profile properties).
 //
@@ -335,10 +350,114 @@ enum AmplitudeAnalyticsCheck {
 		// would not be evidence that only `idfa` changes when the branch does fire — that would be
 		// a lookalike assert, not coverage.
 
+		// ── AN-01 row 9 — the one trace this layer does emit carries prefix, tag and level ──
+		// Executes `ConfigurationIssues.record` (`ConfigurationIssues.swift:42-53`) into `debugLog`
+		// (`DebugLog.swift:20-39`). Pins the shared logging decision of 2026-09-09 —
+		// `[IntegrationKit][<service>]`, `info`/`error`, DEBUG-only — on the half of AN-01 row 9 the
+		// code already has. `debugLogSink` is the only readable destination: this check builds
+		// without `-D DEBUG`, so `DebugLog.swift:25-27` is the branch that runs. The other three
+		// obligations of that row (which deviceId went in, whether the gate let the event through)
+		// have no code at all and therefore no assert — see the row.
+		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
+		Amplitude.reset()
+		ConfigurationIssues.shared.reset()
+		var row9Lines: [String] = []
+		debugLogSink = { row9Lines.append($0) }
+		let row9 = AmplitudeAnalytics()
+		row9.configure(apiKey: "", deviceId: "device-9", firstOpenEvent: "first_open")
+		debugLogSink = nil
+		check(
+			row9Lines.contains {
+				$0.hasPrefix("[IntegrationKit][AmplitudeAnalytics][error] ") && $0.contains("empty API key")
+			},
+			"T14 AN-01 row 9: the empty-key cause must reach the log as "
+				+ "\"[IntegrationKit][AmplitudeAnalytics][error] …empty API key…\", got \(row9Lines)"
+		)
+
+		// ── AN-02 row 5 — logEvent logs the data, not the fact of the call ────────────────
+		// Executes `AmplitudeAnalytics.swift:56`. The 2026-09-09 decision asks for the event name
+		// *and the whole properties dictionary* at `info`, under the package prefix and the service
+		// tag. This is the only operation of the four cases that already obeys it, so this is where
+		// the format itself gets pinned — a tag folded back into the message string, or a drop back
+		// to "logged an event", fails here.
+		Amplitude.reset()
+		var row5Lines: [String] = []
+		debugLogSink = { row5Lines.append($0) }
+		an02.logEvent("paywall_shown", properties: ["placement": "onboarding"])
+		debugLogSink = nil
+		check(
+			row5Lines.contains {
+				$0.hasPrefix("[IntegrationKit][AmplitudeAnalytics] ")
+					&& !$0.contains("[error]")
+					&& $0.contains("paywall_shown")
+					&& $0.contains("placement")
+					&& $0.contains("onboarding")
+			},
+			"T15 AN-02 row 5: logEvent must log the event name and the whole properties dictionary "
+				+ "at info level under \"[IntegrationKit][AmplitudeAnalytics]\", got \(row5Lines)"
+		)
+
+		// ── AN-03 row 1 — an active layer may still answer nil, and must not fake a value ──
+		// Executes `AmplitudeAnalytics.swift:51-53` with the SDK holding no id. The schema used to
+		// read "active → the Amplitude device id", which is the state the wrapper cannot promise:
+		// `getDeviceId()` is optional at every moment of the layer's life, not only before
+		// `configure()`. T8 covers the pre-configure half; this one covers the half AN-03 row 2 is
+		// actually about, on the Amplitude side of that pair.
+		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
+		Amplitude.reset()
+		let row1NilId = AmplitudeAnalytics()
+		row1NilId.configure(apiKey: "amp-key", deviceId: "device-an03-nil", firstOpenEvent: nil)
+		Amplitude.deviceId = nil
+		check(
+			row1NilId.deviceId == nil,
+			"T16 AN-03 row 1: a configured layer whose SDK has no device id yet must still answer "
+				+ "nil, never a stand-in value, got \(String(describing: row1NilId.deviceId))"
+		)
+
+		// ── AN-04 row 2 — configure() attaches the plugin without being told the ATT status ──
+		// Executes `AmplitudeAnalytics.swift:43` with no `updateTrackingAuthorization` call at all.
+		// T11 proves an early `.authorized` is not lost; it cannot prove the attach is
+		// unconditional, because in T11 the app did answer. This one removes the answer entirely —
+		// the shape the third option of AN-04 row 2 was chosen for, and the shape the AN-04
+		// flowchart's old `дозволено?` gate denied.
+		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
+		Amplitude.reset()
+		let row2Unconditional = AmplitudeAnalytics()
+		row2Unconditional.configure(apiKey: "amp-key", deviceId: "device-an04c", firstOpenEvent: nil)
+		check(
+			Amplitude.addedPluginCount == 1,
+			"T17 AN-04 row 2: configure() must attach the IDFA plugin without being told the ATT "
+				+ "status, got \(Amplitude.addedPluginCount)"
+		)
+
+		// ── AN-01 row 10 — `environment` is tied to the gate, not to the first-open event ──
+		// Executes `AmplitudeAnalytics.swift:89` ahead of the `guard let event` at `:94`. The
+		// side-effect table used to say the property is written "only on the first install"; it is
+		// not — it sits inside the gate but before the event-name check, so an app that ships
+		// without naming its first-open event still gets an `environment` on the profile, on every
+		// launch, for as long as the gate stays open. Moving the write below the guard would leave
+		// that app with no environment at all, and T12 would not notice: T12 always passes an event
+		// name. Two configures, gate never closed, so both halves are pinned at once.
+		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
+		Amplitude.reset()
+		let row10First = AmplitudeAnalytics()
+		row10First.configure(apiKey: "amp-key", deviceId: "device-10a", firstOpenEvent: nil)
+		let identifiesAfterFirst = Amplitude.identifyCalls.count
+		let row10Second = AmplitudeAnalytics()
+		row10Second.configure(apiKey: "amp-key", deviceId: "device-10b", firstOpenEvent: nil)
+		check(
+			identifiesAfterFirst == 1
+				&& Amplitude.identifyCalls.count == 2
+				&& Amplitude.identifyCalls.allSatisfy { $0["environment"] != nil },
+			"T18 AN-01 row 10: `environment` must be written without a first-open event name and "
+				+ "again on every launch while the gate stays open, got \(identifiesAfterFirst) then "
+				+ "\(Amplitude.identifyCalls.count) identify call(s): \(Amplitude.identifyCalls)"
+		)
+
 		if failures.isEmpty {
-			print("AmplitudeAnalytics (AN-01..AN-04): 14/14 OK")
+			print("AmplitudeAnalytics (AN-01..AN-04): 19/19 OK")
 		} else {
-			print("\(failures.count) of 14 asserts FAILED")
+			print("\(failures.count) of 19 asserts FAILED")
 			exit(1)
 		}
 	}
