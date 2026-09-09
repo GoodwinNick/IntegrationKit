@@ -67,8 +67,25 @@ enum IntegrationKitCheck {
 		kit.handleOpen(URL(string: "https://example.com/af05?id=1")!, options: [:])
 		check(kit.droppedDeepLinks == 0, "AF-05: no AppsFlyer layer means no deep links to drop, got \(kit.droppedDeepLinks)")
 
+		// AF-01 row 1, through the facade. `AppsFlyerService.configure` records "empty dev key" itself,
+		// but with an empty key the root never builds the service, so that line is written by nobody and
+		// the one place the guide tells an integrator to look stays silent about the key they forgot.
+		let afReasons = kit.configurationIssues.filter { $0.contains("AppsFlyer") }
+		check(afReasons.count == 1, "AF-01 row 1: an empty AppsFlyer dev key must leave exactly one readable reason in configurationIssues, got \(afReasons.count): \(afReasons)")
+
+		// A second `configure` in one process. Nothing in the package refused it: every guard that
+		// looks like it would (`isConfigured`, `didStart`, `didAddIDFAPlugin`) is an instance flag, and
+		// the root builds fresh instances each time. The expensive half is silent — SwiftyStoreKit
+		// ignores the second `completeTransactions` and keeps the first, so the kit the app goes on to
+		// hold has no delivery path for an interrupted purchase, and the user who paid never gets it.
+		let second = kitWithoutAppsFlyer()
+		check(kit.premium as AnyObject === second.premium as AnyObject,
+		      "A second configure() must hand back the kit already built, not a second graph whose premium layer the payment queue never reaches")
+		let doubleReasons = kit.configurationIssues.filter { $0.contains("more than once") }
+		check(doubleReasons.count == 1, "A second configure() must say so in configurationIssues, got \(doubleReasons.count)")
+
 		if failures.isEmpty {
-			print("IntegrationKit composition root (AF-05 through the facade): 3/3 OK")
+			print("IntegrationKit composition root: \(6) checks OK")
 		} else {
 			print("\(failures.count) check(s) failed:")
 			for failure in failures {
