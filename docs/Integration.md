@@ -350,8 +350,13 @@ result of the system dialog when it shows. The every-launch resend is not
 something to call, or to remember.
 
 **First-open event.** Pass a name through `firstOpenEvent` at `configure`
-time and the package logs it once per install, gated internally so a
-reinstall or a relaunch never double-logs it. Pass `nil` to opt out.
+time and the package logs it **once per install**. The gate is a flag in
+`UserDefaults`, so a relaunch never double-logs it — and a **reinstall does**,
+because the flag goes away with the app. Once per install is the guarantee,
+not once per device: an install funnel counted from this event counts
+reinstalls as new installs. Pass `nil` to opt out; a `nil` name deliberately
+leaves the gate open, so a build that ships before the event has a name does
+not spend it for the whole cohort it touched.
 
 ## Crash reporting
 
