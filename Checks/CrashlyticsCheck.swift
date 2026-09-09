@@ -30,7 +30,7 @@ import Foundation
 @main
 enum CrashlyticsCheck {
 	static var failures: [String] = []
-	static var rowCount = 12
+	static var rowCount = 11
 
 	/// Records a failure instead of trapping — one failing row must not stop every row after it
 	/// from running.
@@ -193,18 +193,18 @@ enum CrashlyticsCheck {
 		// CR-02 row 6 (Crashlytics never brought up) is NOT covered here on purpose — it is a
 		// pointer to CR-01 row 1, and covering it twice would hide which of the two owns the test.
 
-		// ── CR-01 row 5 — an app that says nothing collects crashes ──────────────────────────
-		// The parameter carries a default, and the default is the whole policy for every app that
-		// never thinks about the argument. Silence from the integrator has to turn a
-		// not-to-be-silent tool ON; a default flipped to `false` in a refactor would take every
-		// such app dark without a single call site changing.
-		reset()
-		FirebaseIntegration.configure()
-		check(
-			Crashlytics.collectionEnabled == true,
-			"T10 CR-01 row 5: configure() with no argument must default to collecting, got "
-				+ "\(String(describing: Crashlytics.collectionEnabled)) (nil = never written)"
-		)
+		// CR-01 row 5 (an app that says nothing) is NOT covered here any more, and cannot be: the
+		// row was about the default behind `collectsCrashes`, and that parameter is gone. Crash
+		// collection now follows `isDebug` — one of the two keys the app hands the package — and
+		// `isDebug` carries no default, because a package that defaults it is a package guessing
+		// the build type. "The app passed nothing" therefore stops being a runtime state to assert
+		// and becomes a compile error at the call site, which is a stronger lock than T10 was.
+		// T10 stood here until 2026-09-09; its twelve lines are kept as this note rather than
+		// deleted, so every assert coordinate below stays where the risk tables say it is.
+		// What the row's real intent — silence must not switch a not-to-be-silent tool off — turns
+		// into is the pair of asserts at the end of this file: the flag is written on every launch,
+		// in both directions, from the app's own answer. Neither direction can be dropped without
+		// one of them going red.
 
 		// ── CR-02 row 7 — the noise filter runs before the Firebase-up guard ─────────────────
 		// Order is contract here, not implementation detail. A filtered network error is not a lost
@@ -255,6 +255,39 @@ enum CrashlyticsCheck {
 			},
 			"T13 CR-02 row 9: the dropped-report cause must be logged with the [IntegrationKit] "
 				+ "prefix, at error level, naming the call that was missed, got \(logged)"
+		)
+
+		// ── CR-01 rows 2 and 4 — collection follows the app's own `isDebug`, both ways ───────
+		// Appended at the end on purpose: every coordinate above is quoted by CR-01 and CR-02, and
+		// renumbering them is a worse defect than a long file. This is the pair that replaces T10.
+		//
+		// The row's decision, in one line: crash collection is on exactly when `isDebug` is false.
+		// The package never reads `#if DEBUG` itself — an `#if` compiled into a package cannot be
+		// turned off by the developer who needs it off, and that developer is the one trying to see
+		// their own test crash in the dashboard. This check builds WITH `-D DEBUG`, which is the
+		// build where the old hardwired `#if` forced the flag to `false`, so T15 is the assert that
+		// would have been impossible to satisfy before.
+		//
+		// Both directions, and every launch. Crashlytics persists the flag in `NSUserDefaults`
+		// (`FIRCLSDataCollectionArbiter.m:116`), so a build that only ever writes `false` leaves the
+		// device dark for every build installed after it. `nil` in the stub means nobody wrote the
+		// flag at all, and that is a failure in both rows.
+		reset()
+		FirebaseIntegration.configure(isDebug: true)
+		check(
+			Crashlytics.collectionEnabled == false,
+			"T14 CR-01 rows 2 and 4: isDebug true must switch crash collection off, and must write "
+				+ "the flag rather than leave it alone, got "
+				+ "\(String(describing: Crashlytics.collectionEnabled)) (nil = never written)"
+		)
+
+		reset()
+		FirebaseIntegration.configure(isDebug: false)
+		check(
+			Crashlytics.collectionEnabled == true,
+			"T15 CR-01 rows 2 and 4: isDebug false must switch crash collection ON even under "
+				+ "-D DEBUG — that is how a developer checks a live crash from a debug build — got "
+				+ "\(String(describing: Crashlytics.collectionEnabled)) (nil = never written)"
 		)
 
 		if failures.isEmpty {

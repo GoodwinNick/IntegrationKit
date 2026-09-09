@@ -454,10 +454,39 @@ enum AmplitudeAnalyticsCheck {
 				+ "\(Amplitude.identifyCalls.count) identify call(s): \(Amplitude.identifyCalls)"
 		)
 
+		// ── AN-01 rows 3 and 8 — a test run switches analytics off, and says which switch ──
+		// The other half of row 3, the one T13 could not reach: the layer has two legal ways to be
+		// off, and "off" alone is useless to whoever reads it a week later. The app computes the
+		// test-run answer itself (`-uitest` among the arguments, or `XCTestConfigurationFilePath`
+		// in the environment) and hands it over as `isTestsRunning`; the package never guesses.
+		// Until this key existed a UI-test run of the app sent its events into the live Amplitude
+		// project, which is analytics poisoned by the very run that was supposed to protect it.
+		//
+		// Row 8 rides along and is the reason the guard sits where it does — before the first-open
+		// gate, not after it. A test run that closed the gate would take the device it ran on out
+		// of the install funnel permanently: the flag is in `UserDefaults` and there is no second
+		// first open. All three values are asserted at once because the row is only satisfied by
+		// all three: nothing built, nothing written, and a reason that names itself.
+		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
+		Amplitude.reset()
+		ConfigurationIssues.shared.reset()
+		let row3TestRun = AmplitudeAnalytics()
+		row3TestRun.configure(apiKey: "amp-key", deviceId: "device-19", firstOpenEvent: "first_open", isTestsRunning: true)
+		check(
+			Amplitude.initCount == 0
+				&& UserDefaults.standard.object(forKey: firstOpenTrackedKey) == nil
+				&& ConfigurationIssues.shared.all.contains { $0.contains("test run") },
+			"T19 AN-01 rows 3 and 8: a test run must leave the SDK unbuilt, must not burn the "
+				+ "first-open gate, and must name itself as the reason rather than borrowing the "
+				+ "empty-key one, got \(Amplitude.initCount) initialization(s), gate written: "
+				+ "\(UserDefaults.standard.object(forKey: firstOpenTrackedKey) != nil), issues "
+				+ "\(ConfigurationIssues.shared.all)"
+		)
+
 		if failures.isEmpty {
-			print("AmplitudeAnalytics (AN-01..AN-04): 19/19 OK")
+			print("AmplitudeAnalytics (AN-01..AN-04): 20/20 OK")
 		} else {
-			print("\(failures.count) of 19 asserts FAILED")
+			print("\(failures.count) of 20 asserts FAILED")
 			exit(1)
 		}
 	}

@@ -891,5 +891,41 @@ enum AdaptyServiceCheck {
 		let t43 = loadedService()
 		t43.logPaywallOpen(placement: "main")
 		check(hasLog("logShowPaywall ok for 'main'"), "AD-07 r4: a delivered impression must leave an info line naming the placement — got \(log)")
+
+		testRun()
+	}
+
+	// MARK: - AD-01 row 1: the app's own test-run key.
+
+	/// Appended at the end of the file, and called from the end of the section above rather than
+	/// added to `sections` — every assert coordinate the AD-01…AD-07 risk tables quote sits between
+	/// here and the top, and renumbering them is a worse defect than a long file.
+	static func testRun() {
+		// T44 — AD-01 row 1: a test run must not stand Adapty up. The app decides what a test run
+		// is (`-uitest` among the arguments, or `XCTestConfigurationFilePath` in the environment)
+		// and says so with `isTestsRunning`; the package never guesses. Until this key existed the
+		// layer activated unconditionally, so every UI-test run of the app went into the live Adapty
+		// project with the live key — real profiles, real attribution, real numbers.
+		//
+		// The reason has to be its own. An app shipped without monetisation and a test run land in
+		// the same state, but they are different facts and are cured differently, so a single
+		// "empty key" line for both would send whoever reads it to the wrong place.
+		reset("T44")
+		let t44 = AdaptyService()
+		t44.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined, isTestsRunning: true)
+		check(Adapty.activateCallCount == 0, "AD-01 r1: a test run must not reach Adapty.activate — got \(Adapty.activateCallCount) activation(s)")
+		check(t44.isActive == false, "AD-01 r1: a test run must leave the layer inactive")
+		check(Adapty.getPaywallCallCount == 0, "AD-01 r1: a test run must not warm any paywall — got \(Adapty.getPaywallCallCount) getPaywall call(s)")
+		check(hasIssue("test run"), "AD-01 r1: a test run must record its own reason, apart from the empty-key one — got \(issues())")
+
+		// T44b — the same key set to false, on the same live-shaped key. A guard that is always on
+		// proves nothing: this is the assert that goes red if the flag is ever read inverted, and
+		// the one that stops "silence the SDK" from quietly becoming "silence it always".
+		reset("T44b")
+		Adapty.getPaywallResults = [.success(AdaptyPaywall())]
+		let t44b = AdaptyService()
+		t44b.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined, isTestsRunning: false)
+		check(Adapty.activateCallCount == 1, "AD-01 r1: isTestsRunning false must still activate the layer — got \(Adapty.activateCallCount) activation(s)")
+		check(t44b.isActive, "AD-01 r1: isTestsRunning false must leave the layer active")
 	}
 }
