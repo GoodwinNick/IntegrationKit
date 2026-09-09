@@ -634,6 +634,58 @@ enum PremiumBarrierCheck {
 		assert(grantStore.premium == true, "case 25: the flag mirror must move with it, got \(grantStore.premium)")
 		assert(grantStore.notified == 1, "case 25: exactly 1 .premiumDidChange, got \(grantStore.notified)")
 
-		print("PremiumService barrier, restore, purchase fallback and prices: 25/25 OK")
+		// 26. PM-04 row 11: Apple took the money and Adapty could not confirm it. Both halves matter and
+		//     both live in the facade, not in `AdaptyService`: the app must see `.pending` rather than a
+		//     failure it would offer to retry, and the StoreKit fallback must NOT run — it would ask a
+		//     user who has already paid to pay a second time. Access is granted on the strength of the
+		//     payment, through the same local-purchase mark a normal purchase uses.
+		let paidStore = SpyStore(cached: .free)
+		let paidAdapty = FakeAdapty(answer: nil)
+		paidAdapty.buyResult = .paidUnconfirmed
+		let paidApple = FakeApple(receipt: nil)
+		let paidService = PremiumService(store: paidStore, adapty: paidAdapty, apple: paidApple, levels: ["premium"], sourceTimeout: 1)
+		var paidOutcome: PurchaseOutcome?
+		paidService.purchase("year.sub", placement: "main") { paidOutcome = $0 }
+		assert(wait { paidOutcome != nil }, "case 26: purchase must call back")
+		assert(paidOutcome == .pending, "case 26: money taken and unconfirmed maps to exactly .pending, never .failed, got \(String(describing: paidOutcome))")
+		assert(paidApple.purchasedProductId == nil, "case 26: the StoreKit fallback must NOT run after a paid-but-unconfirmed purchase — that is a second charge; it was asked to buy \(String(describing: paidApple.purchasedProductId))")
+		assert(paidService.isPremium == true, "case 26: a purchase Apple already charged for must grant access, got \(paidService.isPremium)")
+		assert(paidStore.cached?.localPurchase == true, "case 26: it must carry the local-purchase mark like any other payment on this device, got \(String(describing: paidStore.cached))")
+
+		// 27. PM-04 row 12: Ask to Buy waiting for a parent, or an SDK call that never came back. Neither
+		//     bought nor refused — no access, no error, and no fallback: buying through StoreKit would
+		//     bypass the approval the purchase is waiting for.
+		let pendingStore = SpyStore(cached: .free)
+		let pendingAdapty = FakeAdapty(answer: nil)
+		pendingAdapty.buyResult = .pending
+		let pendingApple = FakeApple(receipt: nil)
+		let pendingService = PremiumService(store: pendingStore, adapty: pendingAdapty, apple: pendingApple, levels: ["premium"], sourceTimeout: 1)
+		var pendingOutcome: PurchaseOutcome?
+		pendingService.purchase("year.sub", placement: "main") { pendingOutcome = $0 }
+		assert(wait { pendingOutcome != nil }, "case 27: purchase must call back")
+		assert(pendingOutcome == .pending, "case 27: an undecided purchase maps to exactly .pending, got \(String(describing: pendingOutcome))")
+		assert(pendingApple.purchasedProductId == nil, "case 27: an undecided purchase must not fall back to StoreKit, it was asked to buy \(String(describing: pendingApple.purchasedProductId))")
+		assert(pendingService.isPremium == false, "case 27: nothing was paid — premium must stay off, got \(pendingService.isPremium)")
+		assert(pendingStore.cached?.localPurchase == false, "case 27: no payment, no mark, got \(String(describing: pendingStore.cached))")
+		assert(pendingStore.writes == 0, "case 27: nothing changed — expected 0 writes, got \(pendingStore.writes)")
+
+		// 28. PM-04 row 13: permanently unavailable — parental controls, a product missing from this
+		//     storefront, a promotional offer the store refuses to sign. Its own outcome, not `.failed`,
+		//     so the app can hide the button instead of offering a retry that fails identically. And no
+		//     fallback: StoreKit would happily sell the same product at full price, without the offer.
+		let unavailableStore = SpyStore(cached: .free)
+		let unavailableAdapty = FakeAdapty(answer: nil)
+		unavailableAdapty.buyResult = .unavailable
+		let unavailableApple = FakeApple(receipt: nil)
+		let unavailableService = PremiumService(store: unavailableStore, adapty: unavailableAdapty, apple: unavailableApple, levels: ["premium"], sourceTimeout: 1)
+		var unavailableOutcome: PurchaseOutcome?
+		unavailableService.purchase("year.sub", placement: "main") { unavailableOutcome = $0 }
+		assert(wait { unavailableOutcome != nil }, "case 28: purchase must call back")
+		assert(unavailableOutcome == .unavailable, "case 28: a permanently unavailable product maps to exactly .unavailable, never .failed, got \(String(describing: unavailableOutcome))")
+		assert(unavailableApple.purchasedProductId == nil, "case 28: .unavailable must not fall back to StoreKit — a discounted offer would be bought at full price; it was asked to buy \(String(describing: unavailableApple.purchasedProductId))")
+		assert(unavailableService.isPremium == false, "case 28: nothing was paid — premium must stay off, got \(unavailableService.isPremium)")
+		assert(unavailableStore.writes == 0, "case 28: nothing changed — expected 0 writes, got \(unavailableStore.writes)")
+
+		print("PremiumService barrier, restore, purchase fallback and prices: 28/28 OK")
 	}
 }
