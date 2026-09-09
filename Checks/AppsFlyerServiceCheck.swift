@@ -2,7 +2,7 @@
 //  AppsFlyerServiceCheck.swift
 //  IntegrationKit
 //
-//  Written from the approved schemas AF-01…AF-06, not from the code. Thirty-six asserts carry
+//  Written from the approved schemas AF-01…AF-06, not from the code. Thirty-nine asserts carry
 //  twenty-four of the thirty-two rows plus AN-03 row 4, whose code lives here rather than in
 //  Amplitude's; the eight rows that carry none say why — four in a comment above their block,
 //  four (the logging rows of 2026-09-09) in the risk row itself — not with a lookalike assert.
@@ -12,7 +12,7 @@
 //  which order (AF-01 row 6), the "unknown" default for an attribution field the SDK did not send
 //  (AF-03 row 6), and the URL forward reaching the SDK unchanged (AF-05 row 4).
 //
-//  All thirty-six are green as of `b6ac9ef`. Fifteen of them were written red first, against
+//  All thirty-nine are green. Seventeen of them were written red first, against
 //  schemas the wrapper did not satisfy yet, and each one names the behaviour the code had to grow
 //  rather than the shape it happened to have:
 //    T4  AF-01 row 2 — the ATT wait limit is the app's, not the constant 60.
@@ -27,12 +27,12 @@
 //    T25 AF-02 row 1 — a second foreground return starts a new session.
 //    T26 AF-01 row 1 — an empty dev key records a reason a release build can read.
 //    T27 AF-04 row 2 — a "found" deep link with no content is counted, not just skipped.
-//    T28 AF-05 row 3 — the forwards do not touch an SDK that was never initialized, and still
-//        answer the system.
+//    T28 AF-05 row 3 — the forwards do not touch an uninitialized SDK and still answer the system.
 //    T29 AF-06 row 1 — a failed attribution keeps the error's domain and code.
-//  The rest were green from the start and pin behaviour that was already correct — the silence of
-//  the failure callback (T23), the fixed eleven-field deep-link payload (T17),
-//  last-attribution-wins (T20) — so a later change cannot loosen any of it silently.
+//    T35 AF-01 row 1 — a test run leaves the layer down, with a reason of its own.
+//    T36 AF-01 row 3 — SDK logging rides the app's `isDebug`, the key crash collection uses too.
+//  The rest were green from the start — the silent failure callback (T23), the eleven-field
+//  deep-link payload (T17), last-attribution-wins (T20) — so no later change can loosen them.
 //
 //  Built WITHOUT `-D DEBUG` on purpose: every row that asks for "a trace visible outside Xcode"
 //  (AF-01 row 1, AF-04 row 2, AF-05 row 3, AF-06 row 1) is measured against exactly the build the
@@ -58,7 +58,7 @@ final class FakeAnalytics: AnalyticsTracking {
 	private(set) var userProperties: [[String: Any]] = []
 	var deviceId: String? = "device-1"
 
-	func configure(apiKey: String, deviceId: String, firstOpenEvent: String?) {}
+	func configure(apiKey: String, deviceId: String, firstOpenEvent: String?, isTestsRunning: Bool) {}
 
 	func logEvent(_ event: String, properties: [String: Any]?) {
 		events.append((event, properties))
@@ -88,7 +88,7 @@ final class FakeAdapty: AdaptyServicing {
 		sessionsCounter: Int,
 		placements: [String],
 		analytics: AnalyticsTracking,
-		attStatus: ATTrackingManager.AuthorizationStatus
+		attStatus: ATTrackingManager.AuthorizationStatus, isTestsRunning: Bool
 	) {}
 
 	func setProfileValue(value: String, key: String) {

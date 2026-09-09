@@ -45,8 +45,22 @@ public struct IntegrationKit {
 	///
 	/// `attTimeout` is how long AppsFlyer holds the install data waiting for the ATT answer. The
 	/// documented values are scenario-dependent — 60 s when the prompt is shown at launch, 120 s
-	/// when it comes after a tutorial — so only the app can choose. `sdkDebugLogs` turns AppsFlyer's
-	/// own console logging on; it must be off in a shipping build, and that is the app's call too.
+	/// when it comes after a tutorial — so only the app can choose.
+	///
+	/// `isDebug` and `isTestsRunning` are the app's two keys, and every SDK in the package runs off
+	/// them — there is no third switch anywhere, and neither carries a default, because a default
+	/// would be the package guessing something only the app can see:
+	///
+	/// - `isDebug` is the app's own `#if DEBUG`. It decides crash collection over in
+	///   `FirebaseIntegration.configure(isDebug:)`, and it turns AppsFlyer's own console logging
+	///   on and off here. An app that wants to check a live crash passes `false` from a debug
+	///   build; AppsFlyer's docs require the logging off in a shipping build, which a release
+	///   build's `false` gives for free.
+	/// - `isTestsRunning` is the app's own reading of its launch — `-uitest` among the arguments,
+	///   or `XCTestConfigurationFilePath` in the environment. `true` leaves Amplitude, Adapty and
+	///   AppsFlyer down for the whole run, each recording its own reason. Firebase stays up: a test
+	///   run that was meant to catch crashes must not be the run that loses them. StoreKit is not
+	///   restricted by either key.
 	public static func configure(
 		deviceId: String,
 		amplitudeKey: String,
@@ -55,16 +69,17 @@ public struct IntegrationKit {
 		sessionsCounter: Int,
 		sharedSecret: String,
 		productIds: Set<String>,
+		isDebug: Bool,
+		isTestsRunning: Bool,
 		levels: Set<String> = ["premium"],
 		firstOpenEvent: String? = nil,
 		appsFlyerDevKey: String = "",
 		appsFlyerAppId: String = "",
 		sourceTimeout: TimeInterval = 5,
-		attTimeout: TimeInterval = 60,
-		sdkDebugLogs: Bool = false
+		attTimeout: TimeInterval = 60
 	) -> IntegrationKit {
 		let analytics = AmplitudeAnalytics()
-		analytics.configure(apiKey: amplitudeKey, deviceId: deviceId, firstOpenEvent: firstOpenEvent)
+		analytics.configure(apiKey: amplitudeKey, deviceId: deviceId, firstOpenEvent: firstOpenEvent, isTestsRunning: isTestsRunning)
 
 		let adapty = AdaptyService()
 		adapty.configure(
@@ -77,7 +92,8 @@ public struct IntegrationKit {
 			// service — the app already owns this value and forwards it through
 			// `updateTrackingAuthorization(_:)`, and the read itself is a system call the service
 			// has no business making on its own.
-			attStatus: ATTrackingManager.trackingAuthorizationStatus
+			attStatus: ATTrackingManager.trackingAuthorizationStatus,
+			isTestsRunning: isTestsRunning
 		)
 		// Adapty's own paywall fetch can lose a race at cold start (flaky network, cold CDN) — retry
 		// every placement that is still missing each time the app comes back to the foreground.
@@ -97,7 +113,8 @@ public struct IntegrationKit {
 				appId: appsFlyerAppId,
 				deviceId: deviceId,
 				attTimeout: attTimeout,
-				isDebug: sdkDebugLogs
+				isDebug: isDebug,
+				isTestsRunning: isTestsRunning
 			)
 			appsFlyer = service
 		}

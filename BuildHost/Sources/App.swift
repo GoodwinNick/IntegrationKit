@@ -20,9 +20,24 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 		_ application: UIApplication,
 		didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
 	) -> Bool {
-		// `collectsCrashes` is the app's switch, and it applies from the *next* launch — Crashlytics
-		// writes it into NSUserDefaults and reads it while starting up.
-		FirebaseIntegration.configure(collectsCrashes: true)
+		// The app's two keys, and the only two switches the package has. Both are computed here,
+		// because both are facts only the app can see.
+		#if DEBUG
+			let isDebug = true
+		#else
+			let isDebug = false
+		#endif
+		// A UI test run under `-uitest`, or a unit test run, which XCTest announces by putting
+		// `XCTestConfigurationFilePath` in the environment. Either one silences Amplitude, Adapty
+		// and AppsFlyer for the whole run.
+		let isTestsRunning = ProcessInfo.processInfo.arguments.contains("-uitest")
+			|| ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+
+		// Crash collection is on exactly when `isDebug` is false, and it applies from the *next*
+		// launch — Crashlytics writes the flag into NSUserDefaults and reads it while starting up.
+		// Pass `false` from a debug build to check a live crash. `isTestsRunning` deliberately does
+		// not reach here: a test run must not be the run that loses the crashes it went to catch.
+		FirebaseIntegration.configure(isDebug: isDebug)
 
 		let kit = IntegrationKit.configure(
 			deviceId: "00000000-0000-0000-0000-000000000000",
@@ -32,12 +47,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 			sessionsCounter: 1,
 			sharedSecret: "00000000000000000000000000000000",
 			productIds: ["year.sub", "week.sub"],
+			isDebug: isDebug,
+			isTestsRunning: isTestsRunning,
 			levels: ["premium"],
 			firstOpenEvent: "first_open",
 			appsFlyerDevKey: "fakeDevKey",
 			appsFlyerAppId: "1234567890",
-			attTimeout: 120,
-			sdkDebugLogs: false
+			attTimeout: 120
 		)
 		self.kit = kit
 

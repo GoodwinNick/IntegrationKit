@@ -22,6 +22,12 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	/// `ConfigurationIssues` de-duplicates by text.
 	private static let inactiveIssue = "The Adapty layer is inactive (empty API key) — every Adapty call is a no-op for this run"
 
+	/// The test-run half of the same state, kept as its own sentence (AD-01 row 1). An app shipped
+	/// without monetisation and a UI-test run both leave the layer inactive, but one is fixed by
+	/// shipping a key and the other by nothing at all — one shared line would send whoever reads
+	/// `configurationIssues` looking for a key that is perfectly fine.
+	private static let testRunIssue = "The Adapty layer is inactive (the app reported a test run) — every Adapty call is a no-op for this run"
+
 	private static let initialPaywallBackoff: TimeInterval = 0.5
 	private static let maxPaywallBackoff: TimeInterval = 30
 
@@ -105,8 +111,18 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		sessionsCounter: Int,
 		placements: [String],
 		analytics: AnalyticsTracking,
-		attStatus: ATTrackingManager.AuthorizationStatus
+		attStatus: ATTrackingManager.AuthorizationStatus,
+		// Defaults only so the checks' own call sites stay short: the composition root always
+		// passes the app's answer, and the app always computes it.
+		isTestsRunning: Bool = false
 	) {
+		// AD-01 row 1: the app decides what a test run is and says so; the package never guesses.
+		// First of all the guards, because everything below it talks to a live SDK with a live key
+		// — which is what a UI-test run used to do, into the real Adapty project.
+		guard !isTestsRunning else {
+			recordInactive(operation: "configure", reason: Self.testRunIssue)
+			return
+		}
 		configuredPlacements = placements
 		guard !apiKey.isEmpty else {
 			// An empty key is a legal configuration, not an error to swallow: the layer stays inactive
@@ -710,9 +726,9 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 
 	// MARK: - Shared.
 
-	private func recordInactive(operation: String) {
+	private func recordInactive(operation: String, reason: String = AdaptyService.inactiveIssue) {
 		debugLog(tag: Self.tag, level: .error, "inactive layer: \(operation) skipped")
-		ConfigurationIssues.shared.record(Self.inactiveIssue, tag: Self.tag)
+		ConfigurationIssues.shared.record(reason, tag: Self.tag)
 	}
 }
 

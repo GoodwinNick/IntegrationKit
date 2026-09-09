@@ -10,17 +10,24 @@ public enum FirebaseIntegration {
 
 	/// Brings Firebase up. Call once, before `IntegrationKit.configure(...)`.
 	///
-	/// `collectsCrashes` is the app's answer, not the package's: an `#if DEBUG` inside a package
-	/// cannot be turned off by whoever needs it off, and a developer who wants to see their own test
-	/// crash in the dashboard would have to make a Release build to do it (CR-01 row 2). Pass
-	/// `false` from the app's own debug flag if that is the policy — the `#if` belongs where the
-	/// other developer flags already live.
+	/// `isDebug` is the app's own `#if DEBUG`, and it is the only thing that decides crash
+	/// collection: collection is on exactly when `isDebug` is `false`. It carries no default,
+	/// because a default is the package guessing the build type — and an `#if DEBUG` compiled into
+	/// a package cannot be turned off by whoever needs it off. That is the developer who wants to
+	/// see their own test crash in the dashboard: they pass `isDebug: false` from a debug build and
+	/// get it, without making a Release build (CR-01 row 2).
+	///
+	/// The app's other key, `isTestsRunning`, deliberately does not reach here. It silences
+	/// Amplitude, Adapty and AppsFlyer and leaves Firebase alive: a test run that was meant to
+	/// catch crashes must not be the run that loses them.
 	///
 	/// The flag is written on every launch in both directions on purpose (CR-01 row 4): Crashlytics
-	/// persists it in `NSUserDefaults`, so a Debug run that switched collection off would keep it
-	/// off in the Release build installed over it. It also does not apply until the next launch —
-	/// the first run after a change still behaves the old way, which is the SDK's rule, not ours.
-	public static func configure(collectsCrashes: Bool = true) {
+	/// persists it in `NSUserDefaults` under `com.crashlytics.data_collection`
+	/// (`FIRCLSDataCollectionArbiter.m:116`), so a build that only ever switches collection off
+	/// leaves the device off for every build installed after it. It also does not apply until the
+	/// next launch — the first run after a change still behaves the old way, the SDK's rule, not
+	/// ours.
+	public static func configure(isDebug: Bool) {
 		// CR-01 row 3: the second `FirebaseApp.configure()` throws an `NSException` that Swift
 		// cannot catch, so a second entry point — a SceneDelegate beside an AppDelegate — kills the
 		// app at launch. Asking the SDK whether it is already up costs one call and makes the second
@@ -28,6 +35,6 @@ public enum FirebaseIntegration {
 		guard FirebaseApp.app() == nil else { return }
 
 		FirebaseApp.configure()
-		Crashlytics.crashlytics().setCrashlyticsCollectionEnabled(collectsCrashes)
+		Crashlytics.crashlytics().setCrashlyticsCollectionEnabled(!isDebug)
 	}
 }

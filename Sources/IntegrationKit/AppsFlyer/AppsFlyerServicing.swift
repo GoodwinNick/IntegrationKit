@@ -11,10 +11,13 @@ protocol AppsFlyerServicing: AnyObject {
 	/// (or already holds) them and passes the plain values in. deviceId ties AppsFlyer to the
 	/// same stable id Amplitude/Adapty use.
 	///
-	/// `attTimeout` is how long the SDK holds the install data waiting for the ATT answer, and
-	/// `isDebug` turns the SDK's own console logging on. Both are the app's calls: only it knows
-	/// when the ATT prompt appears, and whether this build wants SDK logs.
-	func configure(devKey: String, appId: String, deviceId: String, attTimeout: TimeInterval, isDebug: Bool)
+	/// `attTimeout` is how long the SDK holds the install data waiting for the ATT answer.
+	/// `isDebug` and `isTestsRunning` are the app's own two keys: the first turns the SDK's console
+	/// logging on, the second leaves the layer down altogether — a test run must not spend the
+	/// advertising budget it is measured by (AF-01 rows 1 and 3). They are separate axes on
+	/// purpose: gluing them together would drag SDK logs into every test run, or silence
+	/// attribution in every debug build.
+	func configure(devKey: String, appId: String, deviceId: String, attTimeout: TimeInterval, isDebug: Bool, isTestsRunning: Bool)
 	/// Forwards `application(_:continue:restorationHandler:)` from AppDelegate into the SDK.
 	func handleContinue(_ userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void)
 	/// Forwards `application(_:open:options:)` from AppDelegate into the SDK.

@@ -23,7 +23,20 @@ final class AmplitudeAnalytics: AnalyticsTracking {
 
 	init() {}
 
-	func configure(apiKey: String, deviceId: String, firstOpenEvent: String? = nil) {
+	/// `isTestsRunning` defaults only so the checks' own call sites stay short — the composition
+	/// root always passes the app's answer, and the app always computes it.
+	func configure(apiKey: String, deviceId: String, firstOpenEvent: String? = nil, isTestsRunning: Bool = false) {
+		// AN-01 rows 3 and 8: the second of the two ways this layer is legally off. Ahead of every
+		// other line on purpose — the first-open gate below writes `UserDefaults`, and a test run
+		// that spent it would take this device out of the install funnel for good. The reason is
+		// its own: an app without analytics and a test run are different facts with one state.
+		guard !isTestsRunning else {
+			ConfigurationIssues.shared.record(
+				"Amplitude is off for this run — the app reported a test run",
+				tag: Self.tag
+			)
+			return
+		}
 		// AN-01 row 3: an empty key is a supported way to switch analytics off, but a silent one is
 		// indistinguishable from a broken integration a week later, when the dashboard is empty and
 		// nobody remembers which build this was.

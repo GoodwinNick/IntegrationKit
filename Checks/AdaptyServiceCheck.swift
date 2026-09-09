@@ -33,7 +33,7 @@ final class FakeAnalytics: AnalyticsTracking {
 		self.deviceId = deviceId
 	}
 
-	func configure(apiKey: String, deviceId: String, firstOpenEvent: String?) {}
+	func configure(apiKey: String, deviceId: String, firstOpenEvent: String?, isTestsRunning: Bool) {}
 	func logEvent(_ event: String, properties: [String: Any]?) {}
 	func setUserProperties(_ properties: [String: Any]) {}
 	func setUserId(_ userId: String) {}
