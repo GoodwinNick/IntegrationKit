@@ -901,7 +901,9 @@ Changed `BuildHost/project.yml`? Run `xcodegen generate` first.
 `Checks/` are self-checks that compile the real source files directly with
 `swiftc`, against stub SDK modules in `Checks/Stubs/` — no XCTest, no Xcode
 project, no network, no real SDK ever linked. Each script exits non-zero and
-prints every failing assert, not just the first.
+prints every failing assert, not just the first. `buildhost-check.sh` is the
+one exception and the last row of the table: it is the only script that builds
+against the real SDKs, and the only one that needs Xcode.
 
 Every assert is written from a row of an approved risk table and names the
 exact value that row names — a verdict, a journal entry, a trace line. `count
@@ -923,11 +925,12 @@ for s in Checks/*.sh; do "./$s"; done
 | `amplitude-analytics-check.sh` | First-open gating, the IDFA plugin attached exactly once, the environment property, the test-run guard. |
 | `appsflyer-service-check.sh` | Session start, attribution mapping, the ATT wait limit, deep-link values. |
 | `appsflyer-attribution-check.sh` | `cleanedAttributionData`: `NSNull`/non-scalar values and non-string keys dropped, an empty input staying empty, a `nil` deep link value becoming `"-"`, `clickEvent` fields flowing through. |
-| `buildhost-check.sh` | That the package still compiles the way an app compiles it. The ten above hand `swiftc` a chosen set of files and stub modules; none of them compiles `IntegrationKit.swift`, so all ten can be green while the public composition root does not build at all. This one runs `xcb app-sim --path BuildHost` and closes that gap. |
+| `integration-kit-check.sh` | The composition root, actually run: the `AppDelegate` forwards answering with no AppsFlyer layer, the empty dev key leaving a readable reason, and a second `configure` handing back the first kit instead of building a second graph. The ten above compile a chosen slice of `Sources/` and never compile `IntegrationKit.swift` at all, so a forward that drops a request on the floor is invisible to every one of them. |
+| `buildhost-check.sh` | That the package still compiles the way an app compiles it — against the real SDKs rather than the stubs in `Checks/Stubs/`, with the real Package.swift resolution behind it. The eleven above never link a real SDK, so a dependency whose API moved under a `from:` range breaks here first. Runs `xcb app-sim --path BuildHost`, regenerating the xcodegen project first, because the generated `.xcodeproj` is gitignored and `xcb` exits 0 when it finds none. |
 
 A test written from an approved schema goes in before the code that satisfies
 it, so an assert can be red for a while by design — a specification waiting to
-be met rather than a regression. All eleven scripts are green as of this
+be met rather than a regression. All twelve scripts are green as of this
 commit; a red assert names its row, and that row's "Стан у коді" column says
 where it stands.
 
