@@ -31,8 +31,15 @@ final class AmplitudeAnalytics: AnalyticsTracking {
 		self.isDebug = isDebug
 	}
 
-	/// `isTestsRunning` defaults only so the checks' own call sites stay short — the composition
-	/// root always passes the app's answer, and the app always computes it.
+	/// Brings the layer up. Deliberately absent from `AnalyticsTracking`: only the composition root
+	/// calls it, and a second call would stand up a second Amplitude instance and re-enter the
+	/// first-open gate.
+	///
+	/// `firstOpenEvent` is logged once per install, under the package's own gate. `isTestsRunning`
+	/// is the app's own answer to "is this a test run" — the layer does not start at all when it is
+	/// true, and the gate above is left unspent (AN-01 rows 3 and 8). It defaults only so the
+	/// checks' own call sites stay short — the composition root always passes the app's answer, and
+	/// the app always computes it.
 	func configure(apiKey: String, deviceId: String, firstOpenEvent: String? = nil, isTestsRunning: Bool = false) {
 		// AN-01 rows 3 and 8: the second of the two ways this layer is legally off. Ahead of every
 		// other line on purpose — the first-open gate below writes `UserDefaults`, and a test run
