@@ -155,8 +155,19 @@ public struct IntegrationKit {
 	// they travel through the kit so `AppsFlyerServicing` stays internal.
 
 	/// Forwards `application(_:continue:restorationHandler:)`.
+	///
+	/// AF-05 row 3: answering is a duty of its own and does not depend on the layer being up.
+	/// `restorationHandler` belongs to UIKit — an app that never calls it leaves the system waiting
+	/// and the user looking at the launch screen for the whole universal-link open. An app without a
+	/// dev key has no service to forward to, so the answer is given here, once, and empty. The gate
+	/// inside `AppsFlyerService` stays where it is: it covers the other path, a service that exists
+	/// but was configured with an empty key.
 	public func handleContinue(_ userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void) {
-		appsFlyer?.handleContinue(userActivity, restorationHandler: restorationHandler)
+		guard let appsFlyer else {
+			restorationHandler(nil)
+			return
+		}
+		appsFlyer.handleContinue(userActivity, restorationHandler: restorationHandler)
 	}
 
 	/// Forwards `application(_:open:options:)`.
