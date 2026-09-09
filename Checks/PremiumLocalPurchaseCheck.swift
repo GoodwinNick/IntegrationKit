@@ -348,3 +348,10 @@ enum PremiumLocalPurchaseCheck {
 		}
 	}
 }
+
+// Appended rather than declared inside `FakeAdapty`: the PM-03/04/05/07/08 risk tables quote line
+// numbers in this file, and a member added up there moves every one of them. This fake stands for a
+// layer that came up — the rows here are about the local-purchase mark, not about activation.
+extension FakeAdapty {
+	var isActive: Bool { true }
+}

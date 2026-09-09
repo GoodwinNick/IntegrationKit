@@ -204,3 +204,10 @@ enum PremiumPendingCheck {
 		}
 	}
 }
+
+// Appended rather than declared inside `CountingAdapty`, so the line numbers PM-01 row 4 and PM-04
+// row 7 quote in this file do not move. A layer that came up: both cases are about guards, not
+// about activation.
+extension CountingAdapty {
+	var isActive: Bool { true }
+}

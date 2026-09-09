@@ -13,6 +13,16 @@ import Foundation
 /// are added here because `PremiumServicing` needs an internal source for them and the spec's
 /// snippet for this protocol did not list one.
 protocol AdaptyPremiumProviding: AnyObject {
+	/// Whether the layer came up at all. `false` is permanent for the run — an empty key, a key that
+	/// decrypted into something that is not one, a test run — and `docs/Integration.md` already
+	/// states what it means: "Every call into the layer becomes a no-op".
+	///
+	/// Read by `PremiumService.products` (PM-07 row 12). "Adapty listed nothing" and "there is no
+	/// Adapty" are not the same fact, and the price fallback is only right for the first: a dead
+	/// layer cannot sell what it would be pricing, because `AdaptyService.buyProduct` refuses on
+	/// this very flag.
+	var isActive: Bool { get }
+
 	/// One-way push: Adapty sent a fresh profile on its own. Not part of any request/response
 	/// pairing.
 	///

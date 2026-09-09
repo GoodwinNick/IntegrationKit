@@ -771,3 +771,15 @@ final class StatefulPaywallAdapty: AdaptyPremiumProviding {
 	func paywallState(placement: String) -> PaywallState { paywallStateAnswer }
 	func syncReceipt() {}
 }
+
+// `isActive` arrives as an extension rather than a stored property for the same reason case 31's
+// fake was appended rather than folded into `FakeAdapty`: the risk tables of PM-01…PM-08 quote line
+// numbers in this file, and a member added inside either class moves every one of them. Both fakes
+// stand for a layer that came up — the cases above are about the barrier, not about activation.
+extension FakeAdapty {
+	var isActive: Bool { true }
+}
+
+extension StatefulPaywallAdapty {
+	var isActive: Bool { true }
+}
