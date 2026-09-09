@@ -151,7 +151,7 @@ enum PremiumStoreKitCheck {
 	static func main() {
 		let now = Date()
 
-		// PM-05 row 1: `PremiumService.swift:163-164` awaits the restore, resolves both sources, and
+		// PM-05 row 1: `PremiumService.swift:194-195` awaits the restore, resolves both sources, and
 		// only THEN schedules the completion — by the time the caller's completion runs, the store
 		// already carries the new verdict, nothing left to chase.
 		let orderingStore = SpyStore()
@@ -191,7 +191,7 @@ enum PremiumStoreKitCheck {
 		check(noAppleOutcome == .failed, "PM-05 row 3: no Apple source must fail, got \(String(describing: noAppleOutcome))")
 		check(noAppleElapsed < 0.3, "PM-05 row 3: must arrive without waiting for the timeout, took \(noAppleElapsed)s")
 
-		// PM-05 row 4: `restore` has no timeout of its own (PremiumService.swift:159-161) — a
+		// PM-05 row 4: `restore` has no timeout of its own (PremiumService.swift:190-193) — a
 		// StoreKit restore that never resolves must simply never call back. Documents that choice.
 		let stuckStore = SpyStore()
 		let stuckApple = FakeApple(receipt: nil)
@@ -285,13 +285,17 @@ enum PremiumStoreKitCheck {
 		check(failedQueueFinished == [], "PM-08 row 4: a failed transaction must not be finished by our code — expected finishTransaction calls [], got \(failedQueueFinished)")
 		check(failedQueueDeliveries == 0, "PM-08 row 4: a failed transaction is not a delivery — expected onDelivered called 0 times, got \(failedQueueDeliveries)")
 
-		// PM-08 row 6: an empty queue finishes nothing and delivers nothing.
+		// PM-08, the empty-queue check from the risk table's "how to reproduce" — NOT row 6. Row 6 is
+		// the three-way race between the queue, the profile push and `start()`'s refresh, and it needs
+		// two competing writers, which only the facade check has: `premium-barrier-check.sh` cases 14
+		// and 23 own it. What is pinned here is the boring half nobody would otherwise write down —
+		// a queue with nothing in it finishes nothing and delivers nothing.
 		SwiftyStoreKit.reset()
 		let emptyQueueService = StoreKitService(sharedSecret: "", productIds: ["year.sub"])
 		var emptyQueueCount = 0
 		emptyQueueService.completeTransactions { emptyQueueCount += 1 }
-		check(SwiftyStoreKit.finishTransactionCalls.count == 0, "PM-08 row 6: empty queue — zero finishes, got \(SwiftyStoreKit.finishTransactionCalls.count)")
-		check(emptyQueueCount == 0, "PM-08 row 6: empty queue — onDelivered must not fire, got \(emptyQueueCount)")
+		check(SwiftyStoreKit.finishTransactionCalls.count == 0, "PM-08 empty queue: zero finishes, got \(SwiftyStoreKit.finishTransactionCalls.count)")
+		check(emptyQueueCount == 0, "PM-08 empty queue: onDelivered must not fire, got \(emptyQueueCount)")
 
 		// PM-08 row 5: a purchase lands in the queue, Adapty stays silent, and the receipt still says
 		// "no" (the App Store has not caught up yet) — the delivered purchase itself has to be enough.

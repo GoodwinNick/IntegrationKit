@@ -10,10 +10,10 @@
 //  Written red, green since both guards landed in `Sources/PremiumService.swift`: a clean run is now
 //  the expected outcome, and a failure here means one of the two guards was lost.
 //
-//  A third `немає` row is deliberately NOT here: PM-07 row 8 (no "paywalls are loaded" signal exists
-//  anywhere on the public surface). There is no method to call — neither `PremiumServicing` nor
-//  `AdaptyPremiumProviding` carries one — so even a red test would first have to add that method in
-//  `Sources/`, which is out of scope for a check. It stays an open gap in the risk table instead.
+//  PM-07 row 8 used to be listed here as a third gap, on the grounds that no "paywalls are loaded"
+//  signal existed to assert on. That is out of date twice over: the row was rewritten to "retry until
+//  it loads" instead of "wait for it", and `paywallState(placement:)` now answers the question the
+//  missing signal was for. It is covered in `adapty-service-check.sh` (T11-T13), not here.
 //
 //  Nothing here traps: like `PremiumStoreKitCheck`, every case runs, every failure is collected, and
 //  the summary at the end reports all of them with a non-zero exit code. A crashing `assert` would
