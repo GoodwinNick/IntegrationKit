@@ -705,6 +705,28 @@ enum PremiumBarrierCheck {
 		Thread.sleep(forTimeInterval: 0.3)
 		assert(lapsedStore.writes == 1, "case 29: publish writes once and the refresh behind it changes nothing — expected exactly 1 write, got \(lapsedStore.writes)")
 
-		print("PremiumService barrier, restore, purchase fallback and prices: 29/29 OK")
+		// 30. PM-06 row 5 (AD-05 row 2 through the facade): the first push of a process is the profile
+		//     the SDK had on disk from the last launch, handed to the delegate before any request goes
+		//     out. A "no premium" from there must not close access, or a paying user on a slow network
+		//     sees the paywall on every cold start. `premium-resolver-check.sh` case 9 pins the rule
+		//     itself; this case pins the wiring — that the observer forwards provenance at all, through
+		//     the real `PremiumAccess(profile:levels:isVerified:)` conversion.
+		let provenanceStore = SpyStore(cached: PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: now + hour), premium: true)
+		let provenanceAdapty = FakeAdapty(answer: nil)
+		let provenanceService = PremiumService(store: provenanceStore, adapty: provenanceAdapty, apple: nil, levels: ["premium"], sourceTimeout: 1)
+		provenanceService.start()
+		Thread.sleep(forTimeInterval: 0.3)
+		assert(provenanceStore.writes == 0, "case 30: a live cache and a silent source change nothing — expected 0 writes after start(), got \(provenanceStore.writes)")
+		provenanceAdapty.premiumObserver?(profile(active: false), false)
+		assert(provenanceService.isPremium == true, "case 30: an unverified push saying inactive must not close access, got \(provenanceService.isPremium)")
+		assert(provenanceStore.writes == 0, "case 30: it resolves back to the same cached verdict — expected still 0 writes, got \(provenanceStore.writes)")
+		assert(provenanceStore.notified == 0, "case 30: nothing changed — expected 0 notifications, got \(provenanceStore.notified)")
+		// The very same profile, this time from the network. That one is Adapty's actual verdict.
+		provenanceAdapty.premiumObserver?(profile(active: false), true)
+		assert(provenanceService.isPremium == false, "case 30: the same denial, verified, must revoke — got \(provenanceService.isPremium)")
+		assert(provenanceStore.cached == PremiumState(isPremium: false, source: .adapty, isVerified: true, expiresAt: nil), "case 30: expected Adapty's own verified denial, got \(String(describing: provenanceStore.cached))")
+		assert(provenanceStore.notified == 1, "case 30: exactly 1 .premiumDidChange, got \(provenanceStore.notified)")
+
+		print("PremiumService barrier, restore, purchase fallback and prices: 30/30 OK")
 	}
 }
