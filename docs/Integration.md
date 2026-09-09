@@ -97,7 +97,42 @@ fi
 `firebase-ios-sdk` transitively, it shows up there automatically once
 dependencies resolve.
 
-### 6. Call `FirebaseIntegration.configure(isDebug:)`, then `IntegrationKit.configure(...)`
+### 6. Privacy manifest — check `UserDefaults` is declared
+
+App-side, and easy to miss because the package looks like it should carry its
+own. It does not, on purpose: SPM consumes `IntegrationKit` as source, so its
+calls compile into **your** binary, and App Store Connect's static scan
+attributes them to your app. Your `PrivacyInfo.xcprivacy` is what has to cover
+them.
+
+The package's own code touches exactly one required-reason API — `UserDefaults`,
+in four files:
+
+| File | What it keeps there |
+|---|---|
+| `Premium/Helpers/UserDefaultsPremiumStore.swift` | the cached premium state between launches |
+| `Premium/PremiumService.swift` | the legacy flag app screens still read |
+| `Amplitude/AmplitudeAnalytics.swift` | the first-open gate |
+| `Firebase/FirebaseIntegration.swift` | Crashlytics collection, written by the SDK under `com.crashlytics.data_collection` |
+
+So `NSPrivacyAccessedAPITypes` needs an entry for
+`NSPrivacyAccessedAPICategoryUserDefaults`. The reason code for an SDK reading
+and writing its own app's defaults is normally `CA92.1` — confirm it against
+Apple's current table rather than copying it blind, the list does change. Most
+apps already declare this for their own code, in which case there is nothing to
+add: check, do not assume.
+
+Two things the package does *not* need declared, so you do not go looking:
+it reads no file timestamps, no boot time, no disk space and no active
+keyboards. The five wrapped SDKs ship their own manifests inside their
+binaries.
+
+Separately, `AmplitudeIDFAPlugin` reads the advertising identifier on every
+event once ATT is authorised, which is what makes this app a tracking app —
+`NSPrivacyTracking` and the tracking domains belong in the same file, and each
+wrapped SDK's own documentation lists the domains it needs.
+
+### 7. Call `FirebaseIntegration.configure(isDebug:)`, then `IntegrationKit.configure(...)`
 
 Firebase configures first, and separately — it has no state the composition
 root needs. Everything else goes through one call:
