@@ -331,8 +331,42 @@ enum PremiumStoreKitCheck {
 		check(wait { cachedNoStore.writes > 0 }, "PM-08 row 5: a delivered purchase must produce a verdict over a cached verified no")
 		check(cachedNoService.isPremium == true, "PM-08 row 5: a delivered purchase must outrank a cached verified 'no premium' while Adapty stays silent, got isPremium == \(cachedNoService.isPremium)")
 
+		// PM-08 row 10: the queue is read on every launch and `completeTransactions` runs
+		// unconditionally, so a delivery that changes nothing must cost nothing. The user whose premium
+		// is already on, held up by the mark from a previous launch, is the common case — the resolve
+		// lands on the very state that is cached, so there is nothing to write and nothing to announce.
+		SwiftyStoreKit.reset()
+		let markedTransaction = StubTransaction(state: .purchased, label: "row10-marked")
+		SwiftyStoreKit.completeTransactionsResult = [Purchase(transaction: markedTransaction, productId: "year.sub", needsFinishTransaction: true)]
+		// A real shared secret on purpose: `verifyReceiptCallCount` is then the discriminator. Zero
+		// writes proves nothing on its own — it is exactly what a delivery that never arrived would
+		// look like too — so the row also pins that the resolve ran all the way out to the receipt.
+		let markedStoreKit = StoreKitService(sharedSecret: "shared-secret", productIds: ["year.sub"])
+		let markedStore = SpyStore(cached: PremiumState(isPremium: true, source: .apple, isVerified: false, expiresAt: nil, localPurchase: true), premium: true)
+		let markedService = PremiumService(store: markedStore, adapty: nil, apple: markedStoreKit, levels: ["premium"], sourceTimeout: 1)
+		markedStoreKit.completeTransactions { [weak markedService] in markedService?.purchaseDelivered() }
+		check(wait { SwiftyStoreKit.verifyReceiptCallCount == 1 }, "PM-08 row 10: the delivery must actually reach a resolve — expected the receipt to be checked once, got \(SwiftyStoreKit.verifyReceiptCallCount)")
+		check(!wait(0.4) { markedStore.writes > 0 }, "PM-08 row 10: re-delivering a purchase the cache already carries must write nothing, got \(markedStore.writes) write(s)")
+		check(markedStore.notified == 0, "PM-08 row 10: nothing changed — expected 0 .premiumDidChange, got \(markedStore.notified)")
+		check(markedService.isPremium == true, "PM-08 row 10: premium must stay on across the re-delivery, got \(markedService.isPremium)")
+
+		// PM-08 row 10, the half that does write: premium Adapty had already verified. The mark demotes
+		// the cached copy for this one resolve (row 5's mechanism), so the state is rewritten as
+		// unverified and marked — one disk write per launch, and nothing the user can see. The
+		// notification is what must stay at zero: the flag never moved.
+		SwiftyStoreKit.reset()
+		let verifiedTransaction = StubTransaction(state: .purchased, label: "row10-verified")
+		SwiftyStoreKit.completeTransactionsResult = [Purchase(transaction: verifiedTransaction, productId: "year.sub", needsFinishTransaction: true)]
+		let verifiedStoreKit = StoreKitService(sharedSecret: "", productIds: ["year.sub"])
+		let verifiedStore = SpyStore(cached: PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: now + hour), premium: true)
+		let verifiedService = PremiumService(store: verifiedStore, adapty: nil, apple: verifiedStoreKit, levels: ["premium"], sourceTimeout: 1)
+		verifiedStoreKit.completeTransactions { [weak verifiedService] in verifiedService?.purchaseDelivered() }
+		check(wait { verifiedStore.writes > 0 }, "PM-08 row 10: the mark demotes the cached copy, so a verified premium is rewritten — expected a write")
+		check(verifiedStore.notified == 0, "PM-08 row 10: the flag never moved — expected 0 .premiumDidChange, got \(verifiedStore.notified)")
+		check(verifiedService.isPremium == true, "PM-08 row 10: a re-delivery must not disturb premium the user already has, got \(verifiedService.isPremium)")
+
 		if failures.isEmpty {
-			print("PremiumService restore (PM-05), prices (PM-07) and unfinished transactions (PM-08): 14/14 OK")
+			print("PremiumService restore (PM-05), prices (PM-07) and unfinished transactions (PM-08): 16/16 OK")
 		} else {
 			print("\(failures.count) check(s) failed:")
 			for failure in failures {
