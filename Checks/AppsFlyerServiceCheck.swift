@@ -2,7 +2,7 @@
 //  AppsFlyerServiceCheck.swift
 //  IntegrationKit
 //
-//  Written from the approved schemas AF-01…AF-06, not from the code. Thirty asserts carry
+//  Written from the approved schemas AF-01…AF-06, not from the code. Thirty-one asserts carry
 //  twenty-one of the twenty-five rows plus AN-03 row 4, whose code lives here rather than in
 //  Amplitude's; the four rows that carry none say why in a comment above the block they belong
 //  to, rather than being closed by a lookalike assert.
@@ -128,13 +128,18 @@ enum AppsFlyerServiceCheck {
 	}
 
 	static func main() {
+		// The rows print as they run. Without this the output sits in libc's block buffer until the
+		// process ends, so a row that hangs looks exactly like a row that printed nothing — and the
+		// check is normally read from a file, not a terminal.
+		setbuf(stdout, nil)
+
 		// ── AF-01 row 1 — an empty dev key switches the whole layer off ──────────────────────
 		// Executes `AppsFlyerService.swift:29-32`. Green: `:29` returns before anything is
 		// touched.
 		AppsFlyerLib.reset()
 		ConfigurationIssues.shared.reset()
 		let t1Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
-		t1Service.configure(devKey: "", appId: "id-1", deviceId: "device-1")
+		t1Service.configure(devKey: "", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
 		check(
 			AppsFlyerLib.initializeCallCount == 0,
 			"T1 AF-01 row 1: an empty dev key must initialize the SDK 0 times, got "
@@ -170,12 +175,12 @@ enum AppsFlyerServiceCheck {
 		)
 
 		// ── AF-01 row 2 — the ATT wait limit is the app's parameter, not a package constant ───
-		// Executes `AppsFlyerService.swift:38`. RED: `:38` hardwires `timeoutInterval: 60`, and
-		// `configure` has no parameter that could carry the app's own limit, so the 12 seconds
-		// this row asks the app to choose cannot reach the SDK at all.
+		// The documented limit is scenario-dependent — 60 s for a prompt at launch, 120 s for one
+		// after a tutorial — so a constant in the package is a guess about an app it cannot see.
+		// The assert names 12 s: a value no default would produce by accident.
 		AppsFlyerLib.reset()
 		let t4Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
-		t4Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1")
+		t4Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
 		NotificationCenter.default.removeObserver(t4Service)
 		check(
 			AppsFlyerLib.lastATTTimeout == 12,
@@ -184,18 +189,28 @@ enum AppsFlyerServiceCheck {
 		)
 
 		// ── AF-01 row 3 — SDK debug logging follows the app's `isDebug` key ──────────────────
-		// Executes `AppsFlyerService.swift:39`. RED: `:39` writes `false` unconditionally and
-		// `configure` has no `isDebug` parameter yet (decision 2026-09-08, task
-		// 1218288104081038). Only the `true` direction is asserted — with the constant `false` in
-		// place a `false` expectation passes without the key existing, so it would prove nothing.
+		// Both directions are asserted, and only the `true` one is evidence on its own: with a
+		// hardwired `false` in the package a `false` expectation would pass without any key
+		// existing. The `false` run is here for the other half of the requirement — the key is
+		// obeyed, not merely accepted — and the docs are explicit that it must be off in a
+		// shipping build.
 		AppsFlyerLib.reset()
 		let t5Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
-		t5Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1")
+		t5Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: true)
 		NotificationCenter.default.removeObserver(t5Service)
 		check(
 			AppsFlyerLib.shared().isDebug == true,
 			"T5 AF-01 row 3: configured with the app's debug key on, the SDK's isDebug must be "
 				+ "true, got \(AppsFlyerLib.shared().isDebug)"
+		)
+		AppsFlyerLib.reset()
+		let t5OffService = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
+		t5OffService.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
+		NotificationCenter.default.removeObserver(t5OffService)
+		check(
+			AppsFlyerLib.shared().isDebug == false,
+			"T5 AF-01 row 3: configured with the key off, the SDK's isDebug must be false, got "
+				+ "\(AppsFlyerLib.shared().isDebug)"
 		)
 
 		// AF-01 row 4 (no `deinit`, so the foreground observer outlives the object) is NOT
@@ -209,8 +224,8 @@ enum AppsFlyerServiceCheck {
 		// again.
 		AppsFlyerLib.reset()
 		let t6Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
-		t6Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1")
-		t6Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1")
+		t6Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
+		t6Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
 		check(
 			AppsFlyerLib.initializeCallCount == 1,
 			"T6 AF-01 row 5: two configure() calls must initialize the SDK once, got "
@@ -239,7 +254,7 @@ enum AppsFlyerServiceCheck {
 		// it reads is the guard's own state after exactly one signal. Green.
 		AppsFlyerLib.reset()
 		let t8Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
-		t8Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1")
+		t8Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
 		postForegroundSignal()
 		NotificationCenter.default.removeObserver(t8Service)
 		check(
@@ -250,13 +265,13 @@ enum AppsFlyerServiceCheck {
 		)
 
 		// ── AF-02 row 3 — two foreground signals in one tick are safe ────────────────────────
-		// Executes `AppsFlyerService.swift:62-70` twice in the same run-loop turn, both times all
-		// the way to `:68` — the guard is cleared between them, which is the exact use `:18-19`
-		// says the internal flag exists for. The service owns no state besides that flag, so both
-		// passes must complete and both must reach the SDK. Green.
+		// Executes `startAppsFlyer` twice in the same run-loop turn, both times all the way to the
+		// SDK. The flag is still cleared between them, and now that it gates nothing that line only
+		// documents the row's own question: the service owns no state that a second pass could
+		// corrupt, so both must complete. Serialising the requests is the SDK's job. Green.
 		AppsFlyerLib.reset()
 		let t9Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
-		t9Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1")
+		t9Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
 		postForegroundSignal()
 		t9Service.didStartAppsFlyer = false
 		postForegroundSignal()
@@ -333,10 +348,10 @@ enum AppsFlyerServiceCheck {
 				+ "\(String(describing: t12Analytics.events.first?.properties?["af_status"]))"
 		)
 		check(
-			t12Analytics.userProperties.first?["status"] as? String == "42",
+			t12Analytics.userProperties.first?["af_status"] as? String == "42",
 			"T13 AF-03 row 3: the profile property must describe af_status the same way the event "
 				+ "does — \"42\" — got "
-				+ "\(String(describing: t12Analytics.userProperties.first?["status"]))"
+				+ "\(String(describing: t12Analytics.userProperties.first?["af_status"]))"
 		)
 
 		// AF-03 row 4 (a rejected attribution write must be retried) is covered elsewhere, on
@@ -478,6 +493,11 @@ enum AppsFlyerServiceCheck {
 		AppsFlyerLib.reset()
 		AppsFlyerLib.continueBehaviour = .neverCallsBlock
 		let t21Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
+		// Configured on purpose: the row is about the forwarding path. An unconfigured service
+		// answers from the AF-05 row 3 gate instead and would make this assert green without the
+		// SDK ever being asked — T28 is the one that owns that branch.
+		t21Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
+		NotificationCenter.default.removeObserver(t21Service)
 		var t21HandlerCalls = 0
 		var t21Received: [UIUserActivityRestoring]?
 		t21Service.handleContinue(NSUserActivity(activityType: "check.continue")) { restoring in
@@ -499,6 +519,9 @@ enum AppsFlyerServiceCheck {
 		let t22Restorer = FakeRestorer()
 		AppsFlyerLib.continueBehaviour = .callsWith([t22Restorer, "not a restoring object"])
 		let t22Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
+		// Same reason as T21: without a configured layer the answer never comes from the SDK.
+		t22Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
+		NotificationCenter.default.removeObserver(t22Service)
 		var t22Received: [UIUserActivityRestoring]?
 		t22Service.handleContinue(NSUserActivity(activityType: "check.continue")) { restoring in
 			t22Received = restoring
@@ -520,7 +543,7 @@ enum AppsFlyerServiceCheck {
 		// key arrives, and `ConfigurationIssues` keeps one line per cause, not one per call.
 		AppsFlyerLib.reset()
 		let t28Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
-		t28Service.configure(devKey: "", appId: "id-1", deviceId: "device-1")
+		t28Service.configure(devKey: "", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
 		var t28HandlerCalls = 0
 		var t28Received: [UIUserActivityRestoring]?
 		t28Service.handleContinue(NSUserActivity(activityType: "check.continue")) { restoring in
@@ -561,24 +584,24 @@ enum AppsFlyerServiceCheck {
 		// exactly T23's, so it is made once. Its remaining half, a trace carrying what arrived, is
 		// NOT covered for the same reason as AF-06 row 1.
 
-		// ── AF-06 row 3 — all three failure/legacy callbacks stay silent ─────────────────────
-		// Executes `AppsFlyerService.swift:94-96`, `:98-100` and `:102-104` on one instance. Green
-		// today, and that is the point: the silence is a requirement, and until now nothing
-		// asserted it, so a side effect added into any of the three would have passed unnoticed.
+		// ── AF-06 row 3 — the failure callback stays silent ──────────────────────────────────
+		// Executes the `onConversionDataFail` branch. The row started as three callbacks; the two
+		// legacy ones are gone with AF-06 row 2 (they are absent from `AppsFlyerLibDelegate` in
+		// 7.0.2, so the SDK could never have called them), and the row does not weaken for it —
+		// this is the one branch the SDK can still reach. Recording the cause is not a side effect
+		// in the sense this row forbids: what must stay at zero is anything that looks like data.
 		AppsFlyerLib.reset()
 		let t23Analytics = FakeAnalytics()
 		let t23Adapty = FakeAdapty()
 		let t23Service = AppsFlyerService(analytics: t23Analytics, adapty: t23Adapty)
 		t23Service.onConversionDataFail(NSError(domain: "AppsFlyer", code: -1009))
-		t23Service.onAppOpenAttribution(["campaign": "x"])
-		t23Service.onAppOpenAttributionFailure(NSError(domain: "AppsFlyer", code: -1001))
 		check(
 			t23Analytics.events.count == 0
 				&& t23Analytics.userProperties.count == 0
 				&& t23Adapty.attributionData.count == 0
 				&& t23Adapty.profileValues.count == 0,
-			"T23 AF-06 row 3: the three failure/legacy callbacks must log 0 events, 0 analytics "
-				+ "profiles, 0 Adapty attributions and 0 Adapty profiles, got "
+			"T23 AF-06 row 3: the failure callback must log 0 events, 0 analytics profiles, 0 Adapty "
+				+ "attributions and 0 Adapty profiles, got "
 				+ "\(t23Analytics.events.count), \(t23Analytics.userProperties.count), "
 				+ "\(t23Adapty.attributionData.count), \(t23Adapty.profileValues.count)"
 		)
@@ -616,7 +639,7 @@ enum AppsFlyerServiceCheck {
 		// clears the flag on purpose — so the second one must still reach the SDK. Red.
 		AppsFlyerLib.reset()
 		let t25Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
-		t25Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1")
+		t25Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
 		postForegroundSignal()
 		postForegroundSignal()
 		NotificationCenter.default.removeObserver(t25Service)
@@ -627,9 +650,9 @@ enum AppsFlyerServiceCheck {
 		)
 
 		if failures.isEmpty {
-			print("AppsFlyerService (AF-01…AF-06): 30/30 OK")
+			print("AppsFlyerService (AF-01…AF-06): 31/31 OK")
 		} else {
-			print("\(failures.count) of 30 asserts FAILED:")
+			print("\(failures.count) of 31 asserts FAILED:")
 			for failure in failures {
 				print("  - \(failure)")
 			}

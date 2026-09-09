@@ -12,9 +12,10 @@
 
 import Foundation
 
+//  Two methods, not four: `onAppOpenAttribution` and `onAppOpenAttributionFailure` are absent from
+//  `AppsFlyerLibDelegate` in the 7.0.2 headers (`AppsFlyerLib.h:169-194`), so the SDK cannot call
+//  them and a stub that kept them would let dead code look alive (AF-06 row 2).
 @objc public protocol AppsFlyerLibDelegate: NSObjectProtocol {
 	func onConversionDataSuccess(_ conversionInfo: [AnyHashable: Any])
 	func onConversionDataFail(_ error: Error)
-	func onAppOpenAttribution(_ attributionData: [AnyHashable: Any])
-	func onAppOpenAttributionFailure(_ error: Error)
 }

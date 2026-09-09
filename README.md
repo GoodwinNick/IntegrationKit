@@ -31,7 +31,8 @@ In Xcode: File → Add Package Dependencies → the same URL, product `Integrati
 ```swift
 import IntegrationKit
 
-// Call before IntegrationKit.configure(...).
+// Call before IntegrationKit.configure(...). Pass collectsCrashes: false to keep
+// Crashlytics off until the user consents — the setting applies from the next launch.
 FirebaseIntegration.configure()
 
 let kit = IntegrationKit.configure(
@@ -56,6 +57,14 @@ An empty key switches its SDK off for the whole run rather than half-starting
 it — `adaptyKey: ""` leaves the Adapty layer inert and records why,
 `amplitudeKey: ""` sends no events, `appsFlyerDevKey: ""` creates no AppsFlyer
 at all. No `#if` needed for a test run or a build flavour without one of them.
+
+Every such cause lands in `kit.configurationIssues` — a plain `[String]`, one
+line per cause, readable in a **release** build. It is the answer to "the SDK is
+silent and I cannot tell whether it is off on purpose":
+
+```swift
+kit.configurationIssues.forEach { print("[IntegrationKit] \($0)") }
+```
 
 `kit.premium`, `kit.analytics`, `kit.crashes` are the only surfaces the app talks
 to afterwards — `PremiumServicing`, `AnalyticsTracking`, `CrashReporting`. Deep

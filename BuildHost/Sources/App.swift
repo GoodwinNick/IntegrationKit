@@ -20,7 +20,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 		_ application: UIApplication,
 		didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
 	) -> Bool {
-		FirebaseIntegration.configure()
+		// `collectsCrashes` is the app's switch, and it applies from the *next* launch — Crashlytics
+		// writes it into NSUserDefaults and reads it while starting up.
+		FirebaseIntegration.configure(collectsCrashes: true)
 
 		let kit = IntegrationKit.configure(
 			deviceId: "00000000-0000-0000-0000-000000000000",
@@ -33,7 +35,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 			levels: ["premium"],
 			firstOpenEvent: "first_open",
 			appsFlyerDevKey: "fakeDevKey",
-			appsFlyerAppId: "1234567890"
+			appsFlyerAppId: "1234567890",
+			attTimeout: 120,
+			sdkDebugLogs: false
 		)
 		self.kit = kit
 
@@ -47,6 +51,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
 		kit.analytics.logEvent("app_open")
 		kit.crashes.recordNonFatal("launch", NSError(domain: "BuildHost", code: 1))
+		// Reports filed before Firebase was up are counted rather than logged away: a release build
+		// can read this and know the two `configure` calls ran in the wrong order.
+		if kit.crashes.droppedReports > 0 {
+			kit.analytics.logEvent("crash_reports_dropped", properties: ["count": kit.crashes.droppedReports])
+		}
 		return true
 	}
 

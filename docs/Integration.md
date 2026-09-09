@@ -113,7 +113,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 		_ application: UIApplication,
 		didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
 	) -> Bool {
-		FirebaseIntegration.configure()
+		// Must be first: a report filed before this line is dropped and counted.
+		FirebaseIntegration.configure(collectsCrashes: true)
 
 		let kit = IntegrationKit.configure(
 			deviceId: AppDefaults.deviceId,
@@ -126,7 +127,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 			levels: ["premium"],
 			firstOpenEvent: "first_open",
 			appsFlyerDevKey: ObfuscatedSecret.reveal(encrypted: SDKKeys.appsFlyerEncrypted, secret: SDKKeys.secret),
-			appsFlyerAppId: "1234567890"
+			appsFlyerAppId: "1234567890",
+			// 60 s fits an ATT prompt shown at launch; raise it if the prompt comes after onboarding.
+			attTimeout: 60,
+			sdkDebugLogs: false
 		)
 		self.kit = kit
 
@@ -139,6 +143,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 		}
 
 		kit.analytics.logEvent("app_open")
+		kit.configurationIssues.forEach { print("[IntegrationKit] \($0)") }
 		return true
 	}
 
@@ -185,7 +190,9 @@ public static func configure(
 	firstOpenEvent: String? = nil,
 	appsFlyerDevKey: String = "",
 	appsFlyerAppId: String = "",
-	sourceTimeout: TimeInterval = 5
+	sourceTimeout: TimeInterval = 5,
+	attTimeout: TimeInterval = 60,
+	sdkDebugLogs: Bool = false
 ) -> IntegrationKit
 ```
 
@@ -203,6 +210,8 @@ public static func configure(
 | `appsFlyerDevKey` | AppsFlyer dev key | AppsFlyer dashboard, per app | Defaults to `""`. An empty dev key means **AppsFlyer is not created at all** — no attribution, `kit.handleContinue`/`kit.handleOpen` become no-ops. |
 | `appsFlyerAppId` | Numeric App Store id | App Store Connect / `itunes.apple.com/lookup` | Defaults to `""`. Only meaningful together with a non-empty `appsFlyerDevKey`; without a confirmed App ID, AppsFlyer attribution can end up pointed at the wrong app. |
 | `sourceTimeout` | How long one premium refresh waits for a single source — Adapty, or the Apple receipt — before deciding without it | The app's own judgement about its users' networks | Defaults to `5` seconds. That number comes from practice, not from anything Adapty documents; an app whose users are on worse networks passes a larger one instead of patching the package. Neither source answering within it is not "no premium" — it is "unknown", and the cached state stands. |
+| `attTimeout` | How long AppsFlyer holds the install data waiting for the ATT answer | Where the app shows the ATT prompt | Defaults to `60` seconds, which is AppsFlyer's own recommendation for a prompt shown at launch. An app that asks after a tutorial is told to pass `120`. Only the app knows which it is, and a user who deletes the app before the limit expires stays unattributed. |
+| `sdkDebugLogs` | AppsFlyer's own console logging | The app's debug flag — the same one its other developer switches use | Defaults to `false`. Not derived from the build configuration on purpose: otherwise nobody can turn logs on to check an integration in a TestFlight build, or off in a Debug build that ships to a client. AppsFlyer's docs require it off in a shipping build. |
 
 **An empty key makes a whole SDK inert, on purpose.** All three behave the
 same way, so a test run, a build flavour without analytics, or an app that
@@ -273,9 +282,16 @@ ATTrackingManager.requestTrackingAuthorization { status in
 ```
 
 `IntegrationKit.updateTrackingAuthorization(_:)` calls
-`analytics.updateTrackingAuthorization(_:)` (which attaches Amplitude's IDFA
-plugin once the answer is `.authorized`) and Adapty's own ATT status update,
-in that order.
+`analytics.updateTrackingAuthorization(_:)` and Adapty's own ATT status
+update, in that order.
+
+Calling it is not what enables the IDFA, and forgetting to call it does not
+lose the permission: Amplitude's IDFA plugin is attached at `configure` time
+and re-reads `ATTrackingManager.trackingAuthorizationStatus` on **every**
+event. An answer that arrived before `configure` is picked up on the next
+event, and a permission the user revokes later in Settings stops the IDFA
+immediately, with nothing to call. What the forward is still needed for is
+Adapty, which cannot read the status itself.
 
 **The current status also goes to Adapty on every launch, by itself.**
 `IntegrationKit.configure(...)` reads `ATTrackingManager.trackingAuthorizationStatus`
@@ -294,6 +310,7 @@ reinstall or a relaunch never double-logs it. Pass `nil` to opt out.
 ```swift
 public protocol CrashReporting {
 	func recordNonFatal(_ tag: String, _ error: Error, _ info: [String: Any])
+	var droppedReports: Int { get }
 }
 ```
 
@@ -323,6 +340,46 @@ this package, since `IntegrationKit` does not expose a hook for it today.
 Internally, `recordNonFatal` filters out network noise before it reaches
 Crashlytics (`NSURLErrorNotConnectedToInternet`, `NSURLErrorCancelled`) — no
 action needed from the app for that.
+
+### The `tag` is filterable, the `info` is not
+
+`tag` is written as the Crashlytics **custom key** `ik_tag` before the report
+is filed, so the dashboard can filter and group on it. The `info` dictionary
+goes in as the report's `userInfo`, which Crashlytics shows only *inside* an
+issue that is already open — useful for reading one report, useless for
+finding it. Put in `tag` what you would search for; put in `info` what you
+would want once you are looking at the report.
+
+### Order matters, and the count says when it was wrong
+
+`FirebaseIntegration.configure()` must run **before**
+`IntegrationKit.configure(...)`. A report filed while Firebase is not up
+cannot be delivered, so it is dropped, counted, and the reason is recorded
+once in `kit.configurationIssues`:
+
+```swift
+if kit.crashes.droppedReports > 0 {
+	// FirebaseIntegration.configure() ran too late — or not at all.
+}
+```
+
+`droppedReports` counts every dropped report; the issue line is written once.
+Both are readable in a release build, which is the point — nothing here
+depends on a DEBUG log.
+
+### Turning collection off
+
+```swift
+FirebaseIntegration.configure(collectsCrashes: false)
+```
+
+Passing `false` is for a build that must not report until the user consents.
+Crashlytics stores the flag in `NSUserDefaults` and reads it while starting
+up, so **the change applies from the next launch**, not from this one — the
+current session keeps whatever the previous launch set. Calling
+`FirebaseIntegration.configure()` a second time in one process does nothing:
+a second `FirebaseApp.configure()` raises an `NSException` that no Swift
+`catch` can stop, so the call returns early when Firebase is already up.
 
 ## Premium
 
@@ -634,25 +691,33 @@ for s in Checks/*.sh; do "./$s"; done
 | `appsflyer-service-check.sh` | Session start, attribution mapping, the ATT wait limit, deep-link values. |
 | `appsflyer-attribution-check.sh` | `cleanedAttributionData`: `NSNull`/non-scalar values and non-string keys dropped, an empty input staying empty, a `nil` deep link value becoming `"-"`, `clickEvent` fields flowing through. |
 
-Some rows are red on purpose. A test written from an approved schema goes in
-before the code that satisfies it, so a red assert here is a specification
-waiting to be met, not a regression — each one names its row, and the row's
-"Стан у коді" column says where it stands.
+A test written from an approved schema goes in before the code that satisfies
+it, so an assert can be red for a while by design — a specification waiting to
+be met rather than a regression. All ten scripts are green as of this commit;
+a red assert names its row, and that row's "Стан у коді" column says where it
+stands.
 
 ## Troubleshooting
 
-**Start here:** print `kit.premium.configurationIssues`. Every cause the
-package could not work around and no retry will fix writes one line into it —
-an empty or malformed key, a device id that arrived too late, a placement that
-does not exist, a product the paywall does not sell, a profile attribute Adapty
-refused, a profile that never arrived. Most of the entries below have a line
-waiting in there already.
+**Start here:** print `kit.configurationIssues`. Every cause the package could
+not work around and no retry will fix writes one line into it — an empty or
+malformed key, a device id that arrived too late, a placement that does not
+exist, a product the paywall does not sell, a profile attribute Adapty refused,
+a profile that never arrived, crash reports filed before Firebase was up, an
+install attribution AppsFlyer could not deliver. Most of the entries below have
+a line waiting in there already.
 
 ```swift
-#if DEBUG
-kit.premium.configurationIssues.forEach { print("[IntegrationKit] \($0)") }
-#endif
+kit.configurationIssues.forEach { print("[IntegrationKit] \($0)") }
 ```
+
+No `#if DEBUG` around it: the list is filled in a **release** build too, which
+is the whole reason it exists — the DEBUG log dies with the Xcode session, and
+these causes are exactly the ones a tester hits on a TestFlight build. The same
+list is also reachable as `kit.premium.configurationIssues`; both read one
+package-wide store, deduplicated by text, oldest first. Shipping it as a
+Crashlytics non-fatal at launch turns "the SDK is silent" into a searchable
+dashboard entry.
 
 - **`hasPaywall(placement:)` is always `false`.** Either the placement was
   never in `placements` at `configure` time, or the placement id does not
@@ -694,6 +759,15 @@ kit.premium.configurationIssues.forEach { print("[IntegrationKit] \($0)") }
 - **Crashlytics dashboard shows unsymbolicated crashes.** The dSYM Run
   Script (setup step 5) is missing or its `inputPaths` point at the wrong
   target.
+- **Non-fatals never reach the Crashlytics dashboard.** Read
+  `kit.crashes.droppedReports`: anything above zero means
+  `FirebaseIntegration.configure()` ran after `IntegrationKit.configure(...)`,
+  or not at all, and every report filed in between was dropped. If it is zero,
+  check that `collectsCrashes` was not left `false` on the previous launch —
+  the flag applies from the launch *after* it is set.
+- **A report is in the dashboard but cannot be filtered by its tag.** Filter on
+  the custom key `ik_tag`, not on the `info` dictionary: `info` is the report's
+  `userInfo` and is only visible inside an issue that is already open.
 
 ## Readiness checklist
 
@@ -716,8 +790,8 @@ kit.premium.configurationIssues.forEach { print("[IntegrationKit] \($0)") }
       paywall
 - [ ] `kit.premium.purchase(...)` handles all five `PurchaseOutcome` cases —
       `.pending` shows waiting, `.unavailable` hides the button
-- [ ] `kit.premium.configurationIssues` is empty on a real launch (print it in
-      DEBUG, or ship it as a Crashlytics non-fatal)
-- [ ] `for s in Checks/*.sh; do "./$s"; done` — no failures other than the rows
-      already marked red in the risk tables
+- [ ] `kit.configurationIssues` is empty on a real launch, and
+      `kit.crashes.droppedReports` is zero (both are readable in release —
+      print them, or ship them as a Crashlytics non-fatal)
+- [ ] `for s in Checks/*.sh; do "./$s"; done` — all ten green
 - [ ] `cd BuildHost && xcb app-sim` builds

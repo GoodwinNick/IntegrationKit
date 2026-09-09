@@ -42,6 +42,11 @@ public struct IntegrationKit {
 	/// `sourceTimeout` is how long a premium refresh waits for one source — Adapty or the Apple
 	/// receipt — before deciding without it. Five seconds is a number from practice, not one Adapty
 	/// documents; an app on a worse network passes its own instead of patching the package.
+	///
+	/// `attTimeout` is how long AppsFlyer holds the install data waiting for the ATT answer. The
+	/// documented values are scenario-dependent — 60 s when the prompt is shown at launch, 120 s
+	/// when it comes after a tutorial — so only the app can choose. `sdkDebugLogs` turns AppsFlyer's
+	/// own console logging on; it must be off in a shipping build, and that is the app's call too.
 	public static func configure(
 		deviceId: String,
 		amplitudeKey: String,
@@ -54,7 +59,9 @@ public struct IntegrationKit {
 		firstOpenEvent: String? = nil,
 		appsFlyerDevKey: String = "",
 		appsFlyerAppId: String = "",
-		sourceTimeout: TimeInterval = 5
+		sourceTimeout: TimeInterval = 5,
+		attTimeout: TimeInterval = 60,
+		sdkDebugLogs: Bool = false
 	) -> IntegrationKit {
 		let analytics = AmplitudeAnalytics()
 		analytics.configure(apiKey: amplitudeKey, deviceId: deviceId, firstOpenEvent: firstOpenEvent)
@@ -85,7 +92,13 @@ public struct IntegrationKit {
 		var appsFlyer: AppsFlyerService?
 		if !appsFlyerDevKey.isEmpty {
 			let service = AppsFlyerService(analytics: analytics, adapty: adapty)
-			service.configure(devKey: appsFlyerDevKey, appId: appsFlyerAppId, deviceId: deviceId)
+			service.configure(
+				devKey: appsFlyerDevKey,
+				appId: appsFlyerAppId,
+				deviceId: deviceId,
+				attTimeout: attTimeout,
+				isDebug: sdkDebugLogs
+			)
 			appsFlyer = service
 		}
 
@@ -139,5 +152,15 @@ public struct IntegrationKit {
 	public func updateTrackingAuthorization(_ status: ATTrackingManager.AuthorizationStatus) {
 		analytics.updateTrackingAuthorization(status)
 		adapty.updateAppTrackingTransparencyStatus(status)
+	}
+
+	/// Everything the package could not make work and no retry will fix — an empty key, a device id
+	/// that arrived too late, a Firebase that was never configured, a placement the dashboard does
+	/// not have. One line per cause, oldest first. Empty is the healthy state.
+	///
+	/// The same list `premium.configurationIssues` answers: it is the package's, not the premium
+	/// layer's, and the causes it collects come from every service.
+	public var configurationIssues: [String] {
+		ConfigurationIssues.shared.all
 	}
 }
