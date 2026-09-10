@@ -1141,7 +1141,7 @@ enum AdaptyServiceCheck {
 	/// every assert coordinate the AD-01…AD-07 risk tables quote sits above this line.
 	static func attributionRetry() {
 		// T45 — AD-06 row 7: a write the ALREADY ACTIVE SDK refused. It goes back on the queue
-		// (`updateAppsFlyerAttribution`'s failure branch), and `flushPendingAttribution` used to have
+		// (`updateAppsFlyerAttribution`'s failure branch), and `flushPendingWrites` used to have
 		// exactly one caller — the `activate` completion, which by then has already run and will not
 		// run again in this process. Install data arrives once per install, so that queue entry stayed
 		// where it was until the process died: this payer's campaign is counted organic, and the ROAS
@@ -1192,5 +1192,128 @@ enum AdaptyServiceCheck {
 		t46.didReceivePromotedPurchase(AdaptyPromotedProduct(vendorProductId: "year.sub"))
 		check(Adapty.promotedPurchaseAutoBuyCount == 0, "AD-04: the promoted-purchase default must be overridden — the SDK started \(Adapty.promotedPurchaseAutoBuyCount) purchase(s) nobody asked for")
 		check(hasLog("promoted purchase"), "AD-04: a promoted purchase the package refuses must leave a trace — got \(log)")
+
+		identityForwards()
+	}
+
+	// MARK: - AD-05 and AD-06: the two operations the app reaches through the facade.
+
+	/// Appended last for the reason given in `attributionRetry()`: every assert coordinate the
+	/// AD-01…AD-07 risk tables quoted before 0.4.1 sits above this line.
+	///
+	/// Both members here are new in 0.4.1 and both exist because an app migrating onto the package
+	/// asked for them. `profileId()` is AD-05's read projected onto a string; `setFirebaseAppInstanceId`
+	/// is AD-06's fourth write, and the rows below are mostly about how it differs from the AppsFlyer
+	/// id it shares a channel with.
+	static func identityForwards() {
+		// T47 — AD-05: the happy path. The assert names the id itself, not the fact that something
+		// came back: a projection that answered the wrong profile's id would be invisible otherwise.
+		reset("T47")
+		let t47 = loadedService()
+		Adapty.getProfileResult = .success(AdaptyProfile(profileId: "prof-42", accessLevels: [:]))
+		check(run { await t47.profileId() } == "prof-42", "AD-05: profileId must answer the profile's own id — got \(String(describing: run { await t47.profileId() }))")
+
+		// T48 — AD-05 row 5: an inactive layer answers `nil`, and the reason has to be visible. This is
+		// the same guard `profile()` has, reached through the projection — which is the point: the
+		// projection must not grow a second, quieter path to the same answer.
+		reset("T48")
+		let t48 = AdaptyService()
+		t48.configure(apiKey: "", customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		// `?? "<nil>"` inside the closure, not outside: `run` already wraps its answer in an optional,
+		// so comparing the outer value to `nil` would only say whether the call came back at all.
+		check(run { await t48.profileId() ?? "<nil>" } == "<nil>", "AD-05 r5: an inactive layer must answer nil for the profile id")
+		check(hasIssue("layer is inactive"), "AD-05 r5: the inactive layer must record why, once for the run — got \(issues())")
+
+		// T49 — AD-05: Adapty answered with an error. `nil` here means "did not answer", never "no id",
+		// and the app is told in the doc comment not to cache it.
+		reset("T49")
+		let t49 = loadedService()
+		Adapty.getProfileResult = .failure(AdaptyError(.networkFailed))
+		check(run { await t49.profileId() ?? "<nil>" } == "<nil>", "AD-05: a failed getProfile must answer nil for the id")
+
+		// T50 — AD-05 row 1, through the projection: the SDK never calls back at all. The deadline is
+		// `profile()`'s own — this is what "same deadline" in the contract means, and a `profileId()`
+		// that had grown its own wait would hang here instead of answering.
+		reset("T50")
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
+		let t50 = AdaptyService(deadlines: fast(\.call, 0.3))
+		t50.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		Adapty.holdGetProfile = true
+		check(run { await t50.profileId() ?? "<nil>" } == "<nil>", "AD-05 r1: a getProfile that never answers must still let profileId return, by deadline")
+		check(hasLog("getProfile did not answer"), "AD-05 r1: the deadline must leave a trace naming the call — got \(log)")
+
+		// T51 — AD-06: the Firebase id reaches the SDK on the integration channel, not as a profile
+		// attribute. The assert names the KEY as well as the value: `with(firebaseAppInstanceId:)` is
+		// gone from 4.1.3's profile builder, so a write that landed in `updateProfileJournal` would be
+		// writing a custom attribute nobody reads on the dashboard.
+		reset("T51")
+		let t51 = loadedService()
+		let t51Attributes = Adapty.updateProfileJournal.count
+		t51.setFirebaseAppInstanceId("fid-1")
+		let t51Firebase = Adapty.integrationIdentifierJournal.filter { $0.key == .firebaseAppInstanceId }
+		check(t51Firebase.map(\.value) == ["fid-1"], "AD-06: the Firebase id must go to the integration channel — got \(t51Firebase.map(\.value))")
+		check(Adapty.updateProfileJournal.count == t51Attributes, "AD-06: the Firebase id must not be written as a profile attribute — the profile journal grew from \(t51Attributes) to \(Adapty.updateProfileJournal.count)")
+
+		// T52 — AD-06: an empty id. `Analytics.appInstanceID()` is an optional and answers nil while
+		// Firebase analytics is still coming up; an app that unwraps that to "" would otherwise put a
+		// join key on the profile that matches nothing, permanently. Whitespace counts as empty because
+		// `AdaptyIntegrationIdentifier` trims the value and does not check what is left.
+		reset("T52")
+		let t52 = loadedService()
+		let t52Before = Adapty.integrationIdentifierJournal.count
+		t52.setFirebaseAppInstanceId("   ")
+		check(Adapty.integrationIdentifierJournal.count == t52Before, "AD-06: a blank Firebase id must not reach the SDK — the journal grew from \(t52Before) to \(Adapty.integrationIdentifierJournal.count)")
+		check(hasIssue("Firebase app instance id was empty"), "AD-06: a blank Firebase id must say so — got \(issues())")
+
+		// T53 — AD-06: the race this method exists for. The id is ready in the first frames of a launch
+		// and the app hands it over then; activation has not answered yet. Dropping it here would lose
+		// it on EVERY launch, not on an unlucky one.
+		reset("T53")
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
+		let t53 = AdaptyService()
+		t53.setFirebaseAppInstanceId("fid-early")
+		check(Adapty.integrationIdentifierJournal.isEmpty, "AD-06 setup: a write before activation must not reach the SDK — got \(Adapty.integrationIdentifierJournal.count)")
+		t53.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		let t53Firebase = Adapty.integrationIdentifierJournal.filter { $0.key == .firebaseAppInstanceId }
+		check(t53Firebase.map(\.value) == ["fid-early"], "AD-06: a Firebase id handed over before activation must be replayed after it — got \(t53Firebase.map(\.value))")
+
+		// T54 — AD-06 row 5, for the new write: an empty key means activation never happens, so the
+		// queue is never flushed and the SDK is never touched. The foreground pass is the second drain
+		// point and must not open a back door either.
+		reset("T54")
+		let t54 = AdaptyService()
+		t54.configure(apiKey: "", customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		t54.setFirebaseAppInstanceId("fid-never")
+		t54.refreshPaywalls()
+		check(Adapty.integrationIdentifierJournal.isEmpty, "AD-06 r5: an empty key must never flush the queued Firebase id — got \(Adapty.integrationIdentifierJournal.map(\.key.rawValue))")
+
+		// T55 — AD-06, the line between the two classes of write. The AppsFlyer id goes back on the
+		// queue when the SDK refuses it (T45) because install data has no second chance. The Firebase id
+		// does NOT: Firebase answers with the same id again next launch, so a retry queue here would
+		// repeat a fact that is about to arrive anyway — and would keep repeating it every foreground
+		// pass for the life of the process.
+		reset("T55")
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
+		let t55 = AdaptyService()
+		t55.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		Adapty.integrationIdentifierError = AdaptyError(.networkFailed)
+		t55.setFirebaseAppInstanceId("fid-refused")
+		Adapty.integrationIdentifierError = nil
+		t55.refreshPaywalls()
+		let t55Firebase = Adapty.integrationIdentifierJournal.filter { $0.key == .firebaseAppInstanceId }
+		check(t55Firebase.isEmpty, "AD-06: a refused Firebase id must not be retried at the next foreground pass — got \(t55Firebase.map(\.value))")
+		check(hasLog("Firebase app instance id failed"), "AD-06: a refused Firebase id must still leave an error trace — got \(log)")
+
+		// T56 — AD-06: two writes before activation. One slot, not a queue: the id is state, so the
+		// newest value is the only one worth sending, and replaying both would write the same fact twice
+		// with the stale one going first.
+		reset("T56")
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
+		let t56 = AdaptyService()
+		t56.setFirebaseAppInstanceId("fid-old")
+		t56.setFirebaseAppInstanceId("fid-new")
+		t56.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		let t56Firebase = Adapty.integrationIdentifierJournal.filter { $0.key == .firebaseAppInstanceId }
+		check(t56Firebase.map(\.value) == ["fid-new"], "AD-06: two ids queued before activation must land as one write of the newest — got \(t56Firebase.map(\.value))")
 	}
 }

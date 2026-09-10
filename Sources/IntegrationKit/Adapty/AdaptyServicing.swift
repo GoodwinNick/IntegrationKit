@@ -43,6 +43,13 @@ protocol AdaptyServicing: AnyObject {
 	/// `ConfigurationIssues` instead of disappearing (AD-06 row 3).
 	func setProfileValue(value: String, key: String)
 
+	/// The Adapty profile's own id, or `nil` when Adapty did not answer — never "there is no id".
+	/// A projection of `profile()` onto a string, with the same deadline and the same meaning for
+	/// `nil` (AD-05): this protocol carries it because `AdaptyProfile` is an SDK type and the app
+	/// must not see one, and the app needs the id to match a user in Adapty with a user on its own
+	/// backend.
+	func profileId() async -> String?
+
 	func hasPaywall(placement: String) -> Bool
 	/// Why a placement has no paywall — `hasPaywall` alone cannot tell a screen whether to show a
 	/// spinner or an empty state (AD-02 row 5).
@@ -82,6 +89,21 @@ protocol AdaptyServicing: AnyObject {
 	/// `setIntegrationIdentifier`. They can fail apart, and each half is queued on its own
 	/// (AD-06 row 10).
 	func updateAppsFlyerAttribution(_ data: [AnyHashable: Any], networkUserId: String?)
+
+	/// Links Firebase's own id for this install to the Adapty profile. The app reads it — Firebase
+	/// hands `Analytics.appInstanceID()` to nobody else, and the package does not reach into another
+	/// SDK for someone else's identifier — and the package owns what happens to it after that.
+	///
+	/// Queued until activation the way attribution is (AD-06): the id is available in the first
+	/// frames of a launch, often before `Adapty.activate` has answered, and dropping it there would
+	/// lose it on EVERY launch rather than on a failed one. It is not retried after a failed write,
+	/// though — unlike install data, Firebase answers with the same id again next launch.
+	///
+	/// Not a profile attribute: 4.1.3 deleted `with(firebaseAppInstanceId:)` from the profile builder
+	/// and this id now travels the integration-identifier channel, the same one `networkUserId` uses.
+	/// So the 1…30/1…50 key and value limits do not apply to it, and it does not count against the
+	/// 30-attribute ceiling.
+	func setFirebaseAppInstanceId(_ id: String)
 }
 
 extension AdaptyServicing {

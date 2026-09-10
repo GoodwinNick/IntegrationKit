@@ -8,9 +8,10 @@
 //  `updateExternalAttribution`, and the JOIN KEY that ties it to the network's own user goes through
 //  `setIntegrationIdentifier`. AD-06 row 10 is about the two halves being able to fail apart.
 //
-//  Only the three factories the package needs are here — `appsflyerId` (`:44-46`), `amplitudeUserId`
-//  (`:28-30`) and `amplitudeDeviceId` (`:32-34`); the last two are where the profile-builder setters
-//  that 4.1.3 deleted went. The other thirteen are one line each upstream and no row asks about them.
+//  Only the four factories the package needs are here — `appsflyerId` (`:44-46`), `amplitudeUserId`
+//  (`:28-30`), `amplitudeDeviceId` (`:32-34`) and `firebaseAppInstanceId` (`:56-58`); the last three
+//  are where profile-builder setters that 4.1.3 deleted went. The other twelve are one line each
+//  upstream and no row asks about them.
 //
 //  The `.trimmed` on `value` (`:17`) is reproduced, and it matters: it is what turns a whitespace-only
 //  AppsFlyer id into an EMPTY join key rather than a rejected one. The SDK does not check for empty,
@@ -30,6 +31,7 @@ public struct AdaptyIntegrationIdentifier: Hashable {
 		public static let amplitudeUserId = Key(rawValue: "amplitude_user_id")
 		public static let amplitudeDeviceId = Key(rawValue: "amplitude_device_id")
 		public static let appsflyerId = Key(rawValue: "appsflyer_id")
+		public static let firebaseAppInstanceId = Key(rawValue: "firebase_app_instance_id")
 	}
 
 	public let key: Key
@@ -50,5 +52,9 @@ public struct AdaptyIntegrationIdentifier: Hashable {
 
 	public static func appsflyerId(_ value: String) -> Self {
 		.init(key: .appsflyerId, value: value)
+	}
+
+	public static func firebaseAppInstanceId(_ value: String) -> Self {
+		.init(key: .firebaseAppInstanceId, value: value)
 	}
 }

@@ -257,10 +257,11 @@ public struct IntegrationKit {
 	}
 
 	// MARK: - Adapty forwards.
-	// Two operations whose input only the app has, and which no premium protocol should carry — a
-	// profile attribute is not a purchase, and `PremiumServicing` is already the widest surface in
-	// the package. Each is one line: the validation, the traces and the inactive-layer behaviour all
-	// belong to the layer, and a copy of any of them here would drift from it at the first edit.
+	// Identity, in and out. Everything here is input only the app has, or an answer only the app
+	// wants, and none of it belongs on a premium protocol — a profile attribute is not a purchase,
+	// and `PremiumServicing` is already the widest surface in the package. Each is one line: the
+	// validation, the traces and the inactive-layer behaviour all belong to the layer, and a copy of
+	// any of them here would drift from it at the first edit.
 
 	/// Writes one custom attribute to the Adapty profile — the app's own, such as the place a
 	/// purchase was made from. The keys the package writes itself (`lastUsedDay`, `launchSession`,
@@ -271,6 +272,29 @@ public struct IntegrationKit {
 	/// attribute quietly disappearing.
 	public func setProfileValue(value: String, key: String) {
 		adapty.setProfileValue(value: value, key: key)
+	}
+
+	/// The Adapty profile's own id — what an app sends to its own backend to describe the same user
+	/// on both sides.
+	///
+	/// `nil` means Adapty did not answer: the layer is off, or the profile has not been created yet,
+	/// or the call ran out of time. It never means "this user has no id". Ask again later in the same
+	/// run rather than storing the `nil`, which would turn a slow start into a permanent absence.
+	public func adaptyProfileId() async -> String? {
+		await adapty.profileId()
+	}
+
+	/// Links Firebase's id for this install to the Adapty profile, so a purchase in one dashboard can
+	/// be found in the other. Pass `Analytics.appInstanceID()` — the package does not read it itself,
+	/// because reaching into another SDK for its own identifier is the app's call, not a library's.
+	///
+	/// Call it whenever the id is in hand, including before the layer has finished starting: a write
+	/// that arrives early waits for activation instead of being dropped. An empty string is refused
+	/// and the reason lands in ``configurationIssues`` — `Analytics.appInstanceID()` answers `nil`
+	/// while Firebase analytics is still coming up, and passing that through as `""` would put a join
+	/// key on the profile that matches nothing.
+	public func setFirebaseAppInstanceId(_ id: String) {
+		adapty.setFirebaseAppInstanceId(id)
 	}
 
 	/// Did nothing since 0.3.0, and does nothing now.

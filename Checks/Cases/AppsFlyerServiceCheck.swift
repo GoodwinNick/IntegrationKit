@@ -108,6 +108,9 @@ final class FakeAdapty: AdaptyServicing {
 		attributionData.append(data)
 		attributionNetworkUserIds.append(networkUserId)
 	}
+
+	func profileId() async -> String? { nil }
+	func setFirebaseAppInstanceId(_ id: String) {}
 }
 
 /// AF-05 row 2 needs at least one object that survives the filter at `AppsFlyerService.swift:108`.

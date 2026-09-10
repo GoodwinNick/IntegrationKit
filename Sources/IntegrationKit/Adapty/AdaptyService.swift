@@ -109,6 +109,11 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	/// the same one — so a second write can only confirm what is already there (AD-06 row 1).
 	private var pendingAttributionPayloads: [[AnyHashable: Any]] = []
 	private var pendingAppsFlyerIds: [String] = []
+	/// The Firebase App Instance ID waiting for activation, if the app handed one over before Adapty
+	/// came up. One slot rather than a queue: unlike attribution this is state, so the newest value
+	/// is the only one worth sending, and a second call before activation replaces the first instead
+	/// of scheduling a second write of the same fact.
+	private var pendingFirebaseAppInstanceId: String?
 	/// How many product loads failed. A screen can say "try again later" instead of showing an
 	/// empty list with no reason anywhere (AD-02 row 2, AD-03 row 2 — the same event, two paths).
 	private(set) var failedProductLoads = 0
@@ -221,7 +226,7 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 			for placement in placements {
 				self.loadFlow(placement: placement)
 			}
-			self.flushPendingAttribution()
+			self.flushPendingWrites()
 			self.watchForFirstProfile()
 		}
 	}
@@ -343,13 +348,36 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 			// touched — which is what AD-06 row 5 requires.
 			recordInactive(operation: "updateAppsFlyerAttribution")
 			pendingAttributionPayloads.append(data)
-			if let id = Self.usableNetworkUserId(networkUserId) {
+			if let id = Self.usableIdentifier(networkUserId) {
 				pendingAppsFlyerIds.append(id)
 			}
 			return
 		}
 		sendAttributionPayload(data)
 		sendAppsFlyerId(networkUserId)
+	}
+
+	func setFirebaseAppInstanceId(_ id: String) {
+		guard let id = Self.usableIdentifier(id) else {
+			// The app gets this id from an optional, and `nil` there means Firebase analytics has not
+			// come up yet — not that there is no id. Writing the empty string would put a join key on
+			// the profile that matches nothing, permanently, which is worse than writing nothing.
+			ConfigurationIssues.shared.record(
+				"The Firebase app instance id was empty — an empty identifier matches nothing on the Adapty dashboard, so it was not written",
+				tag: Self.tag
+			)
+			return
+		}
+		guard isActive else {
+			// Same race as attribution, different reason: this id is ready in the first frames of a
+			// launch, well before activation answers. Dropping it here would lose it on every launch,
+			// not on an unlucky one. With an empty key activation never happens, the queue is never
+			// flushed, and the SDK is never touched.
+			recordInactive(operation: "setFirebaseAppInstanceId")
+			pendingFirebaseAppInstanceId = id
+			return
+		}
+		sendFirebaseAppInstanceId(id)
 	}
 
 	/// The campaign data itself. AD-06 row 11: `updateExternalAttribution` serialises the payload
@@ -389,7 +417,7 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	/// the half of AD-06 row 10 that is easiest to lose: it is a second call now, and it fails on its
 	/// own.
 	private func sendAppsFlyerId(_ networkUserId: String?) {
-		guard let id = Self.usableNetworkUserId(networkUserId) else {
+		guard let id = Self.usableIdentifier(networkUserId) else {
 			// `AdaptyIntegrationIdentifier` trims its value and does not check for empty, so an empty
 			// id is stored and matches nothing on the dashboard, permanently. The old
 			// `updateAttribution` took the id as part of one call and this could not happen.
@@ -410,13 +438,23 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		}
 	}
 
-	/// `nil` for an id that would be worse than none. Adapty trims the value itself, so whitespace is
-	/// an empty id by the time it lands.
-	private static func usableNetworkUserId(_ networkUserId: String?) -> String? {
-		guard let trimmed = networkUserId?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+	/// `nil` for an id that would be worse than none — used by every identifier that travels the
+	/// integration channel, not just AppsFlyer's. Adapty trims the value itself and does not check
+	/// for empty, so whitespace is an empty id by the time it lands.
+	private static func usableIdentifier(_ identifier: String?) -> String? {
+		guard let trimmed = identifier?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
 			return nil
 		}
 		return trimmed
+	}
+
+	/// The Firebase half of the integration channel. No `onError` on purpose: this is state data, and
+	/// `send` already logs the failure — a retry queue here would repeat a fact Firebase will hand
+	/// over again on its own next launch (AD-06).
+	private func sendFirebaseAppInstanceId(_ id: String) {
+		send("Firebase app instance id") { completion in
+			Adapty.setIntegrationIdentifier(.firebaseAppInstanceId(id), completion: completion)
+		}
 	}
 
 	/// AD-06 row 9, in one place. Every SDK call that answers with an optional error goes through
@@ -466,20 +504,36 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		var answered = false
 	}
 
-	/// Both halves drain independently: one that failed does not hold the other back, and one that
+	/// Every write that was made before the layer came up, replayed once activation is done. The
+	/// parts drain independently: one that failed does not hold the others back, and one that
 	/// succeeded is not sent twice (AD-06 row 10).
-	private func flushPendingAttribution() {
+	private func flushPendingWrites() {
+		// AD-06 row 5. The `activate` completion cannot reach here without an active layer, but the
+		// foreground pass can: `refreshPaywalls()` has no activation behind it, and an app with an
+		// empty Adapty key still gets a `didBecomeActive` observer. Without this guard the queue that
+		// exists to survive a slow activation instead drains into an SDK that was never activated at
+		// all — on every foreground pass, for the life of the process.
+		guard isActive else { return }
 		let payloads = pendingAttributionPayloads
 		let ids = pendingAppsFlyerIds
-		guard !payloads.isEmpty || !ids.isEmpty else { return }
+		let firebaseId = pendingFirebaseAppInstanceId
+		guard !payloads.isEmpty || !ids.isEmpty || firebaseId != nil else { return }
 		pendingAttributionPayloads = []
 		pendingAppsFlyerIds = []
-		debugLog(tag: Self.tag, "flushing \(payloads.count) attribution payload(s) and \(ids.count) id(s)")
+		pendingFirebaseAppInstanceId = nil
+		debugLog(
+			tag: Self.tag,
+			"flushing \(payloads.count) attribution payload(s), \(ids.count) AppsFlyer id(s) and "
+				+ (firebaseId == nil ? "no Firebase id" : "1 Firebase id")
+		)
 		for payload in payloads {
 			sendAttributionPayload(payload)
 		}
 		for id in ids {
 			sendAppsFlyerId(id)
+		}
+		if let firebaseId {
+			sendFirebaseAppInstanceId(firebaseId)
 		}
 	}
 
@@ -644,7 +698,7 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	/// already wired, it is the moment a dropped network is most likely to be back, and it costs one
 	/// line instead of a second observer.
 	func refreshPaywalls() {
-		flushPendingAttribution()
+		flushPendingWrites()
 		for placement in configuredPlacements {
 			if let loadedAt = flowLoadedAt[placement], Date().timeIntervalSince(loadedAt) < deadlines.paywallTTL {
 				continue
@@ -905,6 +959,13 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 			didLoadNetworkProfile = true
 		}
 		return answer
+	}
+
+	/// One line on purpose. The id gets no path of its own, so nothing about it can drift away from
+	/// `profile()` — same deadline, same inactive-layer answer, same meaning for `nil` (AD-05). The
+	/// app is the only caller: it needs the id to match its own backend's user with Adapty's.
+	func profileId() async -> String? {
+		await profile()?.profileId
 	}
 
 	/// Products of a placement, already wrapped so the caller never sees an Adapty type. Uses the

@@ -7,6 +7,12 @@
 //  with their `import Adapty` untouched. Only the members `PremiumAccess+Adapty` reads are here;
 //  if that mapping starts using a new field, this file has to grow with it.
 //
+//  KNOWN DIVERGENCE: upstream `profileId` is computed from a `userId` the initializer does not take
+//  (`Profile/Entities/AdaptyProfile.swift:11-16`), so it cannot be set directly there. Here it is a
+//  stored property with a default, which lets the checks that do not care about the id keep calling
+//  `AdaptyProfile(accessLevels:)` unchanged. The type is the same — a non-optional `String`, which
+//  is what makes `AdaptyService.profileId()` answer `nil` only when the PROFILE is missing.
+//
 
 import Foundation
 
@@ -25,9 +31,11 @@ public struct AdaptyProfile {
 		}
 	}
 
+	public let profileId: String
 	public let accessLevels: [String: AccessLevel]
 
-	public init(accessLevels: [String: AccessLevel]) {
+	public init(profileId: String = "profile-stub", accessLevels: [String: AccessLevel]) {
+		self.profileId = profileId
 		self.accessLevels = accessLevels
 	}
 }
