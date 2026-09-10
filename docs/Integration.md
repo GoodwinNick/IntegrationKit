@@ -35,7 +35,7 @@ Xcode → File → Add Package Dependencies → this repo's URL → product
 `IntegrationKit`.
 
 ```swift
-.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.3.0")
+.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.4.0")
 ```
 
 The target's minimum deployment target must be iOS 15.6 or the package will
@@ -1252,6 +1252,10 @@ dashboard entry.
 - [ ] AppsFlyer App ID confirmed against App Store Connect, not guessed
 - [ ] `levels` matches the Adapty access level id actually granted by the
       paywall
+- [ ] Every Remote Config key the app reads has an entry in
+      `remoteConfigDefaults`, and each default is the value that is safe to ship
+      — a key without one reads as `false`/`""`/`0`, indistinguishable from a
+      value the console sent
 - [ ] `kit.premium.purchase(...)` handles all five `PurchaseOutcome` cases —
       `.pending` shows waiting, `.unavailable` hides the button
 - [ ] Every screen that gates content on premium observes `.premiumDidChange`

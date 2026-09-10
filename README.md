@@ -29,7 +29,7 @@ Adapty 2.10.x.
 ## Installation
 
 ```swift
-.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.3.0")
+.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.4.0")
 ```
 
 In Xcode: File → Add Package Dependencies → the same URL, product `IntegrationKit`.
