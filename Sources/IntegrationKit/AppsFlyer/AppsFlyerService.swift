@@ -147,12 +147,14 @@ extension AppsFlyerService: AppsFlyerLibDelegate {
 		// here used to let the event say `af_status = 42` while the profile said "unknown" — the
 		// same field, two answers, and a dashboard that contradicts itself.
 		analytics.logEvent("af_onConversionData", properties: cleanedData)
-		// AN-03 row 4 / AF-03 row 5: `status`, `media_source` and `campaign_name` are far too common
-		// for a namespace shared with the app's own properties. The events already carry `af_`.
+		// AN-03 row 4 / AF-03 row 5: the profile properties carry the bare AppsFlyer names. Decided
+		// on 2026-09-10, reversing the `af_` prefix: the namespace shared with the app's own
+		// properties is accepted, so an app that writes its own `status`, `media_source` or
+		// `campaign_name` overwrites these — the events keep their `af_` prefix regardless.
 		analytics.setUserProperties([
-			"af_status": describe(cleanedData["af_status"]),
-			"af_media_source": describe(cleanedData["media_source"]),
-			"af_campaign_name": describe(cleanedData["campaign"]),
+			"status": describe(cleanedData["af_status"]),
+			"media_source": describe(cleanedData["media_source"]),
+			"campaign_name": describe(cleanedData["campaign"]),
 		])
 
 		// AF-03 row 2: an empty UID is "no UID". An empty string is worse than nothing — it looks

@@ -355,10 +355,10 @@ enum AppsFlyerServiceCheck {
 				+ "\(String(describing: t12Analytics.events.first?.properties?["af_status"]))"
 		)
 		check(
-			t12Analytics.userProperties.first?["af_status"] as? String == "42",
+			t12Analytics.userProperties.first?["status"] as? String == "42",
 			"T13 AF-03 row 3: the profile property must describe af_status the same way the event "
 				+ "does — \"42\" — got "
-				+ "\(String(describing: t12Analytics.userProperties.first?["af_status"]))"
+				+ "\(String(describing: t12Analytics.userProperties.first?["status"]))"
 		)
 
 		// AF-03 row 4 (a rejected attribution write must be retried) is covered elsewhere, on
@@ -618,11 +618,10 @@ enum AppsFlyerServiceCheck {
 		// Executes `AppsFlyerService.swift:139-143`. Neither schema's check was covering this row:
 		// AF-03 row 5 points at AN-03 row 4 and AN-03 row 4 points back here, so the pointer went
 		// in a circle and nobody asserted it. The code that writes the names lives in this file's
-		// subject, so the assert belongs here. Green: all three names carry the `af_` prefix, so
-		// the app's own `status` or `campaign_name` and the package's no longer overwrite each
-		// other with nothing to tell them apart. The prefix itself is the implementation's choice
-		// — the two events already carry it — and naming it is the only way to assert
-		// "recognizable" precisely.
+		// subject, so the assert belongs here. The `af_` prefix was reversed on 2026-09-10: the
+		// three bare names are now the contract, and the collision with an app that writes its own
+		// `status` or `campaign_name` is accepted. What the assert still buys is that the set is
+		// exactly these three — a renamed or an extra property fails it either way.
 		AppsFlyerLib.reset()
 		let propertyNameAnalytics = FakeAnalytics()
 		let propertyNameService = AppsFlyerService(analytics: propertyNameAnalytics, adapty: FakeAdapty())
@@ -633,9 +632,9 @@ enum AppsFlyerServiceCheck {
 		])
 		let writtenPropertyNames = Set((propertyNameAnalytics.userProperties.first ?? [:]).keys)
 		check(
-			writtenPropertyNames == ["af_status", "af_media_source", "af_campaign_name"],
-			"T24 AN-03 row 4: the profile properties the package writes must carry the same af_ "
-				+ "prefix its events do, got \(writtenPropertyNames.sorted())"
+			writtenPropertyNames == ["status", "media_source", "campaign_name"],
+			"T24 AN-03 row 4: the profile properties the package writes must be exactly status, "
+				+ "media_source and campaign_name, got \(writtenPropertyNames.sorted())"
 		)
 
 		// ── AF-02 row 1 — start belongs on every foreground return ───────────────────────────
@@ -711,14 +710,14 @@ enum AppsFlyerServiceCheck {
 		sparseService.onConversionDataSuccess(["campaign": "spring"])
 		let sparseProperties = sparseAnalytics.userProperties.first ?? [:]
 		check(
-			sparseProperties["af_status"] as? String == "unknown"
-				&& sparseProperties["af_media_source"] as? String == "unknown"
-				&& sparseProperties["af_campaign_name"] as? String == "spring",
+			sparseProperties["status"] as? String == "unknown"
+				&& sparseProperties["media_source"] as? String == "unknown"
+				&& sparseProperties["campaign_name"] as? String == "spring",
 			"T33 AF-03 row 6: fields the SDK did not send must reach the profile as \"unknown\", "
-				+ "not empty or absent, got af_status "
-				+ "\(String(describing: sparseProperties["af_status"])), af_media_source "
-				+ "\(String(describing: sparseProperties["af_media_source"])), af_campaign_name "
-				+ "\(String(describing: sparseProperties["af_campaign_name"]))"
+				+ "not empty or absent, got status "
+				+ "\(String(describing: sparseProperties["status"])), media_source "
+				+ "\(String(describing: sparseProperties["media_source"])), campaign_name "
+				+ "\(String(describing: sparseProperties["campaign_name"]))"
 		)
 
 		// ── AF-05 row 4 — the URL forward reaches the SDK unchanged ──────────────────────────
