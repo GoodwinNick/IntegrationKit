@@ -256,6 +256,24 @@ public struct IntegrationKit {
 		adapty.updateAppTrackingTransparencyStatus(status)
 	}
 
+	/// One fact about this user, written to both dashboards at once — the Adapty profile and the
+	/// Amplitude user profile. For the app's own facts that both sides get asked about: a cohort, a
+	/// plan name, a counter of things generated.
+	///
+	/// The two single-SDK routes stay available and are not deprecated by this one:
+	/// ``setProfileValue(value:key:)`` writes to Adapty alone, and
+	/// ``AnalyticsTracking/setUserProperties(_:)`` on ``analytics`` writes to Amplitude alone, in
+	/// bulk and with values of any type.
+	///
+	/// The two halves are independent on purpose. A pair Adapty refuses — its keys are 1…30
+	/// characters of `A-Za-z0-9._-`, its values 1…50 — still reaches Amplitude, which has no such
+	/// limit; the refusal lands in ``configurationIssues`` as it always does. Letting the stricter
+	/// SDK veto the other one would silently drop analytics data over a rule that is not analytics'.
+	public func setUserProperty(value: String, key: String) {
+		adapty.setProfileValue(value: value, key: key)
+		analytics.setUserProperties([key: value])
+	}
+
 	// MARK: - Adapty forwards.
 	// Identity, in and out. Everything here is input only the app has, or an answer only the app
 	// wants, and none of it belongs on a premium protocol — a profile attribute is not a purchase,

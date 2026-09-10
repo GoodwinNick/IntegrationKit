@@ -178,11 +178,19 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 		print(kit.remoteConfig.double("discountRate"))
 	}
 
+	/// All three writers of a user property, from the facade alone — one per destination, so the
+	/// compiler proves an app can pick where an attribute lands.
 	func markCohort(_ cohort: String) {
+		guard let kit else { return }
 		// An attribute only the app can know. `lastUsedDay`, `launchSession`, `deep_link_value` and
 		// — since 0.2.2 — `purchasePlace` are the package's own and are never passed in from here:
 		// `purchase(_:placement:)` already carries the placement and knows whether Apple charged.
-		kit?.setProfileValue(value: cohort, key: "cohort")
+		kit.setProfileValue(value: cohort, key: "cohort")
+		// Amplitude alone: a counter the paywall never segments on has no business in the Adapty
+		// profile, where every attribute is a targeting slot the dashboard has to show.
+		kit.analytics.setUserProperties(["logoCountGenerated": 2])
+		// Both at once, for an attribute the dashboards have to agree on.
+		kit.setUserProperty(value: cohort, key: "cohort")
 	}
 
 	/// Identity in both directions, from the facade alone — an app that has to describe the same

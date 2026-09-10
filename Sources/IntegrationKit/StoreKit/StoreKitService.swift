@@ -23,6 +23,33 @@ final class StoreKitService: AppleSubscribing {
 		self.productIds = productIds
 	}
 
+	/// PM-07 row 13. Every call into SwiftyStoreKit goes through here, and the reason is in the SDK's
+	/// own source: `ProductsInfoController` keeps its in-flight requests in a plain Swift dictionary
+	/// with no lock of any kind (`ProductsInfoController.swift:52`), and clears entries from it in a
+	/// callback it deliberately hands back on the main thread
+	/// (`InAppProductQueryRequest.swift:88-92`). Main is therefore the thread the library itself
+	/// picked; half the access was already serialised there, and only our side was missing.
+	///
+	/// Our side arrived from `async` methods with no isolation — a cooperative-pool thread — so the
+	/// two halves mutated the same `Dictionary` at once and corrupted its storage. That does not
+	/// crash where it happens: it surfaces later as `unrecognized selector` sent to a garbage tagged
+	/// pointer, in whichever call next hashes a key.
+	///
+	/// All five entry points are wrapped, not only the one that crashed. `PaymentQueueController`
+	/// has no locking either, and Apple never promised `SKPaymentTransactionObserver` callbacks on
+	/// the main thread — restore, purchase and `completeTransactions` sit on the same fault line.
+	///
+	/// A caller already on the main thread runs inline instead of being deferred a turn: the hop
+	/// exists to fix the thread, not to change when anything happens. `completeTransactions` depends
+	/// on that — the composition root reads its effects on the next line.
+	private func onMainThread(_ work: @escaping () -> Void) {
+		if Thread.isMainThread {
+			work()
+		} else {
+			DispatchQueue.main.async(execute: work)
+		}
+	}
+
 	/// Finishes purchases that were interrupted mid-flight — the app killed during a payment, an
 	/// ask-to-buy approved days later. Without it the transaction stays in the queue forever and
 	/// the user paid for nothing. Called once from the composition root.
@@ -31,24 +58,26 @@ final class StoreKitService: AppleSubscribing {
 	/// only after it is finished, so the premium state has to be re-asked afterwards — `start()`'s
 	/// own refresh has already run by then.
 	func completeTransactions(onDelivered: @escaping () -> Void) {
-		SwiftyStoreKit.completeTransactions(atomically: true) { purchases in
-			var delivered = false
-			for purchase in purchases {
-				switch purchase.transaction.transactionState {
-					case .purchased, .restored:
-						delivered = true
-						if purchase.needsFinishTransaction {
-							SwiftyStoreKit.finishTransaction(purchase.transaction)
-						}
-					case .failed, .purchasing, .deferred:
-						break
-					@unknown default:
-						break
+		onMainThread {
+			SwiftyStoreKit.completeTransactions(atomically: true) { purchases in
+				var delivered = false
+				for purchase in purchases {
+					switch purchase.transaction.transactionState {
+						case .purchased, .restored:
+							delivered = true
+							if purchase.needsFinishTransaction {
+								SwiftyStoreKit.finishTransaction(purchase.transaction)
+							}
+						case .failed, .purchasing, .deferred:
+							break
+						@unknown default:
+							break
+					}
 				}
-			}
-			debugLog("[IntegrationKit] completeTransactions: \(purchases.count) pending, delivered: \(delivered)")
-			if delivered {
-				onDelivered()
+				debugLog("[IntegrationKit] completeTransactions: \(purchases.count) pending, delivered: \(delivered)")
+				if delivered {
+					onDelivered()
+				}
 			}
 		}
 	}
@@ -69,13 +98,15 @@ final class StoreKitService: AppleSubscribing {
 
 		let validator = AppleReceiptValidator(service: .production, sharedSecret: sharedSecret)
 		let receipt: ReceiptInfo? = await withSingleResume { resume in
-			SwiftyStoreKit.verifyReceipt(using: validator) { result in
-				switch result {
-					case .success(let receipt):
-						resume(receipt)
-					case .error(let error):
-						debugLog("[IntegrationKit] receipt verification failed: \(error)")
-						resume(nil)
+			onMainThread {
+				SwiftyStoreKit.verifyReceipt(using: validator) { result in
+					switch result {
+						case .success(let receipt):
+							resume(receipt)
+						case .error(let error):
+							debugLog("[IntegrationKit] receipt verification failed: \(error)")
+							resume(nil)
+					}
 				}
 			}
 		}
@@ -94,21 +125,23 @@ final class StoreKitService: AppleSubscribing {
 
 	func restore() async -> RestoreOutcome {
 		await withSingleResume { resume in
-			SwiftyStoreKit.restorePurchases(atomically: true) { results in
-				// `atomically: true` finishes them already; the guard is what makes this correct
-				// anyway if that ever changes.
-				for purchase in results.restoredPurchases where purchase.needsFinishTransaction {
-					SwiftyStoreKit.finishTransaction(purchase.transaction)
-				}
-				// Something restored wins over something failed: the user got their subscription
-				// back, and half a restore is still a restore.
-				if !results.restoredPurchases.isEmpty {
-					resume(.restored)
-				} else if !results.restoreFailedPurchases.isEmpty {
-					debugLog("[IntegrationKit] restore failed: \(results.restoreFailedPurchases)")
-					resume(.failed)
-				} else {
-					resume(.nothingToRestore)
+			onMainThread {
+				SwiftyStoreKit.restorePurchases(atomically: true) { results in
+					// `atomically: true` finishes them already; the guard is what makes this correct
+					// anyway if that ever changes.
+					for purchase in results.restoredPurchases where purchase.needsFinishTransaction {
+						SwiftyStoreKit.finishTransaction(purchase.transaction)
+					}
+					// Something restored wins over something failed: the user got their subscription
+					// back, and half a restore is still a restore.
+					if !results.restoredPurchases.isEmpty {
+						resume(.restored)
+					} else if !results.restoreFailedPurchases.isEmpty {
+						debugLog("[IntegrationKit] restore failed: \(results.restoreFailedPurchases)")
+						resume(.failed)
+					} else {
+						resume(.nothingToRestore)
+					}
 				}
 			}
 		}
@@ -116,26 +149,28 @@ final class StoreKitService: AppleSubscribing {
 
 	func purchase(productId: String) async -> PurchaseOutcome {
 		await withSingleResume { resume in
-			SwiftyStoreKit.purchaseProduct(productId, atomically: true) { result in
-				switch result {
-					case .success(let purchase):
-						if purchase.needsFinishTransaction {
-							SwiftyStoreKit.finishTransaction(purchase.transaction)
-						}
-						resume(.purchased)
-					case .error(let error):
-						switch error.code {
-							case .paymentCancelled, .overlayCancelled:
-								resume(.cancelled)
-							default:
-								debugLog("[IntegrationKit] purchase failed: \(error)")
-								resume(.failed)
-						}
-					case .deferred:
-						// Ask to Buy: neither bought nor refused. `.failed` here made the screen show
-						// an error and offer a retry for a purchase that is alive and waiting for a
-						// parent — when the approval lands, `completeTransactions` picks it up.
-						resume(.pending)
+			onMainThread {
+				SwiftyStoreKit.purchaseProduct(productId, atomically: true) { result in
+					switch result {
+						case .success(let purchase):
+							if purchase.needsFinishTransaction {
+								SwiftyStoreKit.finishTransaction(purchase.transaction)
+							}
+							resume(.purchased)
+						case .error(let error):
+							switch error.code {
+								case .paymentCancelled, .overlayCancelled:
+									resume(.cancelled)
+								default:
+									debugLog("[IntegrationKit] purchase failed: \(error)")
+									resume(.failed)
+							}
+						case .deferred:
+							// Ask to Buy: neither bought nor refused. `.failed` here made the screen
+							// show an error and offer a retry for a purchase that is alive and waiting
+							// for a parent — when the approval lands, `completeTransactions` picks it up.
+							resume(.pending)
+					}
 				}
 			}
 		}
@@ -153,11 +188,13 @@ final class StoreKitService: AppleSubscribing {
 	private func storeProducts(ids: Set<String>) async -> [String: SKProduct] {
 		guard !ids.isEmpty else { return [:] }
 		return await withSingleResume { resume in
-			SwiftyStoreKit.retrieveProductsInfo(ids) { result in
-				if let error = result.error {
-					debugLog("[IntegrationKit] retrieveProductsInfo failed: \(error)")
+			onMainThread {
+				SwiftyStoreKit.retrieveProductsInfo(ids) { result in
+					if let error = result.error {
+						debugLog("[IntegrationKit] retrieveProductsInfo failed: \(error)")
+					}
+					resume(Dictionary(result.retrievedProducts.map { ($0.productIdentifier, $0) }, uniquingKeysWith: { first, _ in first }))
 				}
-				resume(Dictionary(result.retrievedProducts.map { ($0.productIdentifier, $0) }, uniquingKeysWith: { first, _ in first }))
 			}
 		}
 	}

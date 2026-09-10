@@ -521,10 +521,56 @@ enum AmplitudeAnalyticsCheck {
 		)
 		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
 
+		// ── AN-03 row 6 — the identity writes and the device id read must leave a trace ──
+		// The 2026-09-09 logging contract asks each of the three operations to show its own data
+		// rather than the fact of the call. The user-property format was settled 2026-09-10: one
+		// line per pair, not one dump of the dictionary — a dictionary printed whole is unreadable
+		// the moment it carries more than two keys, and the pair is what an app looks for.
+		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
+		Amplitude.reset()
+		let an03Log = AmplitudeAnalytics()
+		an03Log.configure(apiKey: "amp-key", deviceId: "device-an03-log", firstOpenEvent: nil)
+		var an03LogLines: [String] = []
+		debugLogSink = { an03LogLines.append($0) }
+		an03Log.setUserProperties(["logoCountGenerated": 2, "cohort": "returning"])
+		debugLogSink = nil
+		check(
+			an03LogLines.contains("[IntegrationKit][AmplitudeAnalytics] UserProperty: logoCountGenerated | value: 2")
+				&& an03LogLines.contains("[IntegrationKit][AmplitudeAnalytics] UserProperty: cohort | value: returning"),
+			"T21 AN-03 row 6: setUserProperties must log one line per pair as "
+				+ "\"UserProperty: <key> | value: <value>\", got \(an03LogLines)"
+		)
+
+		// The id itself, not "the user id was set" — a split profile (row 3) is diagnosed by
+		// comparing the id in the log with the one the dashboard shows, and a log without the value
+		// cannot be compared with anything.
+		var an03LogIdLines: [String] = []
+		debugLogSink = { an03LogIdLines.append($0) }
+		an03Log.setUserId("user-42")
+		debugLogSink = nil
+		check(
+			an03LogIdLines.contains { $0.hasPrefix("[IntegrationKit][AmplitudeAnalytics] ") && $0.contains("user-42") },
+			"T22 AN-03 row 6: setUserId must log the id itself at info level, got \(an03LogIdLines)"
+		)
+
+		// `nil` is the answer AN-03 row 2 is built around, and the contract puts it at `error` — it
+		// is the one reading that leaves another SDK without the link and never retries.
+		Amplitude.deviceId = nil
+		var an03LogDeviceLines: [String] = []
+		debugLogSink = { an03LogDeviceLines.append($0) }
+		_ = an03Log.deviceId
+		debugLogSink = nil
+		check(
+			an03LogDeviceLines.contains { $0.hasPrefix("[IntegrationKit][AmplitudeAnalytics][error] ") && $0.contains("nil") },
+			"T23 AN-03 row 6: a nil device id must reach the log at error level, got \(an03LogDeviceLines)"
+		)
+		Amplitude.reset()
+		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
+
 		if failures.isEmpty {
-			print("AmplitudeAnalytics (AN-01..AN-04): 22/22 OK")
+			print("AmplitudeAnalytics (AN-01..AN-04): 25/25 OK")
 		} else {
-			print("\(failures.count) of 22 asserts FAILED")
+			print("\(failures.count) of 25 asserts FAILED")
 			exit(1)
 		}
 	}

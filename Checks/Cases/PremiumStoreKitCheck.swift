@@ -365,8 +365,38 @@ enum PremiumStoreKitCheck {
 		check(verifiedStore.notified == 0, "PM-08 row 10: the flag never moved — expected 0 .premiumDidChange, got \(verifiedStore.notified)")
 		check(verifiedService.isPremium == true, "PM-08 row 10: a re-delivery must not disturb premium the user already has, got \(verifiedService.isPremium)")
 
+		// PM-07 row 13: every entry into SwiftyStoreKit lands on the main thread, whatever thread the
+		// caller arrived on. The SDK keeps unsynchronised dictionaries behind these calls and hands
+		// its own callbacks back on main, so an off-main entry is a live data race — it corrupted a
+		// `Set<String>` key in the field and surfaced as `unrecognized selector` on a garbage pointer.
+		//
+		// `Task.detached` is not decoration: it is the shape a shipping app always takes. Nothing in
+		// the package is main-actor isolated, and `PremiumService.products(placement:)` wraps this in
+		// a `Task` of its own — so the SDK is entered from a cooperative-pool thread no matter which
+		// thread the app called the facade from, and no app-side discipline can change that.
+		SwiftyStoreKit.reset()
+		let offMainPricesService = StoreKitService(sharedSecret: "shared-secret", productIds: ["year.sub"])
+		var offMainPrices: [String: PremiumProduct]?
+		Task.detached { offMainPrices = await offMainPricesService.products(ids: ["year.sub"]) }
+		check(wait { offMainPrices != nil }, "PM-07 row 13: products(ids:) called off the main thread must still call back")
+		let priceEntries = SwiftyStoreKit.callThreads.filter { $0.name == "retrieveProductsInfo" }
+		check(priceEntries.count == 1 && priceEntries.allSatisfy(\.isMain),
+		      "PM-07 row 13: retrieveProductsInfo must be entered on the main thread even when the caller is not, got \(priceEntries)")
+
+		// The same guard on a second entry point, because the fix belongs to the layer and not to the
+		// one call that crashed: `PaymentQueueController` carries no locking either, and Apple does
+		// not promise `SKPaymentTransactionObserver` callbacks on main.
+		SwiftyStoreKit.reset()
+		let offMainRestoreService = StoreKitService(sharedSecret: "shared-secret", productIds: ["year.sub"])
+		var offMainRestore: RestoreOutcome?
+		Task.detached { offMainRestore = await offMainRestoreService.restore() }
+		check(wait { offMainRestore != nil }, "PM-07 row 13: restore() called off the main thread must still call back")
+		let restoreEntries = SwiftyStoreKit.callThreads.filter { $0.name == "restorePurchases" }
+		check(restoreEntries.count == 1 && restoreEntries.allSatisfy(\.isMain),
+		      "PM-07 row 13: restorePurchases must be entered on the main thread even when the caller is not, got \(restoreEntries)")
+
 		if failures.isEmpty {
-			print("PremiumService restore (PM-05), prices (PM-07) and unfinished transactions (PM-08): 16/16 OK")
+			print("PremiumService restore (PM-05), prices (PM-07) and unfinished transactions (PM-08): 20/20 OK")
 		} else {
 			print("\(failures.count) check(s) failed:")
 			for failure in failures {

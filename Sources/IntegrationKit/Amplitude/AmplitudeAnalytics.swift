@@ -80,11 +80,20 @@ final class AmplitudeAnalytics: AnalyticsTracking {
 	}
 
 	func setUserId(_ userId: String) {
+		// AN-03 row 6: the id itself, not the fact of the call. A split profile (row 3) is diagnosed
+		// by holding the id from the log next to the one the dashboard shows — a line without the
+		// value has nothing to hold up.
+		debugLog(tag: Self.tag, "UserId: \(userId)")
 		amplitude?.setUserId(userId: userId)
 	}
 
 	var deviceId: String? {
-		amplitude?.getDeviceId()
+		let id = amplitude?.getDeviceId()
+		// AN-03 row 6: `nil` is an `error`, not because reading failed — it is a legal answer twice
+		// over (row 1) — but because it is the read that leaves Adapty without the link and never
+		// retries (row 2). In a log that only said "device id was read", that moment is invisible.
+		debugLog(tag: Self.tag, level: id == nil ? .error : .info, "DeviceId: \(id ?? "nil")")
+		return id
 	}
 
 	func logEvent(_ event: String, properties: [String: Any]? = nil) {
@@ -93,6 +102,12 @@ final class AmplitudeAnalytics: AnalyticsTracking {
 	}
 
 	func setUserProperties(_ properties: [String: Any]) {
+		// AN-03 row 6, in the shape settled 2026-09-10: one line per pair, not one dump of the whole
+		// dictionary. A dictionary printed whole is unreadable past two keys, and a single pair is
+		// what someone searches the console for when a property never showed up in the dashboard.
+		for (key, value) in properties {
+			debugLog(tag: Self.tag, "UserProperty: \(key) | value: \(value)")
+		}
 		amplitude?.identify(userProperties: properties)
 	}
 

@@ -15,6 +15,7 @@
 //
 
 import Adapty
+import AmplitudeSwift
 import Foundation
 import UIKit
 
@@ -54,15 +55,15 @@ enum IntegrationKitCheck {
 	/// An app shipped without attribution: `appsFlyerDevKey` empty, which is the documented legal
 	/// configuration and what leaves `IntegrationKit` holding no `AppsFlyerService` at all.
 	///
-	/// The Adapty key, on the other hand, is live-shaped, and that is not decoration: the forwards
-	/// asserted below are only observable through the SDK stub, and an inactive Adapty layer stops
-	/// every one of them at its own `guard isActive` before the forward can be seen at all. It has to
-	/// be decided here rather than per row — `configure` builds one kit per process by design, so the
+	/// The Adapty and Amplitude keys, on the other hand, are live-shaped, and that is not decoration:
+	/// the forwards asserted below are only observable through the SDK stubs, and a layer that is off
+	/// stops every one of them at its own guard before the forward can be seen at all. It has to be
+	/// decided here rather than per row — `configure` builds one kit per process by design, so the
 	/// first call in this file is the only call that chooses anything.
 	static func kitWithoutAppsFlyer() -> IntegrationKit {
 		IntegrationKit.configure(
 			deviceId: "00000000-0000-0000-0000-000000000000",
-			amplitudeKey: "",
+			amplitudeKey: "amp-key",
 			adaptyKey: "public_live_0000000000000000000000000000000000",
 			placements: [],
 			sessionsCounter: 1,
@@ -164,8 +165,24 @@ enum IntegrationKitCheck {
 		check(forwardedId == "prof-facade",
 		      "AD-05 r9: adaptyProfileId on the facade must answer the profile's own id — got \(String(describing: forwardedId))")
 
+		// AD-06 row 8 and AN-03 row 6, in one call. `setUserProperty` is the only member of the whole
+		// facade that writes to two SDKs at once, which is exactly why it is checked here and not in
+		// either single-SDK check: a forward that quietly lost one half would still look completely
+		// healthy from the other one's side. Both halves are named, one assert each.
+		let beforeShared = Adapty.updateProfileJournal.count
+		let beforeIdentify = Amplitude.identifyCalls.count
+		kit.setUserProperty(value: "returning", key: "cohort")
+		let sharedAdaptyValue = Adapty.updateProfileJournal.last?.customAttributes["cohort"]
+		let adaptyGrew = Adapty.updateProfileJournal.count == beforeShared + 1
+		check(adaptyGrew && sharedAdaptyValue == .string("returning"),
+		      "AD-06 r8: setUserProperty must reach the Adapty profile with the app's own pair — journal \(beforeShared) → \(Adapty.updateProfileJournal.count), value \(String(describing: sharedAdaptyValue))")
+		let sharedAmplitudeValue = Amplitude.identifyCalls.last?["cohort"] as? String
+		let amplitudeGrew = Amplitude.identifyCalls.count == beforeIdentify + 1
+		check(amplitudeGrew && sharedAmplitudeValue == "returning",
+		      "AN-03 r6: setUserProperty must reach Amplitude with the same pair — identify calls \(beforeIdentify) → \(Amplitude.identifyCalls.count), value \(String(describing: sharedAmplitudeValue))")
+
 		if failures.isEmpty {
-			print("IntegrationKit composition root: \(12) checks OK")
+			print("IntegrationKit composition root: \(14) checks OK")
 		} else {
 			print("\(failures.count) check(s) failed:")
 			for failure in failures {

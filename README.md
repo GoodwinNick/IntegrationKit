@@ -29,7 +29,7 @@ Adapty 2.10.x.
 ## Installation
 
 ```swift
-.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.4.1")
+.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.5.0")
 ```
 
 In Xcode: File → Add Package Dependencies → the same URL, product `IntegrationKit`.
@@ -125,17 +125,23 @@ lands. The package names no key of its own, and a key with no default reads as
 the type's zero, which no caller can tell apart from a fetched value: register
 a default for every key you read.
 Besides `logEvent`, `kit.analytics` carries `setUserId(_:)` (re-point analytics
-at another id after a login) and `deviceId` (Amplitude's own id, `nil` until the
-layer is up). Deep links go through `kit.handleContinue(...)` /
-`kit.handleOpen(...)`, and the ATT answer through
-`kit.updateTrackingAuthorization(_:)`. Three more forwards reach Adapty
+at another id after a login), `setUserProperties(_:)` (Amplitude user properties)
+and `deviceId` (Amplitude's own id, `nil` until the layer is up). Deep links go
+through `kit.handleContinue(...)` / `kit.handleOpen(...)`, and the ATT answer
+through `kit.updateTrackingAuthorization(_:)`. Four more forwards reach the SDKs
 directly, and beside them sits the one call that no longer reaches anything:
 
 ```swift
-// The app's own profile attributes. `lastUsedDay`, `launchSession`,
-// `deep_link_value` and `purchasePlace` the package writes itself — do not
-// write those from the app, it only doubles the traffic.
-kit.setProfileValue(value: "returning_user", key: "cohort")
+// A user property, and the choice is which dashboard needs it. Both destinations
+// take the same pair; picking one is not an optimisation, it is where the value
+// is readable afterwards.
+kit.setUserProperty(value: "returning_user", key: "cohort")   // both
+kit.setProfileValue(value: "returning_user", key: "cohort")   // Adapty only
+kit.analytics.setUserProperties(["logoCountGenerated": 2])    // Amplitude only
+
+// `lastUsedDay`, `launchSession`, `deep_link_value` and `purchasePlace` the
+// package writes into the Adapty profile itself — do not write those from the
+// app, it only doubles the traffic.
 
 // The Adapty profile's own id, for describing the same user on your backend.
 // `nil` means Adapty has not answered yet — never "this user has no id". Ask

@@ -35,7 +35,7 @@ Xcode → File → Add Package Dependencies → this repo's URL → product
 `IntegrationKit`.
 
 ```swift
-.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.4.1")
+.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.5.0")
 ```
 
 The target's minimum deployment target must be iOS 15.6 or the package will
@@ -390,14 +390,15 @@ they are not public types.
 
 ### The facade's own API
 
-Eight members besides those four protocols. The first three the `AppDelegate`
-calls; the middle four reach Adapty directly; the last two are diagnostics:
+Nine members besides those four protocols. The first three the `AppDelegate`
+calls; the middle five describe the user; the last two are diagnostics:
 
 ```swift
 public func handleContinue(_ userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void)
 public func handleOpen(_ url: URL, options: [UIApplication.OpenURLOptionsKey: Any])
 public func updateTrackingAuthorization(_ status: ATTrackingManager.AuthorizationStatus)
 
+public func setUserProperty(value: String, key: String)
 public func setProfileValue(value: String, key: String)
 public func adaptyProfileId() async -> String?
 public func setFirebaseAppInstanceId(_ id: String)
@@ -406,6 +407,24 @@ public func setFirebaseAppInstanceId(_ id: String)
 public var droppedDeepLinks: Int { get }
 public var configurationIssues: [String] { get }
 ```
+
+#### Where a user property lands
+
+Three calls, three destinations. The choice is not an optimisation — it is
+which dashboard can read the value afterwards:
+
+| Call | Adapty profile | Amplitude | Use it for |
+|---|---|---|---|
+| `kit.setUserProperty(value:key:)` | ✅ | ✅ | An attribute both sides have to agree on — a cohort, an A/B arm, a plan name. |
+| `kit.setProfileValue(value:key:)` | ✅ | — | Paywall targeting only. Every Adapty attribute is a targeting slot, and the profile holds 30. |
+| `kit.analytics.setUserProperties([:])` | — | ✅ | Product analytics only, and the only one of the three that takes non-`String` values and several pairs at once. |
+
+`setUserProperty` is the two calls above it, in that order, and nothing more —
+no shared validation, no rollback. The halves fail apart on purpose: a pair
+Adapty refuses (a key over 30 characters, a value over 50, the 31st attribute)
+still reaches Amplitude, because Adapty's limits are Adapty's and losing the
+analytics half over them would be the worse trade. Whatever Adapty refused is
+in `configurationIssues`, as always.
 
 **`setProfileValue(value:key:)`** writes one custom attribute to the Adapty
 profile — the app's own, whatever the package cannot know:
@@ -599,6 +618,21 @@ kit.analytics.setUserProperties(["locale": "en_US"])
 
 The package accepts event names as plain `String` — it does not define an
 event enum. Keeping one (e.g. a `LogEventKey` enum) is the app's decision.
+
+`setUserProperties` reaches Amplitude and nothing else. To write the same pair
+to the Adapty profile as well, use `kit.setUserProperty(value:key:)` — see
+[Where a user property lands](#where-a-user-property-lands). In a debug build
+each pair prints on its own line, which is what to search the console for when
+a property never showed up in the dashboard:
+
+```
+[IntegrationKit][AmplitudeAnalytics] UserProperty: logoCountGenerated | value: 2
+```
+
+An empty console right after the call proves nothing: Amplitude batches
+identify-only calls on its own interval — 30 seconds is both the default and
+the minimum — so the line above is the evidence that the value was handed over,
+not the dashboard.
 
 **ATT.** Forward the tracking authorization result through the facade, not
 directly to Amplitude — it also reaches Adapty's attribution:
@@ -1070,6 +1104,18 @@ What the package does with them:
 - **Prices** — `retrieveProductsInfo` for the ids Adapty listed on the
   placement; see the note under `products(placement:)` below.
 
+**Every one of those five calls is entered on the main thread since 0.5.0, and
+that is not a detail the app can arrange for itself.** SwiftyStoreKit is
+single-threaded by design: its products controller keeps in-flight requests in
+a plain `Dictionary` with no lock, and clears entries from it in a callback it
+deliberately hands back on main. Our side used to arrive from `async` methods
+with no isolation — a cooperative-pool thread — so the two halves wrote to the
+same dictionary at once and corrupted its storage. The crash lands later and
+somewhere else, as `unrecognized selector` sent to a garbage tagged pointer, in
+whichever call next hashes a key. Calling from the main thread in the app never
+fixed it, because the package wraps these calls in its own `Task` before
+reaching the SDK. A caller already on main is not deferred a turn.
+
 ## Deep links
 
 ```swift
@@ -1166,9 +1212,9 @@ for s in Checks/*.sh; do "./$s"; done
 | `premium-barrier-check.sh` | The `refresh()` concurrency barrier, restore, the StoreKit-fallback path, and the price merge — the store's price winning where it answered, Adapty's kept where it did not. |
 | `premium-local-purchase-check.sh` | The local-purchase mark: what sets it, what may clear it, and what must never clear it. |
 | `premium-pending-check.sh` | That one hung purchase does not refuse every later purchase in the process. |
-| `premium-storekit-check.sh` | Restore, price lookup, and unfinished transactions delivered by the payment queue. |
+| `premium-storekit-check.sh` | Restore, price lookup, unfinished transactions delivered by the payment queue, and that every SwiftyStoreKit entry point is reached on the main thread even when the caller is not. |
 | `crashlytics-check.sh` | Double `configure`, the network-noise filter, and the tags a non-fatal carries. |
-| `amplitude-analytics-check.sh` | First-open gating, the IDFA plugin attached exactly once, the environment property, the test-run guard. |
+| `amplitude-analytics-check.sh` | First-open gating, the IDFA plugin attached exactly once, the environment property, the test-run guard, and the debug log lines for user id, device id and each user property. |
 | `appsflyer-service-check.sh` | Session start, attribution mapping, the ATT wait limit, deep-link values. |
 | `appsflyer-attribution-check.sh` | `cleanedAttributionData`: `NSNull`/non-scalar values and non-string keys dropped, an empty input staying empty, a `nil` deep link value becoming `"-"`, `clickEvent` fields flowing through. |
 | `integration-kit-check.sh` | The composition root, actually run: the `AppDelegate` forwards answering with no AppsFlyer layer, the empty dev key leaving a readable reason, and a second `configure` handing back the first kit instead of building a second graph. The ten above compile a chosen slice of `Sources/` and never compile `IntegrationKit.swift` at all, so a forward that drops a request on the floor is invisible to every one of them. |
@@ -1202,6 +1248,14 @@ package-wide store, deduplicated by text, oldest first. Shipping it as a
 Crashlytics non-fatal at launch turns "the SDK is silent" into a searchable
 dashboard entry.
 
+- **The app crashes with `unrecognized selector sent to instance` on a tagged
+  pointer, somewhere under `SwiftyStoreKit`.** Fixed in 0.5.0 — upgrade. The
+  selector and the class in the message are meaningless (`-[__NSTaggedDate
+  count]` and the like): they name whatever garbage the corrupted dictionary
+  storage happened to hold. Nothing in the app causes it and nothing in the app
+  fixes it — calling from the main thread does not help, because the package
+  wrapped these calls in its own `Task` before reaching the SDK. See
+  [The StoreKit side](#the-storekit-side).
 - **`hasPaywall(placement:)` is always `false`.** Either the placement was
   never in `placements` at `configure` time, or the placement id does not
   match the Adapty dashboard exactly (case-sensitive, no trailing

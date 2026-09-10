@@ -150,6 +150,16 @@ public enum SwiftyStoreKit {
 	public static private(set) var finishTransactionCalls: [PaymentTransaction] = []
 	public static private(set) var verifyReceiptCallCount = 0
 
+	/// PM-07 row 13: which thread each entry point was entered on. The real SDK keeps unsynchronised
+	/// dictionaries behind every one of these calls and hands its own callbacks back on the main
+	/// thread, so "which thread did our side arrive on" is the whole of what a stub can observe —
+	/// the corruption itself surfaces later, somewhere else, as a garbage pointer.
+	public static private(set) var callThreads: [(name: String, isMain: Bool)] = []
+
+	private static func recordThread(_ name: String) {
+		callThreads.append((name, Thread.isMainThread))
+	}
+
 	public static func reset() {
 		completeTransactionsResult = []
 		restorePurchasesResult = RestoreResults()
@@ -159,9 +169,11 @@ public enum SwiftyStoreKit {
 		retrieveProductsInfoResult = RetrieveResults()
 		finishTransactionCalls = []
 		verifyReceiptCallCount = 0
+		callThreads = []
 	}
 
 	public static func completeTransactions(atomically: Bool, completion: @escaping ([Purchase]) -> Void) {
+		recordThread("completeTransactions")
 		completion(completeTransactionsResult)
 	}
 
@@ -170,14 +182,17 @@ public enum SwiftyStoreKit {
 	}
 
 	public static func restorePurchases(atomically: Bool, completion: @escaping (RestoreResults) -> Void) {
+		recordThread("restorePurchases")
 		completion(restorePurchasesResult)
 	}
 
 	public static func purchaseProduct(_ productId: String, atomically: Bool, completion: @escaping (PurchaseResult) -> Void) {
+		recordThread("purchaseProduct")
 		completion(purchaseProductResult)
 	}
 
 	public static func verifyReceipt(using validator: AppleReceiptValidator, completion: @escaping (VerifyReceiptResult) -> Void) {
+		recordThread("verifyReceipt")
 		verifyReceiptCallCount += 1
 		completion(verifyReceiptResult)
 	}
@@ -187,6 +202,7 @@ public enum SwiftyStoreKit {
 	}
 
 	public static func retrieveProductsInfo(_ productIds: Set<String>, completion: @escaping (RetrieveResults) -> Void) {
+		recordThread("retrieveProductsInfo")
 		completion(retrieveProductsInfoResult)
 	}
 }
