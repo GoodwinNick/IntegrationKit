@@ -2,29 +2,40 @@
 //  RemoteConfigServiceCheck.swift
 //  IntegrationKit
 //
-//  Written from the approved schemas RC-01…RC-03, not from the code. Nineteen asserts carry twelve
-//  of the twenty-five rows of those three tables. The thirteen that carry none are listed at the
+//  Written from the approved schemas RC-01…RC-03, not from the code. Twenty-six asserts carry
+//  sixteen of the twenty-five rows of those three tables. The nine that carry none are listed at the
 //  bottom of this comment, each with the reason — not with a lookalike assert, the same rule
 //  `AppsFlyerServiceCheck` follows.
 //
-//  All nineteen are green, and that is the point rather than an accident: this layer shipped in
-//  0.4.0 with no schema behind it, so every assert here was written against a contract that already
-//  existed in code. What the check buys is the other direction — none of these behaviours can be
-//  loosened later without a red row. Three of them are worth naming, because they read like
-//  implementation detail and are in fact the contract:
+//  T1…T19 came first, against the layer as it shipped in 0.4.0: nineteen asserts on a contract that
+//  already existed in code, bought for the other direction — none of those behaviours can be
+//  loosened later without a red row. T20…T26 came with the observability fixes and were written red,
+//  each naming a behaviour the layer had to grow:
+//    T20 RC-02 row 2 — an offline fetch files nothing, even though Remote Config reports it under
+//        its own domain and keeps the `NSURLError` one level down.
+//    T21 RC-02 row 3 — being throttled files nothing. It is the SDK working, not failing.
+//    T22 RC-02 row 1 — the failure log carries the domain and the code, not just the sentence.
+//    T23 RC-02 row 4 — the success log names the status, and says what the status cannot tell apart.
+//    T24 RC-01 row 3 — configuration says how many defaults it registered and what it did with the
+//        throttle.
+//    T25 RC-01 row 6 — a fetch timeout of zero is substituted and recorded, not passed on.
+//    T26 RC-03 row 1 — a key with no default anywhere leaves a trace naming the key, in both
+//        branches.
+//  Three of T1…T19 are worth naming, because they read like implementation detail and are in fact
+//  the contract:
 //    T3  RC-01 row 2 — "no defaults" and "no Firebase" are two different sentences, and an app has
 //        to tell them apart without guessing.
-//    T11 RC-02 row 2 — an offline fetch that arrives as `NSURLErrorDomain` files nothing. The row
-//        itself is about the case that does NOT arrive that way; see the gap list.
+//    T11 RC-02 row 2 — the plain `NSURLErrorDomain` control. It is what makes T20 a fix rather than
+//        a coincidence: the filter always worked, it just never looked deep enough.
 //    T15 RC-03 row 3 — both branches of every reader answer the same thing for the same input. The
 //        left branch exists only to reproduce the SDK's own precedence when the SDK is absent, and
 //        the day the two disagree is the day a flag "switches off" in exactly the launch where
 //        Firebase failed.
 //
 //  Built WITHOUT `-D DEBUG` on purpose, same as `AppsFlyerServiceCheck`: every row is measured
-//  against the build a user actually gets. `debugLog` prints nothing there, so the two asserts that
-//  read a trace (T8) read it through `debugLogSink`, which is the only channel that survives a
-//  release build.
+//  against the build a user actually gets. `debugLog` prints nothing there, so every assert that
+//  reads a trace (T8, T21…T24, T26) reads it through `debugLogSink`, which is the only channel that
+//  survives a release build.
 //
 //  This check does not stop at the first failing row: every row runs, every failure is collected,
 //  and the summary at the end reports all of them with a non-zero exit code — same shape as
@@ -32,12 +43,6 @@
 //  Run:  ./Checks/remote-config-service-check.sh
 //
 //  Rows deliberately not carried here:
-//    RC-01 row 3, RC-02 rows 1 and 4, RC-03 row 1 (its logging half) — log lines the schemas
-//      require and the code does not emit. An assert would be red, and `Sources/` is not edited in
-//      the schema phase: code fixes are their own phase, after every test is written.
-//    RC-02 rows 2 and 3 (their non-fatal halves) — an assert here would pin the defect rather than
-//      the contract. T11 stands in from the other side: it proves the noise filter works, which is
-//      what makes "and yet Remote Config's own errors walk past it" a finding instead of a guess.
 //    RC-01 row 5 — a fact about which fields `RemoteConfigSettings` has in this version of Firebase.
 //      There is no runtime to observe; it is re-checked by hand when the SDK is raised.
 //    RC-01 row 8 — the build order is held by a comment in the composition root. Nothing breaks if
@@ -69,7 +74,7 @@ import Foundation
 @main
 enum RemoteConfigServiceCheck {
 	static var failures: [String] = []
-	static var rowCount = 12
+	static var rowCount = 16
 
 	/// Records a failure instead of trapping — one failing row must not stop every row after it
 	/// from running.
@@ -94,6 +99,23 @@ enum RemoteConfigServiceCheck {
 
 	static func issues() -> String {
 		ConfigurationIssues.shared.all.joined(separator: " | ")
+	}
+
+	/// `FIRRemoteConfigErrorDomain` and two of its codes (`FIRRemoteConfig.h:64-72`). Spelled out
+	/// here for the same reason the service spells them out: the SDK exports them to Swift only
+	/// through a typed `NS_ERROR_ENUM`, and a check that matched the typed error would stop testing
+	/// what actually reaches `CrashReporter` — an `NSError` with a domain string and an integer.
+	static let remoteConfigErrorDomain = "com.google.remoteconfig.ErrorDomain"
+	static let throttledCode = 8002
+	static let internalErrorCode = 8003
+
+	/// Collects every log line for the rows that assert on a trace, and hands back the reader. Set up
+	/// as a function rather than a shared array so two rows cannot see each other's lines: `reset()`
+	/// clears the sink, and a row that forgot to install one gets nothing rather than the row above's.
+	static func captureLog() -> () -> [String] {
+		var lines: [String] = []
+		debugLogSink = { lines.append($0) }
+		return { lines }
 	}
 
 	/// The defaults most rows hand in — one of each type the protocol reads, so a row never has to
@@ -269,15 +291,20 @@ enum RemoteConfigServiceCheck {
 		// halves are load-bearing: a fetch that failed silently would leave a layer answering
 		// defaults for the whole run with nothing anywhere to say why. Domain and code are asserted
 		// rather than the count alone — Crashlytics is searched by them.
+		//
+		// `8003` is `FIRRemoteConfigErrorInternalError` (`FIRRemoteConfig.h:64-72`), the code the SDK
+		// reports for a fetch that genuinely did not work. The two codes next to it are the ones this
+		// row must NOT be written with: `8002` is a throttle (T21) and an internal error wrapping a
+		// dropped connection is an offline launch (T20) — neither is a report.
 		reset()
 		FirebaseApp.configure()
-		RemoteConfig.fetchError = NSError(domain: "com.google.remoteconfig.ErrorDomain", code: 8002)
+		RemoteConfig.fetchError = NSError(domain: remoteConfigErrorDomain, code: internalErrorCode)
 		let failing = RemoteConfigService(defaults: defaults)
 		failing.configure(timeout: 5, isDebug: false, isTestsRunning: false)
 		check(
 			Crashlytics.recordCallCount == 1
-				&& Crashlytics.recordedErrors.first?.domain == "com.google.remoteconfig.ErrorDomain"
-				&& Crashlytics.recordedErrors.first?.code == 8002,
+				&& Crashlytics.recordedErrors.first?.domain == remoteConfigErrorDomain
+				&& Crashlytics.recordedErrors.first?.code == internalErrorCode,
 			"T10 RC-02 failure: one non-fatal keeping the error's domain and code, got "
 				+ "\(Crashlytics.recordCallCount): \(Crashlytics.recordedErrors.map { "\($0.domain)/\($0.code)" })"
 		)
@@ -449,6 +476,157 @@ enum RemoteConfigServiceCheck {
 				+ "\(live.bool("paywallReview")) / \(live.string("experiment")) / "
 				+ "\(live.int("freeQuota")) / \(live.double("discount"))"
 		)
+
+		// ── RC-02 row 2 — an offline fetch files nothing, however it is wrapped ──────────────
+		// The row itself, where T11 was only the control. Remote Config does its own networking and
+		// reports its own domain: a dropped connection arrives as `FIRRemoteConfigErrorInternalError`
+		// with the `NSURLError` kept under `NSUnderlyingErrorKey` (`RCNConfigFetch.m:497`), so a
+		// filter that read the outermost error only let a user on a plane file a report on every
+		// launch. The fix is in `CrashReporter`, not here — every SDK the package forwards wraps its
+		// network failures the same way — and the assert sits at this end because this is the layer
+		// that reaches Crashlytics on a schedule nobody controls.
+		reset()
+		FirebaseApp.configure()
+		RemoteConfig.fetchError = NSError(
+			domain: remoteConfigErrorDomain,
+			code: internalErrorCode,
+			userInfo: [
+				NSUnderlyingErrorKey: NSError(
+					domain: NSURLErrorDomain,
+					code: NSURLErrorNotConnectedToInternet
+				),
+			]
+		)
+		let wrapped = RemoteConfigService(defaults: defaults)
+		wrapped.configure(timeout: 5, isDebug: false, isTestsRunning: false)
+		check(
+			Crashlytics.recordCallCount == 0,
+			"T20 RC-02 row 2: a wrapped no-connection error must be filtered as noise, got "
+				+ "\(Crashlytics.recordCallCount) report(s)"
+		)
+
+		// ── RC-02 row 3 — a throttled fetch is the SDK working ───────────────────────────────
+		// The backoff after a 429 or a 5xx is the SDK's own design (`RCNConfigSettings.m:178-202`) and
+		// the values in hand stay valid throughout: filing it would put a normal mode into the tool
+		// kept for anomalies. Silent is not the same as unfiltered, though — the second half of the
+		// row is that the throttle still leaves a trace, or the layer becomes impossible to tell from
+		// one whose fetch never fires.
+		reset()
+		let throttledLog = captureLog()
+		FirebaseApp.configure()
+		RemoteConfig.fetchError = NSError(domain: remoteConfigErrorDomain, code: throttledCode)
+		let throttled = RemoteConfigService(defaults: defaults)
+		throttled.configure(timeout: 5, isDebug: false, isTestsRunning: false)
+		check(
+			Crashlytics.recordCallCount == 0,
+			"T21 RC-02 row 3: being throttled must file no non-fatal, got "
+				+ "\(Crashlytics.recordCallCount) report(s)"
+		)
+		check(
+			throttledLog().contains { $0.contains("\(throttledCode)") && $0.contains("fetch failed") },
+			"T21 RC-02 row 3: the throttle must still leave a trace naming the code, got \(throttledLog())"
+		)
+
+		// ── RC-02 row 1 — the failure log carries the domain and the code ────────────────────
+		// `localizedDescription` reads the same for a throttle, a timeout and a malformed response,
+		// and those are three different things to do next. The assert names both halves because
+		// either alone is ambiguous: the code without the domain is an integer belonging to nobody.
+		reset()
+		let failureLog = captureLog()
+		FirebaseApp.configure()
+		RemoteConfig.fetchError = NSError(domain: remoteConfigErrorDomain, code: internalErrorCode)
+		let logged8003 = RemoteConfigService(defaults: defaults)
+		logged8003.configure(timeout: 5, isDebug: false, isTestsRunning: false)
+		check(
+			failureLog().contains {
+				$0.contains("[IntegrationKit][RemoteConfig]")
+					&& $0.contains(remoteConfigErrorDomain)
+					&& $0.contains("\(internalErrorCode)")
+			},
+			"T22 RC-02 row 1: the failure log must carry the domain and the code, got \(failureLog())"
+		)
+
+		// ── RC-02 row 4 — the status is named, and so is what it cannot tell apart ───────────
+		// `status.rawValue` said "1", which is a number the reader has to look up. Naming it is half
+		// the row; the other half is that the name still promises more than it delivers —
+		// `fetchAndActivate` reports success for a pure cache hit where the throttle window had not
+		// elapsed and no request was made at all (`FIRRemoteConfig.m:382-383`). The pre-fetched status
+		// is the fixture on purpose: it is the one whose raw value reads as a plausible count.
+		reset()
+		let successLog = captureLog()
+		RemoteConfig.fetchStatus = .successUsingPreFetchedData
+		_ = activeLayer()
+		check(
+			successLog().contains { $0.contains("using pre-fetched data") && $0.contains("cached") },
+			"T23 RC-02 row 4: the success log must name the status and what it cannot tell apart, got "
+				+ "\(successLog())"
+		)
+
+		// ── RC-01 row 3 — configuration says what it registered and what it did ─────────────
+		// The count is the point, not the fact: a key missing from the app's dictionary is invisible
+		// at runtime — it reads as the type's zero — and this line is the one place the number can be
+		// held against what the console holds before anyone ships. The throttle half is asserted in
+		// both directions for the same reason T4 and T5 are: a line that always said "off (debug)"
+		// would read as a working release build putting every install on the network.
+		reset()
+		let configLog = captureLog()
+		_ = activeLayer(isDebug: false)
+		check(
+			configLog().contains {
+				$0.contains("\(defaults.count) default(s) registered") && $0.contains("12h")
+			},
+			"T24 RC-01 row 3: configuration must name the default count and the throttle it left "
+				+ "alone, got \(configLog())"
+		)
+		reset()
+		let debugConfigLog = captureLog()
+		_ = activeLayer(isDebug: true)
+		check(
+			debugConfigLog().contains { $0.contains("off (debug)") },
+			"T24 RC-01 row 3: a debug build must say the throttle is off, got \(debugConfigLog())"
+		)
+
+		// ── RC-01 row 6 — a timeout the SDK was never meant to get ──────────────────────────
+		// Zero is not a shorter fetch. Passed on, it differs from a working layer only in that the
+		// fetch never lands, and nothing anywhere says why — the app ships on its defaults and finds
+		// out from a console flag that "does not work". Substituted with the same five seconds
+		// `IntegrationKit.configure` hands over when the app says nothing, and recorded where a
+		// release build can read it back: this is a wiring mistake, which is what that list is for.
+		reset()
+		_ = activeLayer(timeout: 0)
+		check(
+			RemoteConfig.appliedSettings?.fetchTimeout == 5,
+			"T25 RC-01 row 6: a non-positive timeout must be substituted, got "
+				+ "\(String(describing: RemoteConfig.appliedSettings?.fetchTimeout))"
+		)
+		check(
+			ConfigurationIssues.shared.all.contains { $0.contains("remoteConfigTimeout") },
+			"T25 RC-01 row 6: the substitution must name the parameter to fix, got \(issues())"
+		)
+
+		// ── RC-03 row 1, logging half — a key with no default anywhere ──────────────────────
+		// The answering half is T14; this is the trace that makes it survivable. The type's zero is
+		// indistinguishable from a `false` the console really sent, so the only way anyone finds a
+		// typo'd key is a line naming it — and it has to appear in both branches, because a key
+		// misspelled in the app's dictionary reads wrong in every launch, Firebase up or not.
+		reset()
+		let activeMissLog = captureLog()
+		let missing = activeLayer()
+		_ = missing.bool("typoed_key")
+		check(
+			activeMissLog().contains { $0.contains("typoed_key") && $0.contains("no default registered") },
+			"T26 RC-03 row 1: the active branch must name the unregistered key, got \(activeMissLog())"
+		)
+		reset()
+		let defaultedMissLog = captureLog()
+		let missingDefaulted = RemoteConfigService(defaults: defaults)
+		missingDefaulted.configure(timeout: 5, isDebug: false, isTestsRunning: false)
+		_ = missingDefaulted.string("typoed_key")
+		check(
+			defaultedMissLog().contains { $0.contains("typoed_key") && $0.contains("no default registered") },
+			"T26 RC-03 row 1: the defaulted branch must name the unregistered key, got \(defaultedMissLog())"
+		)
+		debugLogSink = nil
 
 		if failures.isEmpty {
 			print("RemoteConfigService (RC-01…RC-03): \(rowCount)/\(rowCount) rows OK")

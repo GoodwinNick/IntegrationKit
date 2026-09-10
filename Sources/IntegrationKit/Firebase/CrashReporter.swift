@@ -34,11 +34,31 @@ struct CrashReporter: CrashReporting {
 		lock.unlock()
 	}
 
+	/// RC-02 row 2: the noise this filter exists for does not always arrive at the top of the error.
+	/// An SDK that does its own networking wraps the `NSURLError` it got and reports its own domain —
+	/// Remote Config files every offline fetch as `FIRRemoteConfigErrorInternalError`, keeping the
+	/// original under `NSUnderlyingErrorKey` (`RCNConfigFetch.m:497`). Matching only the outermost
+	/// error let a user on a plane file a report on every launch, and the same is true of every other
+	/// wrapped `URLSession` failure the package forwards.
+	///
+	/// Walks the chain rather than checking one level down: nothing promises the wrap is only one
+	/// deep. The depth cap is not defensive style — an `NSError` chain is built by whoever raised it,
+	/// and a cycle here would hang the reporting path.
+	private static func isNoise(_ error: NSError) -> Bool {
+		var current: NSError? = error
+		for _ in 0..<4 {
+			guard let nsError = current else { return false }
+			if nsError.domain == NSURLErrorDomain
+				&& (nsError.code == NSURLErrorNotConnectedToInternet || nsError.code == NSURLErrorCancelled) {
+				return true
+			}
+			current = nsError.userInfo[NSUnderlyingErrorKey] as? NSError
+		}
+		return false
+	}
+
 	func recordNonFatal(_ tag: String, _ error: Error, _ info: [String: Any]) {
-		let nsError = error as NSError
-		let isNoise = nsError.domain == NSURLErrorDomain
-			&& (nsError.code == NSURLErrorNotConnectedToInternet || nsError.code == NSURLErrorCancelled)
-		guard !isNoise else { return }
+		guard !Self.isNoise(error as NSError) else { return }
 
 		// CR-01 row 1. The worst failure mode for a tool whose only job is not to be silent: an app
 		// that forgot `FirebaseIntegration.configure()` hands every report to a Crashlytics that

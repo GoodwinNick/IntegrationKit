@@ -144,6 +144,58 @@ enum CrashlyticsCheck {
 				+ "got \(Crashlytics.recordCallCount) report(s)"
 		)
 
+		// T6, second half — the same noise one level down, under someone else's domain.
+		// An SDK that does its own networking does not hand the `NSURLError` back: it reports its
+		// own domain and keeps the original under `NSUnderlyingErrorKey`. Remote Config files every
+		// offline fetch as `FIRRemoteConfigErrorInternalError` that way (`RCNConfigFetch.m:497`), and
+		// a filter that read the outermost error only let a user on a plane file a report on every
+		// launch — found through RC-02 row 2, fixed here because every SDK the package forwards
+		// wraps the same way. The chain is walked to a depth of four: nothing promises the wrap is
+		// only one deep, and a cap is what keeps a cycle from hanging the reporting path.
+		Crashlytics.reset()
+		reporter.recordNonFatal(
+			"net",
+			NSError(
+				domain: "com.google.remoteconfig.ErrorDomain",
+				code: 8003,
+				userInfo: [
+					NSUnderlyingErrorKey: NSError(
+						domain: NSURLErrorDomain,
+						code: NSURLErrorNotConnectedToInternet
+					),
+				]
+			),
+			[:]
+		)
+		check(
+			Crashlytics.recordCallCount == 0,
+			"T6 CR-02 row 2: noise wrapped under another domain must be filtered too, got "
+				+ "\(Crashlytics.recordCallCount) report(s)"
+		)
+
+		// T6, third half — and the walk must not turn into a filter for anything that has a cause.
+		// A wrapped timeout is the case that would go silent if the chain were read for "any
+		// NSURLError" instead of the two codes CR-02 row 4 names: the same slow backend of our own,
+		// one level down.
+		Crashlytics.reset()
+		reporter.recordNonFatal(
+			"net",
+			NSError(
+				domain: "app.sync",
+				code: 1,
+				userInfo: [
+					NSUnderlyingErrorKey: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut),
+				]
+			),
+			[:]
+		)
+		check(
+			Crashlytics.recordCallCount == 1 && Crashlytics.recordedErrors.first?.domain == "app.sync",
+			"T6 CR-02 row 2: a wrapped timeout must still be reported, got "
+				+ "\(Crashlytics.recordCallCount) report(s) from "
+				+ "\(String(describing: Crashlytics.recordedErrors.first?.domain))"
+		)
+
 		// ── CR-02 row 3 — same code, someone else's domain, still reported ───────────────────
 		// The domain half of the filter: it must not glue shut on a code that happens to collide.
 		Crashlytics.reset()

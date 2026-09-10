@@ -66,8 +66,16 @@ public final class RemoteConfig {
 	}
 
 	/// The fetched value if the console sent one, otherwise the registered default — the real SDK's
-	/// own precedence, and the reason a read never has a "not ready" state to handle.
+	/// own precedence, and the reason a read never has a "not ready" state to handle. The third case
+	/// is the one RC-03 row 1 turns on: a key in neither place still gets a value object, and only
+	/// `source` says so.
 	public func configValue(forKey key: String) -> RemoteConfigValue {
-		RemoteConfigValue(value: Self.fetched[key] ?? Self.registeredDefaults[key])
+		if let fetched = Self.fetched[key] {
+			return RemoteConfigValue(value: fetched, source: .remote)
+		}
+		if let registered = Self.registeredDefaults[key] {
+			return RemoteConfigValue(value: registered, source: .default)
+		}
+		return RemoteConfigValue(value: nil, source: .static)
 	}
 }
