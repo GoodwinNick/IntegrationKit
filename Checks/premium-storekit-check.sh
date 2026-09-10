@@ -14,7 +14,7 @@ swiftc -emit-module -emit-library -static \
 	-module-name Adapty \
 	-emit-module-path "$work/Adapty.swiftmodule" \
 	-o "$work/libAdapty.a" \
-	Checks/Stubs/AdaptyProfile.swift
+	Checks/Stubs/Adapty/AdaptyProfile.swift
 swiftc -emit-module -emit-library -static \
 	-module-name SwiftyStoreKit \
 	-emit-module-path "$work/SwiftyStoreKit.swiftmodule" \

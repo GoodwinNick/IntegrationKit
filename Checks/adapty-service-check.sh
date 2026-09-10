@@ -16,24 +16,24 @@ swiftc -emit-module -emit-library -static \
 	-module-name Adapty \
 	-emit-module-path "$work/Adapty.swiftmodule" \
 	-o "$work/libAdapty.a" \
-	Checks/Stubs/AdaptyProfile.swift \
-	Checks/Stubs/AdaptyError.swift \
-	Checks/Stubs/AdaptyConfiguration.swift \
-	Checks/Stubs/AdaptyRemoteConfig.swift \
-	Checks/Stubs/AdaptyFlow.swift \
-	Checks/Stubs/AdaptySubscriptionPeriod.swift \
-	Checks/Stubs/AdaptySubscriptionOfferType.swift \
-	Checks/Stubs/AdaptySubscriptionOffer.swift \
-	Checks/Stubs/AdaptyPaywallProduct.swift \
-	Checks/Stubs/AdaptyPromotedProduct.swift \
-	Checks/Stubs/AdaptyPurchaseResult.swift \
-	Checks/Stubs/AdaptyUnfinishedTransaction.swift \
-	Checks/Stubs/AdaptyInstallationDetails.swift \
-	Checks/Stubs/AdaptyExternalAttributionProvider.swift \
-	Checks/Stubs/AdaptyIntegrationIdentifier.swift \
-	Checks/Stubs/AdaptyProfileParameters.swift \
-	Checks/Stubs/AdaptyDelegate.swift \
-	Checks/Stubs/Adapty.swift
+	Checks/Stubs/Adapty/AdaptyProfile.swift \
+	Checks/Stubs/Adapty/AdaptyError.swift \
+	Checks/Stubs/Adapty/AdaptyConfiguration.swift \
+	Checks/Stubs/Adapty/AdaptyRemoteConfig.swift \
+	Checks/Stubs/Adapty/AdaptyFlow.swift \
+	Checks/Stubs/Adapty/AdaptySubscriptionPeriod.swift \
+	Checks/Stubs/Adapty/AdaptySubscriptionOfferType.swift \
+	Checks/Stubs/Adapty/AdaptySubscriptionOffer.swift \
+	Checks/Stubs/Adapty/AdaptyPaywallProduct.swift \
+	Checks/Stubs/Adapty/AdaptyPromotedProduct.swift \
+	Checks/Stubs/Adapty/AdaptyPurchaseResult.swift \
+	Checks/Stubs/Adapty/AdaptyUnfinishedTransaction.swift \
+	Checks/Stubs/Adapty/AdaptyInstallationDetails.swift \
+	Checks/Stubs/Adapty/AdaptyExternalAttributionProvider.swift \
+	Checks/Stubs/Adapty/AdaptyIntegrationIdentifier.swift \
+	Checks/Stubs/Adapty/AdaptyProfileParameters.swift \
+	Checks/Stubs/Adapty/AdaptyDelegate.swift \
+	Checks/Stubs/Adapty/Adapty.swift
 swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty \
 	Checks/Cases/AdaptyServiceCheck.swift \
 	Sources/IntegrationKit/Support/LogLevel.swift \

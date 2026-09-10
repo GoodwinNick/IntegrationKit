@@ -14,7 +14,7 @@ swiftc -emit-module -emit-library -static \
 	-module-name Adapty \
 	-emit-module-path "$work/Adapty.swiftmodule" \
 	-o "$work/libAdapty.a" \
-	Checks/Stubs/AdaptyProfile.swift
+	Checks/Stubs/Adapty/AdaptyProfile.swift
 swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty \
 	Checks/Cases/PremiumPendingCheck.swift \
 	Sources/IntegrationKit/Support/LogLevel.swift \
