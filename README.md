@@ -29,7 +29,7 @@ Adapty 2.10.x.
 ## Installation
 
 ```swift
-.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.4.0")
+.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.4.1")
 ```
 
 In Xcode: File → Add Package Dependencies → the same URL, product `IntegrationKit`.
@@ -128,14 +128,28 @@ Besides `logEvent`, `kit.analytics` carries `setUserId(_:)` (re-point analytics
 at another id after a login) and `deviceId` (Amplitude's own id, `nil` until the
 layer is up). Deep links go through `kit.handleContinue(...)` /
 `kit.handleOpen(...)`, and the ATT answer through
-`kit.updateTrackingAuthorization(_:)`. One more forward reaches Adapty
-directly, and beside it sits the one call that no longer reaches anything:
+`kit.updateTrackingAuthorization(_:)`. Three more forwards reach Adapty
+directly, and beside them sits the one call that no longer reaches anything:
 
 ```swift
 // The app's own profile attributes. `lastUsedDay`, `launchSession`,
 // `deep_link_value` and `purchasePlace` the package writes itself — do not
 // write those from the app, it only doubles the traffic.
 kit.setProfileValue(value: "returning_user", key: "cohort")
+
+// The Adapty profile's own id, for describing the same user on your backend.
+// `nil` means Adapty has not answered yet — never "this user has no id". Ask
+// again later in the same run; storing the nil turns a slow start into a
+// permanent absence.
+let adaptyId = await kit.adaptyProfileId()
+
+// Links Firebase's id for this install to the Adapty profile, so a purchase in
+// one dashboard can be found in the other. The package does not read it itself:
+// reaching into another SDK for its identifier is the app's call. Safe to call
+// before the layer has finished starting — an early write waits for activation.
+if let appInstanceId = Analytics.appInstanceID() {
+	kit.setFirebaseAppInstanceId(appInstanceId)
+}
 
 // Deprecated and does nothing since 0.3.0: Adapty 4.x deleted onboarding
 // reporting. Delete the call and log onboarding steps through analytics.

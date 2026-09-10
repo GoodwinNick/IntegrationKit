@@ -35,7 +35,7 @@ Xcode → File → Add Package Dependencies → this repo's URL → product
 `IntegrationKit`.
 
 ```swift
-.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.4.0")
+.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.4.1")
 ```
 
 The target's minimum deployment target must be iOS 15.6 or the package will
@@ -390,8 +390,8 @@ they are not public types.
 
 ### The facade's own API
 
-Six members besides those four protocols. The first three the `AppDelegate`
-calls; the last two are diagnostics:
+Eight members besides those four protocols. The first three the `AppDelegate`
+calls; the middle four reach Adapty directly; the last two are diagnostics:
 
 ```swift
 public func handleContinue(_ userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void)
@@ -399,6 +399,8 @@ public func handleOpen(_ url: URL, options: [UIApplication.OpenURLOptionsKey: An
 public func updateTrackingAuthorization(_ status: ATTrackingManager.AuthorizationStatus)
 
 public func setProfileValue(value: String, key: String)
+public func adaptyProfileId() async -> String?
+public func setFirebaseAppInstanceId(_ id: String)
 @available(*, deprecated) public func logOnboardingOpen(step: Int)
 
 public var droppedDeepLinks: Int { get }
@@ -433,6 +435,46 @@ sent, and the reason — with the key and what was wrong with it — lands in
 matters: a deep-link value simply disappears at character 51, and without the
 check it would disappear silently.
 
+**`adaptyProfileId()`** answers the Adapty profile's own id — what an app sends
+to its own backend so both sides describe the same user:
+
+```swift
+if let adaptyId = await kit.adaptyProfileId() {
+	try await api.link(adaptyId: adaptyId)
+}
+```
+
+**`nil` means Adapty did not answer**: the layer is off, the profile has not been
+created yet, or the call ran out of time. It never means "this user has no id".
+Ask again later in the same run rather than storing the `nil` — an app that
+writes it down once at launch turns one slow start into a permanent absence, and
+that user's purchases are never joined to their account on your own backend.
+
+**`setFirebaseAppInstanceId(_:)`** links Firebase's id for this install to the
+Adapty profile, so a purchase in one dashboard can be found in the other:
+
+```swift
+if let appInstanceId = Analytics.appInstanceID() {
+	kit.setFirebaseAppInstanceId(appInstanceId)
+}
+```
+
+The package does not read the id itself, on purpose: reaching into another SDK
+for its own identifier is the app's call, not a library's, and an app that does
+not use Firebase Analytics should not be made to link it. Call it whenever the
+id is in hand, **including before the layer has finished starting** — a write
+that arrives early waits for activation instead of being dropped, which matters
+because `Analytics.appInstanceID()` is usually ready before Adapty is.
+
+Pass a real id or nothing. `Analytics.appInstanceID()` answers `nil` while
+Firebase Analytics is still coming up, and unwrapping that to `""` would put a
+join key on the profile that matches nothing, permanently. An empty or
+whitespace-only id is refused and the reason lands in `configurationIssues`.
+
+It goes to Adapty's integration-identifier channel (`firebase_app_instance_id`),
+not into the custom attributes — so the 1…30 / 1…50 rules below do not apply to
+it, and it does not count against the 30-attribute ceiling.
+
 **`logOnboardingOpen(step:)` is deprecated since 0.3.0 and does nothing.** It
 used to report one onboarding screen to Adapty as the event
 `onboarding_<step>`, through `logShowOnboarding(name:screenName:screenOrder:)`.
@@ -453,9 +495,12 @@ rules, and it does not depend on an SDK's paywall model:
 kit.analytics.logEvent("onboarding_step_shown", properties: ["step": 1])
 ```
 
-`setProfileValue` is a no-op when the Adapty layer is inert (`adaptyKey: ""` or
+All four Adapty forwards are no-ops when the layer is inert (`adaptyKey: ""` or
 `isTestsRunning: true`), with the layer's single reason already in
-`configurationIssues` — it needs no `#if` or guard on the app's side.
+`configurationIssues` — they need no `#if` or guard on the app's side.
+`adaptyProfileId()` answers `nil` there, and a Firebase id handed over then is
+held rather than sent, because an inert layer never activates and so never
+flushes what is waiting.
 
 ## Remote config
 

@@ -184,6 +184,22 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 		// `purchase(_:placement:)` already carries the placement and knows whether Apple charged.
 		kit?.setProfileValue(value: cohort, key: "cohort")
 	}
+
+	/// Identity in both directions, from the facade alone — an app that has to describe the same
+	/// user on its own backend and in two dashboards.
+	func linkIdentity(appInstanceId: String?) async {
+		guard let kit else { return }
+		// `nil` is "Adapty has not answered", never "this user has no id" — so it is not stored and
+		// not sent as an absence. Asking again later in the same run is the whole recovery.
+		if let adaptyId = await kit.adaptyProfileId() {
+			print("send \(adaptyId) to our own backend")
+		}
+		// `Analytics.appInstanceID()` in a real app: an optional, and nil while Firebase Analytics is
+		// still coming up. Unwrapping that to "" would write a join key matching nothing, forever.
+		if let appInstanceId {
+			kit.setFirebaseAppInstanceId(appInstanceId)
+		}
+	}
 }
 
 @main

@@ -31,6 +31,26 @@ enum IntegrationKitCheck {
 		print("FAILED: \(text)")
 	}
 
+	/// Polls instead of awaiting, the same shape `AdaptyServiceCheck` uses: `main()` is synchronous
+	/// and the calls under test hand their answer back on the main run loop.
+	@discardableResult
+	static func wait(_ seconds: TimeInterval = 2, for condition: () -> Bool) -> Bool {
+		let deadline = Date().addingTimeInterval(seconds)
+		while Date() < deadline {
+			if condition() { return true }
+			RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+		}
+		return condition()
+	}
+
+	/// Runs one `async` call to completion on the main run loop.
+	static func run<T>(_ work: @escaping () async -> T) -> T? {
+		var result: T?
+		Task { result = await work() }
+		wait(5) { result != nil }
+		return result
+	}
+
 	/// An app shipped without attribution: `appsFlyerDevKey` empty, which is the documented legal
 	/// configuration and what leaves `IntegrationKit` holding no `AppsFlyerService` at all.
 	///
@@ -127,8 +147,25 @@ enum IntegrationKitCheck {
 		check(kit.configurationIssues.count == beforeOnboardingIssues,
 		      "AD-07 r3: a no-op has nothing to report — configurationIssues \(beforeOnboardingIssues) → \(kit.configurationIssues.count)")
 
+		// AD-06 row 12 and AD-05 row 9, through the facade — the same hole as row 8, twice over. Both
+		// members are new in 0.4.1 and both exist only because an app asked for them, so an unreachable
+		// forward would not be a degraded feature, it would be the whole feature missing. What they do
+		// once they arrive is covered by `AdaptyServiceCheck` (T47…T56); this is about arriving.
+		let beforeFirebase = Adapty.integrationIdentifierJournal.count
+		kit.setFirebaseAppInstanceId("fid-facade")
+		let firebaseWrites = Adapty.integrationIdentifierJournal.filter { $0.key == .firebaseAppInstanceId }
+		check(firebaseWrites.map(\.value) == ["fid-facade"],
+		      "AD-06 r12: setFirebaseAppInstanceId on the facade must reach the SDK with the app's own id — journal \(beforeFirebase) → \(Adapty.integrationIdentifierJournal.count), Firebase writes \(firebaseWrites.map(\.value))")
+
+		// The assert names the id, not "something came back": a forward wired to the wrong call would
+		// still answer a string, and `profileId()` answering `nil` is a legal answer everywhere else.
+		Adapty.getProfileResult = .success(AdaptyProfile(profileId: "prof-facade", accessLevels: [:]))
+		let forwardedId = run { await kit.adaptyProfileId() }
+		check(forwardedId == "prof-facade",
+		      "AD-05 r9: adaptyProfileId on the facade must answer the profile's own id — got \(String(describing: forwardedId))")
+
 		if failures.isEmpty {
-			print("IntegrationKit composition root: \(10) checks OK")
+			print("IntegrationKit composition root: \(12) checks OK")
 		} else {
 			print("\(failures.count) check(s) failed:")
 			for failure in failures {
