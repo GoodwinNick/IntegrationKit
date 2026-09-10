@@ -53,7 +53,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 			firstOpenEvent: "first_open",
 			appsFlyerDevKey: "fakeDevKey",
 			appsFlyerAppId: "1234567890",
-			attTimeout: 120
+			attTimeout: 120,
+			// The app's own keys — the package names none. Every key read below has a default here,
+			// because a key without one answers `false`/`""`/`0` and nothing tells that apart from a
+			// value the console actually sent.
+			remoteConfigDefaults: [
+				"paywallReview": NSNumber(value: false),
+				"onboardingVariant": NSString(string: "control"),
+				"freeGenerations": NSNumber(value: 3),
+				"discountRate": NSNumber(value: 0.5)
+			]
 		)
 		self.kit = kit
 
@@ -157,6 +166,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 		// Numbered from ONE: Adapty refuses screen order 0, and a screen counted from zero is simply
 		// missing from the funnel. A screen index taken from an array is off by one on purpose.
 		kit?.logOnboardingOpen(step: step + 1)
+	}
+
+	/// All four readers, from the facade alone. Read where the user has already spent a moment — a
+	/// screen drawn in the first seconds of a cold launch gets the default and never re-renders.
+	func remoteFlags() {
+		guard let kit else { return }
+		print(kit.remoteConfig.bool("paywallReview"))
+		print(kit.remoteConfig.string("onboardingVariant"))
+		print(kit.remoteConfig.int("freeGenerations"))
+		print(kit.remoteConfig.double("discountRate"))
 	}
 
 	func markCohort(_ cohort: String) {

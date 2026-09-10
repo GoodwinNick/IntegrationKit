@@ -49,6 +49,7 @@ let package = Package(
 			dependencies: [
 				.product(name: "FirebaseCore", package: "firebase-ios-sdk"),
 				.product(name: "FirebaseCrashlytics", package: "firebase-ios-sdk"),
+				.product(name: "FirebaseRemoteConfig", package: "firebase-ios-sdk"),
 				.product(name: "AmplitudeSwift", package: "Amplitude-Swift"),
 				.product(name: "Adapty", package: "AdaptySDK-iOS"),
 				.product(name: "AppsFlyerLib", package: "AppsFlyerFramework"),

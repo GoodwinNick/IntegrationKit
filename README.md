@@ -1,13 +1,13 @@
 # IntegrationKit
 
 A Swift Package that wraps five third-party SDKs behind one small public surface:
-**Firebase** (Core + Crashlytics), **Amplitude**, **Adapty** (premium/paywalls),
+**Firebase** (Core + Crashlytics + Remote Config), **Amplitude**, **Adapty** (premium/paywalls),
 **AppsFlyer** (attribution, deep links) and **SwiftyStoreKit** (receipt, restore,
 prices). The package owns the wiring and the premium arbitration between Adapty
 and Apple's own receipt; the app supplies keys, event names, placements, its App
 Store shared secret and its product ids — no StoreKit code of its own.
 
-Only three protocols and a handful of models are public — everything else (Adapty,
+Only four protocols and a handful of models are public — everything else (Adapty,
 AppsFlyer, and the concrete services behind them) is an internal implementation
 detail. The full walkthrough — every `configure` parameter, paywall flow, deep
 links, troubleshooting — lives in [`docs/Integration.md`](docs/Integration.md).
@@ -55,11 +55,14 @@ let kit = IntegrationKit.configure(
 	levels: ["premium"],
 	firstOpenEvent: "first_open",
 	appsFlyerDevKey: appsFlyerDevKey,
-	appsFlyerAppId: appsFlyerAppId
+	appsFlyerAppId: appsFlyerAppId,
+	remoteConfigDefaults: ["paywallReview": NSNumber(value: false)]
 )
 
 kit.analytics.logEvent("app_open")
 kit.crashes.recordNonFatal("launch", someError)
+// Answers the default above until the Firebase fetch lands — never blocks.
+if kit.remoteConfig.bool("paywallReview") { showReviewPaywall() }
 
 // Premium is announced, not polled: the notification fires only when the flag
 // actually changes, and `kit.premium.isPremium` is the new value.
@@ -113,8 +116,14 @@ silent and I cannot tell whether it is off on purpose":
 kit.configurationIssues.forEach { print("[IntegrationKit] \($0)") }
 ```
 
-`kit.premium`, `kit.analytics`, `kit.crashes` are the only surfaces the app talks
-to afterwards — `PremiumServicing`, `AnalyticsTracking`, `CrashReporting`.
+`kit.premium`, `kit.analytics`, `kit.crashes`, `kit.remoteConfig` are the only
+surfaces the app talks to afterwards — `PremiumServicing`, `AnalyticsTracking`,
+`CrashReporting`, `RemoteConfigServicing`. `kit.remoteConfig` reads Firebase
+Remote Config by the app's own keys — `bool`, `string`, `int`, `double`, each
+answering the default registered in `remoteConfigDefaults` until the fetch
+lands. The package names no key of its own, and a key with no default reads as
+the type's zero, which no caller can tell apart from a fetched value: register
+a default for every key you read.
 Besides `logEvent`, `kit.analytics` carries `setUserId(_:)` (re-point analytics
 at another id after a login) and `deviceId` (Amplitude's own id, `nil` until the
 layer is up). Deep links go through `kit.handleContinue(...)` /
@@ -145,6 +154,8 @@ meaning of every `configure` parameter and the paywall-to-purchase flow.
 - `deviceId` — one stable id shared across Amplitude, Adapty and AppsFlyer.
 - Event names and analytics properties — the package takes plain `String`, it
   does not define an event enum.
+- Remote Config keys and their defaults — passed as `remoteConfigDefaults`, read
+  back by the same key. The package defines none.
 - `GoogleService-Info.plist`, the Crashlytics dSYM Run Script, ATT usage string
   and Associated Domains — everything Xcode-project-side.
 - The App Store shared secret and the product ids to look for in the receipt —
@@ -162,7 +173,8 @@ meaning of every `configure` parameter and the paywall-to-purchase flow.
 
 ```
 Sources/IntegrationKit/
-├── Firebase/     Core + Crashlytics, FirebaseIntegration, CrashReporting
+├── Firebase/     Core + Crashlytics + Remote Config, FirebaseIntegration,
+│                 CrashReporting, RemoteConfigServicing
 ├── Amplitude/    analytics facade, IDFA plugin, AnalyticsTracking
 ├── Adapty/       activation, paywalls, purchases (internal)
 ├── AppsFlyer/    ATT, deep links, attribution (internal)

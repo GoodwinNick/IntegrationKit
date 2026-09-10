@@ -76,12 +76,20 @@ swiftc -emit-module -emit-library -static \
 	-o "$work/libFirebaseCrashlytics.a" \
 	Checks/Stubs/FirebaseCrashlytics/Crashlytics.swift
 swiftc -emit-module -emit-library -static \
+	-module-name FirebaseRemoteConfig \
+	-emit-module-path "$work/FirebaseRemoteConfig.swiftmodule" \
+	-o "$work/libFirebaseRemoteConfig.a" \
+	Checks/Stubs/FirebaseRemoteConfig/RemoteConfigFetchAndActivateStatus.swift \
+	Checks/Stubs/FirebaseRemoteConfig/RemoteConfigSettings.swift \
+	Checks/Stubs/FirebaseRemoteConfig/RemoteConfigValue.swift \
+	Checks/Stubs/FirebaseRemoteConfig/RemoteConfig.swift
+swiftc -emit-module -emit-library -static \
 	-module-name SwiftyStoreKit \
 	-emit-module-path "$work/SwiftyStoreKit.swiftmodule" \
 	-o "$work/libSwiftyStoreKit.a" \
 	Checks/Stubs/SwiftyStoreKit.swift
 swiftc -o "$work/check" -I "$work" -L "$work" \
-	-lUIKit -lAppsFlyerLib -lAdapty -lAmplitudeSwift -lFirebaseCore -lFirebaseCrashlytics -lSwiftyStoreKit \
+	-lUIKit -lAppsFlyerLib -lAdapty -lAmplitudeSwift -lFirebaseCore -lFirebaseCrashlytics -lFirebaseRemoteConfig -lSwiftyStoreKit \
 	Checks/Cases/IntegrationKitCheck.swift \
 	Sources/IntegrationKit/*.swift \
 	Sources/IntegrationKit/*/*.swift \

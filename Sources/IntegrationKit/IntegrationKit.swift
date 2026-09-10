@@ -2,8 +2,8 @@
 //  IntegrationKit.swift
 //  IntegrationKit
 //
-//  Composition root. Spec 3.5: exactly three protocols are public — `PremiumServicing`,
-//  `AnalyticsTracking`, `CrashReporting`. Adapty and AppsFlyer are internal, so the app can no
+//  Composition root. Spec 3.5: exactly four protocols are public — `PremiumServicing`,
+//  `AnalyticsTracking`, `CrashReporting`, `RemoteConfigServicing`. Adapty and AppsFlyer are internal, so the app can no
 //  longer wire the services itself (a public initializer cannot take an internal type). This
 //  builds them instead, in the one order that works: Amplitude first, because Adapty links its
 //  own profile to the Amplitude device id, then Adapty, then AppsFlyer, which pushes attribution
@@ -14,8 +14,8 @@ import AppTrackingTransparency
 import Foundation
 import UIKit
 
-/// Everything the app is given, in one value: the three protocols, the `AppDelegate` forwards and
-/// the package's own diagnostics. Build it once with ``configure(deviceId:amplitudeKey:adaptyKey:placements:sessionsCounter:sharedSecret:productIds:isDebug:isTestsRunning:levels:firstOpenEvent:appsFlyerDevKey:appsFlyerAppId:sourceTimeout:attTimeout:)``
+/// Everything the app is given, in one value: the four protocols, the `AppDelegate` forwards and
+/// the package's own diagnostics. Build it once with ``configure(deviceId:amplitudeKey:adaptyKey:placements:sessionsCounter:sharedSecret:productIds:isDebug:isTestsRunning:levels:firstOpenEvent:appsFlyerDevKey:appsFlyerAppId:sourceTimeout:attTimeout:adaptyAttributionEnabled:remoteConfigDefaults:remoteConfigTimeout:)``
 /// and keep it for as long as the app runs.
 public struct IntegrationKit {
 	private static let tag = "IntegrationKit"
@@ -45,6 +45,8 @@ public struct IntegrationKit {
 	public let analytics: AnalyticsTracking
 	/// The crash layer: non-fatal reports, and how many were dropped.
 	public let crashes: CrashReporting
+	/// The remote-config layer: values by the app's own keys, defaults until the fetch lands.
+	public let remoteConfig: RemoteConfigServicing
 
 	// Kept only to stay alive and to back the forwards below — never handed out. AppsFlyer is
 	// optional because an app without a dev key simply has no attribution.
@@ -91,6 +93,14 @@ public struct IntegrationKit {
 	///   run that was meant to catch crashes must not be the run that loses them. StoreKit is not
 	///   restricted by either key.
 	///
+	/// `remoteConfigDefaults` are the app's own Firebase Remote Config keys and the value each one
+	/// answers until the fetch lands — `["paywallReview": NSNumber(value: false)]`. The package names
+	/// no key of its own: an empty dictionary means the app does not use remote config, and every
+	/// read would answer the type's zero, so it is recorded in ``configurationIssues`` and no fetch
+	/// is made. `remoteConfigTimeout` is how long that fetch waits. Five seconds is a number from
+	/// practice — comfortably inside a splash plus the taps it takes to reach a paywall — and an app
+	/// that shows a remote-driven screen sooner passes its own.
+	///
 	/// `adaptyAttributionEnabled` switches on Adapty's own attribution service, new in Adapty 4.x.
 	/// It is off unless asked for, and that is the one default here that has to be argued rather than
 	/// inherited: an app that already runs AppsFlyer would otherwise start sending a second,
@@ -112,7 +122,9 @@ public struct IntegrationKit {
 		appsFlyerAppId: String = "",
 		sourceTimeout: TimeInterval = 5,
 		attTimeout: TimeInterval = 60,
-		adaptyAttributionEnabled: Bool = false
+		adaptyAttributionEnabled: Bool = false,
+		remoteConfigDefaults: [String: NSObject] = [:],
+		remoteConfigTimeout: TimeInterval = 5
 	) -> IntegrationKit {
 		if let built {
 			ConfigurationIssues.shared.record(
@@ -121,6 +133,12 @@ public struct IntegrationKit {
 			)
 			return built
 		}
+		// First of the four, and the only one that is not a network dependency of the others: a
+		// paywall variant is read on the way to the first screen, so the fetch gets whatever head
+		// start the rest of this method takes.
+		let remoteConfig = RemoteConfigService(defaults: remoteConfigDefaults)
+		remoteConfig.configure(timeout: remoteConfigTimeout, isDebug: isDebug, isTestsRunning: isTestsRunning)
+
 		let analytics = AmplitudeAnalytics(isDebug: isDebug)
 		analytics.configure(apiKey: amplitudeKey, deviceId: deviceId, firstOpenEvent: firstOpenEvent, isTestsRunning: isTestsRunning)
 
@@ -197,6 +215,7 @@ public struct IntegrationKit {
 			premium: premium,
 			analytics: analytics,
 			crashes: CrashReporter(),
+			remoteConfig: remoteConfig,
 			adapty: adapty,
 			appsFlyer: appsFlyer,
 			adaptyRefreshObserver: adaptyRefreshObserver

@@ -16,6 +16,7 @@ compiler proves the public API is enough on its own.
 
 - [Setup from scratch](#setup-from-scratch)
 - [`IntegrationKit.configure`](#integrationkitconfigure)
+- [Remote config](#remote-config)
 - [Analytics](#analytics)
 - [Crash reporting](#crash-reporting)
 - [Premium](#premium)
@@ -202,7 +203,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 			appsFlyerDevKey: ObfuscatedSecret.reveal(encrypted: SDKKeys.appsFlyerEncrypted, secret: SDKKeys.secret),
 			appsFlyerAppId: "1234567890",
 			// 60 s fits an ATT prompt shown at launch; raise it if the prompt comes after onboarding.
-			attTimeout: 60
+			attTimeout: 60,
+			// Your Remote Config keys and the value each answers until the fetch lands. The
+			// package defines none of its own; omit the argument if you use no remote config.
+			remoteConfigDefaults: ["paywallReview": NSNumber(value: false)]
 		)
 		self.kit = kit
 
@@ -255,8 +259,9 @@ the end of that line, taking with it:
   `updateTrackingAuthorization` are members of the struct. Without it there is
   nothing for the `AppDelegate` to forward to, so universal links and
   URL-scheme links never reach the package at all.
-- **The diagnostics and the other two protocols** — `configurationIssues`,
-  `droppedDeepLinks`, `analytics` and `crashes` all hang off the same value.
+- **The diagnostics and the other three protocols** — `configurationIssues`,
+  `droppedDeepLinks`, `analytics`, `crashes` and `remoteConfig` all hang off the
+  same value.
 
 What makes this the most expensive mistake in the guide is how much keeps
 working. `premium` is fine — `PremiumService` holds Adapty itself, so
@@ -375,16 +380,17 @@ caller's own stack, so a key that is empty — or that was obfuscated and
 decrypted wrong — would take a DEBUG build down before any network call. The
 package checks the shape first and records the reason instead of trapping.
 
-The returned `IntegrationKit` exposes exactly three things to build UI on top
+The returned `IntegrationKit` exposes exactly four things to build UI on top
 of: `premium: PremiumServicing`, `analytics: AnalyticsTracking`,
-`crashes: CrashReporting`. Everything AppsFlyer- or Adapty-specific
+`crashes: CrashReporting`, `remoteConfig: RemoteConfigServicing`.
+Everything AppsFlyer- or Adapty-specific
 (`AdaptyService`, `AppsFlyerService`, and their internal protocols) stays
 behind the facade — the app cannot reach them even by trying, since 0.2.0
 they are not public types.
 
 ### The facade's own API
 
-Six members besides those three protocols. The first three the `AppDelegate`
+Six members besides those four protocols. The first three the `AppDelegate`
 calls; the last two are diagnostics:
 
 ```swift
@@ -450,6 +456,64 @@ kit.analytics.logEvent("onboarding_step_shown", properties: ["step": 1])
 `setProfileValue` is a no-op when the Adapty layer is inert (`adaptyKey: ""` or
 `isTestsRunning: true`), with the layer's single reason already in
 `configurationIssues` — it needs no `#if` or guard on the app's side.
+
+## Remote config
+
+```swift
+public protocol RemoteConfigServicing: AnyObject {
+	func bool(_ key: String) -> Bool
+	func string(_ key: String) -> String
+	func int(_ key: String) -> Int
+	func double(_ key: String) -> Double
+}
+```
+
+Firebase Remote Config, reached as `kit.remoteConfig`. Keys belong to the app —
+the package names none — so the whole surface is "read the key I registered a
+default for":
+
+```swift
+if kit.remoteConfig.bool("paywallReview") { showReviewPaywall() }
+```
+
+Defaults are registered at `configure` time and are the answer until the fetch
+lands:
+
+```swift
+remoteConfigDefaults: [
+	"paywallReview": NSNumber(value: false),
+	"onboardingVariant": NSString(string: "control"),
+]
+```
+
+`[String: NSObject]` rather than `[String: Any]` because that is what Firebase's
+own `setDefaults` takes; `NSNumber` covers `bool`, `int` and `double`.
+
+**Every read is non-blocking and always answers.** There is no "not ready"
+state to handle: before the fetch lands you get your default, afterwards the
+fetched value. What that costs is a race worth knowing about — a screen shown
+in the first seconds of a cold launch may render the default and never
+re-render. Read a remote value where the user has already spent a moment (after
+a splash, on a screen reached by a tap), not in `didFinishLaunching`.
+
+**A key with no registered default reads as `false` / `""` / `0`**, and nothing
+tells that apart from a value the console actually sent. Register a default for
+every key you read — it is the only guard here.
+
+`remoteConfigTimeout` is how long the fetch waits, five seconds by default.
+Firebase also throttles fetches to one per 12 hours in a release build; that
+throttle is off whenever `isDebug: true`, so flipping a flag in the console
+during manual testing takes effect on the next launch rather than the next day.
+
+`isTestsRunning: true` keeps the defaults and skips the fetch — the layer stays
+usable and answers exactly what the app registered, so a UI test asserting on a
+remote-driven screen is not at the mercy of the console. This is the one SDK
+that a test run does not silence, because its defaults *are* the test's input.
+
+Two states record a line in `configurationIssues` and leave every read
+answering the registered default: Firebase not configured before
+`IntegrationKit.configure(...)`, and an empty `remoteConfigDefaults` (no fetch
+is made — there is nothing to compare a fetched value against).
 
 ## Analytics
 
