@@ -1007,6 +1007,7 @@ extension AdaptyService: AdaptyDelegate {
 	/// moment it is built, before any request is made. A stale "no premium" from disk must not read
 	/// as a checked denial, so provenance travels with the profile (AD-05 row 2).
 	func didLoadLatestProfile(_ profile: AdaptyProfile) {
+		debugLog(tag: Self.tag, level: .info, "didLoadLatestProfile: \(profile)")
 		let isVerified = didLoadNetworkProfile
 		didLoadNetworkProfile = true
 		premiumObserver?(profile, isVerified)
