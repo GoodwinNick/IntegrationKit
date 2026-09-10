@@ -16,12 +16,20 @@ This file is the short version.
 ## Requirements
 
 - iOS 15.6+
-- Swift 5.9 (`swift-tools-version: 5.9`)
+- **Xcode 26.0+** — not this package's own floor, but a hard one all the same.
+  Adapty 4.1.3's manifest declares `swift-tools-version: 6.2` and uses package
+  traits, so SwiftPM older than 6.1 cannot parse it and resolution fails before
+  anything is compiled. This package's manifest stays at
+  `swift-tools-version: 5.9`; the requirement arrives through the dependency
+  graph, and there is nothing here to lower it with.
+
+Staying on an older Xcode means staying on IntegrationKit 0.2.2, which pins
+Adapty 2.10.x.
 
 ## Installation
 
 ```swift
-.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.2.2")
+.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.3.0")
 ```
 
 In Xcode: File → Add Package Dependencies → the same URL, product `IntegrationKit`.
@@ -111,7 +119,8 @@ Besides `logEvent`, `kit.analytics` carries `setUserId(_:)` (re-point analytics
 at another id after a login) and `deviceId` (Amplitude's own id, `nil` until the
 layer is up). Deep links go through `kit.handleContinue(...)` /
 `kit.handleOpen(...)`, and the ATT answer through
-`kit.updateTrackingAuthorization(_:)`. Two more forwards reach Adapty directly:
+`kit.updateTrackingAuthorization(_:)`. One more forward reaches Adapty
+directly, and beside it sits the one call that no longer reaches anything:
 
 ```swift
 // The app's own profile attributes. `lastUsedDay`, `launchSession`,
@@ -119,9 +128,8 @@ layer is up). Deep links go through `kit.handleContinue(...)` /
 // write those from the app, it only doubles the traffic.
 kit.setProfileValue(value: "returning_user", key: "cohort")
 
-// One onboarding screen, sent as `onboarding_1`. Steps are numbered from ONE:
-// Adapty refuses screen order 0, so a screen counted from zero is missing from
-// the funnel — a step below one is not sent and says why in configurationIssues.
+// Deprecated and does nothing since 0.3.0: Adapty 4.x deleted onboarding
+// reporting. Delete the call and log onboarding steps through analytics.
 kit.logOnboardingOpen(step: 1)
 ```
 

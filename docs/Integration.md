@@ -19,6 +19,7 @@ compiler proves the public API is enough on its own.
 - [Analytics](#analytics)
 - [Crash reporting](#crash-reporting)
 - [Premium](#premium)
+  - [Promoted purchases](#promoted-purchases)
 - [The StoreKit side](#the-storekit-side)
 - [Deep links](#deep-links)
 - [Building and checks](#building-and-checks)
@@ -33,11 +34,37 @@ Xcode → File → Add Package Dependencies → this repo's URL → product
 `IntegrationKit`.
 
 ```swift
-.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.2.2")
+.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.3.0")
 ```
 
 The target's minimum deployment target must be iOS 15.6 or the package will
 not build.
+
+**Xcode 26.0 or newer is required, and the requirement is not this package's.**
+Since 0.3.0 the Adapty dependency is 4.1.3, whose own manifest declares
+`swift-tools-version: 6.2` and uses package traits — a feature SwiftPM only
+learned in 6.1. An older SwiftPM cannot parse that manifest at all, so
+resolution fails before a single file is compiled, with an error about the
+manifest rather than about anything in your app. This package's manifest stays
+at `swift-tools-version: 5.9` and its own floor has not moved; the requirement
+arrives through the dependency graph, and there is nothing here that can lower
+it. An app that has to stay on an older Xcode stays on IntegrationKit 0.2.2,
+which pins Adapty 2.10.x.
+
+### Upgrading from 0.2.x
+
+Four things change at the call site or in behaviour. Everything else in this
+guide is the same as it was.
+
+| What | Then (0.2.x) | Now (0.3.0) |
+|---|---|---|
+| `kit.logOnboardingOpen(step:)` | Reported an onboarding screen to Adapty | Deprecated and empty. Adapty 4.x deleted `logShowOnboarding` — delete the call, and see [`logOnboardingOpen`](#the-facades-own-api) for where onboarding funnels go instead. |
+| A purchase Adapty could not confirm | `.pending`, **with premium granted** | `.failed`, with nothing granted. See [Purchase outcomes](#models) — this is the one change that can move money, and it moves it in the app's favour, not against a paying user. |
+| Paywall remote config | One config per placement | One per **locale**. The package picks the device's; `remoteValue` is unchanged at the call site. |
+| App Store promoted purchases | Bought automatically by Adapty's default delegate | Refused, with a log line. See [Promoted purchases](#promoted-purchases). |
+
+The rest is source-compatible: no protocol the app implements changed, and no
+public model lost a case.
 
 ### 2. Add `GoogleService-Info.plist`
 
@@ -296,7 +323,8 @@ public static func configure(
 	appsFlyerDevKey: String = "",
 	appsFlyerAppId: String = "",
 	sourceTimeout: TimeInterval = 5,
-	attTimeout: TimeInterval = 60
+	attTimeout: TimeInterval = 60,
+	adaptyAttributionEnabled: Bool = false
 ) -> IntegrationKit
 ```
 
@@ -317,6 +345,7 @@ public static func configure(
 | `appsFlyerAppId` | Numeric App Store id | App Store Connect / `itunes.apple.com/lookup` | Defaults to `""`. Only meaningful together with a non-empty `appsFlyerDevKey`; without a confirmed App ID, AppsFlyer attribution can end up pointed at the wrong app. |
 | `sourceTimeout` | How long one premium refresh waits for a single source — Adapty, or the Apple receipt — before deciding without it | The app's own judgement about its users' networks | Defaults to `5` seconds. That number comes from practice, not from anything Adapty documents; an app whose users are on worse networks passes a larger one instead of patching the package. Neither source answering within it is not "no premium" — it is "unknown", and the cached state stands. |
 | `attTimeout` | How long AppsFlyer holds the install data waiting for the ATT answer | Where the app shows the ATT prompt | Defaults to `60` seconds, which is AppsFlyer's own recommendation for a prompt shown at launch. An app that asks after a tutorial is told to pass `120`. Only the app knows which it is, and a user who deletes the app before the limit expires stays unattributed. |
+| `adaptyAttributionEnabled` | Switches on **Adapty Attribution**, Adapty's own attribution service (new in Adapty 4.x) | A decision, not a value from a dashboard — turn it on only if you intend to use Adapty's attribution instead of, or alongside, AppsFlyer's | Defaults to `false`, which is also the SDK's own default. Leave it off in an app that already runs AppsFlyer: the package forwards AppsFlyer's conversion data to the Adapty profile by hand, and switching this on adds a second, independent install signal competing with it. |
 
 There is no separate switch for AppsFlyer's console logging any more — it is
 `isDebug`, the same key crash collection runs off. AppsFlyer's docs require
@@ -364,7 +393,7 @@ public func handleOpen(_ url: URL, options: [UIApplication.OpenURLOptionsKey: An
 public func updateTrackingAuthorization(_ status: ATTrackingManager.AuthorizationStatus)
 
 public func setProfileValue(value: String, key: String)
-public func logOnboardingOpen(step: Int)
+@available(*, deprecated) public func logOnboardingOpen(step: Int)
 
 public var droppedDeepLinks: Int { get }
 public var configurationIssues: [String] { get }
@@ -386,9 +415,9 @@ in, and passing them again only overwrites what is already correct.
 write it themselves after a successful purchase. Since 0.2.2 the package does
 it, because `purchase(_:placement:)` already carries the placement and is the
 only place that also knows Apple took the money. It is written on a plain
-Adapty purchase, on a StoreKit-fallback purchase and on a payment Adapty could
-not confirm — and on nothing else, so a cancelled purchase never stamps a
-placement nobody paid from.
+Adapty purchase and on a StoreKit-fallback purchase — and on nothing else, so a
+cancelled, pending or failed purchase never stamps a placement nobody paid
+from.
 
 Adapty's own rules apply and are checked before anything is sent: a key is 1…30
 characters of `A-Za-z0-9._-`, a string value is 1…50 characters, and a profile
@@ -398,25 +427,29 @@ sent, and the reason — with the key and what was wrong with it — lands in
 matters: a deep-link value simply disappears at character 51, and without the
 check it would disappear silently.
 
-**`logOnboardingOpen(step:)`** reports one onboarding screen to Adapty, as the
-event `onboarding_<step>`:
+**`logOnboardingOpen(step:)` is deprecated since 0.3.0 and does nothing.** It
+used to report one onboarding screen to Adapty as the event
+`onboarding_<step>`, through `logShowOnboarding(name:screenName:screenOrder:)`.
+Adapty 4.x deleted that call: onboardings there are a rendered flow of Adapty's
+own, fetched with `getOnboarding` and reported by the view that draws them.
+There is no longer any way to report a screen the app drew itself, and this
+package draws no screens.
+
+It is kept as an empty method rather than removed so an app on 0.2.x still
+compiles against 0.3.0 and gets a warning at the call site instead of an error.
+Delete the call; a later release will delete the method.
+
+**Onboarding funnels belong in analytics** — that is where every other screen
+event in an app using this package already goes, it needs no step numbering
+rules, and it does not depend on an SDK's paywall model:
 
 ```swift
-// First screen. Not 0.
-kit.logOnboardingOpen(step: 1)
+kit.analytics.logEvent("onboarding_step_shown", properties: ["step": 1])
 ```
 
-**Steps are numbered from ONE.** Adapty refuses `screenOrder == 0` outright
-(`wrongParamOnboardingScreenOrder`), so an app counting its screens from zero
-loses its first screen from the funnel and the dashboard shows a funnel that
-begins at step two — with nothing anywhere saying why. A step below one is
-therefore not sent at all, and the value received is recorded in
-`configurationIssues`: no retry fixes an integration counting from the wrong
-number.
-
-Both calls are no-ops when the Adapty layer is inert (`adaptyKey: ""` or
+`setProfileValue` is a no-op when the Adapty layer is inert (`adaptyKey: ""` or
 `isTestsRunning: true`), with the layer's single reason already in
-`configurationIssues` — neither needs an `#if` or a guard on the app's side.
+`configurationIssues` — it needs no `#if` or guard on the app's side.
 
 ## Analytics
 
@@ -701,8 +734,9 @@ func paywall() {
 				case .cancelled:
 					break
 				case .pending:
-					// Ask to Buy, or paid and not confirmed yet. Show waiting, never an error, and
-					// do not offer to buy again — the answer arrives through .premiumDidChange.
+					// Ask to Buy waiting for a parent, or a purchase that never came back. Show
+					// waiting, never an error, and do not offer to buy again — the answer arrives
+					// through .premiumDidChange.
 					break
 				case .unavailable:
 					// Permanent for this device/product. Hide the button instead of retrying.
@@ -736,6 +770,13 @@ func paywall() {
   type — that one also lands in `configurationIssues`). `.value` gives the
   plain optional back when the distinction does not matter, and `.isPending`
   is the "ask again later" test.
+  **Since 0.3.0 Adapty hangs one remote config per locale off a placement**, and
+  its `getFlow` takes no locale to narrow them with, so the package chooses:
+  the device's locale exactly, then its language (an `en-GB` device is served by
+  an `en` config), then the dashboard's first row — and that last one records a
+  line in `configurationIssues` naming the placement and the locale that was
+  missing. A paywall quietly rendering in the wrong language is a bug nobody
+  reports and everybody sees. The call site is unchanged.
 - **`configurationIssues`** — every cause the package could not work around
   and no retry will fix: an empty key, a device id that arrived too late, a
   placement that does not exist, a product the paywall does not sell, a
@@ -819,8 +860,8 @@ public enum PurchaseOutcome: Equatable, Sendable {
 	case purchased
 	/// The user said no.
 	case cancelled
-	/// Neither bought nor refused **yet**: Ask to Buy waiting for a parent, or paid and still being
-	/// confirmed. Show waiting, not an error, and do not offer to buy again.
+	/// Neither bought nor refused **yet**: Ask to Buy waiting for a parent, or a purchase call that
+	/// never came back. Show waiting, not an error, and do not offer to buy again.
 	case pending
 	/// Not possible on this device or for this product: payments disabled, product missing from the
 	/// storefront, a promotional offer the store refuses to sign. Hide the button.
@@ -845,9 +886,29 @@ Three of the five need a UI decision that `failed` would get wrong:
 
 | Outcome | What the screen should do |
 |---|---|
-| `.pending` | "Waiting for approval" — no error, no second buy button. The real answer arrives through `.premiumDidChange`. Treating it as a failure is how a paid user gets charged twice. |
+| `.pending` | "Waiting for approval" — no error, no second buy button. The real answer arrives through `.premiumDidChange`. Treating it as a failure is how a user with a pending Ask to Buy request creates a second one. |
 | `.unavailable` | Hide or disable the button. A retry fails identically every time. |
 | `.failed` | Show an error and let the user try again — this one really is temporary. **It is also what a second tap on the buy button gets while the first purchase is still in flight.** The package refuses the second call before the SDK ever sees it, so two payment sheets can never stack; the app is not expected to disable the button itself. Do not turn that into an alert — a purchase is already running, so the screen should be waiting, and the outcome of the first call is the one to react to. |
+
+### Promoted purchases
+
+An App Store product page can promote an in-app purchase, and tapping it opens
+the app with a purchase already half-started. **The package refuses it** and
+writes a log line saying which product was refused.
+
+That is a deliberate choice, and it is a choice because Adapty's delegate
+protocol makes it one: `AdaptyDelegate` ships a default implementation of
+`didReceivePromotedPurchase` that calls `Adapty.makePurchase` straight away. So
+conforming to the protocol and staying silent is not neutral — it signs the app
+up to buy whatever the store page promoted, outside `PremiumService`'s
+single-purchase guard, with no paywall shown, no impression logged, and no
+`PurchaseOutcome` delivered to anybody. The package has no way to ask the app
+whether it wants that, so it declines.
+
+An app that wants to sell a promoted product does it the ordinary way: catch
+the deep link into the paywall and offer the product through
+`purchase(_:placement:)`, where the guard, the impression and the outcome all
+apply.
 
 ### Reacting to premium changes
 
@@ -991,7 +1052,7 @@ for s in Checks/*.sh; do "./$s"; done
 
 | Script | What it pins down |
 |---|---|
-| `adapty-service-check.sh` | The whole of AD-01…AD-07: activation guards, paywall de-duplication and TTL, the four `PaywallState` answers, purchase verdict mapping, the attribution queue, the ATT resend, remote-config parsing done once. |
+| `adapty-service-check.sh` | The whole of AD-01…AD-07: activation guards, paywall de-duplication and TTL, the `PaywallState` answers, purchase verdict mapping (including that a server or network error grants nothing), the attribution pair failing by halves, the ATT resend, remote-config parsing done once, locale selection, and the promoted purchase that must not be started. |
 | `premium-resolver-check.sh` | Arbitration order: a verified Adapty answer beats the cache both ways; a false receipt does not revoke an unverified local purchase; a stale cache plus a true receipt yields unverified state with no `expiresAt`; silence yields `.free`. |
 | `premium-barrier-check.sh` | The `refresh()` concurrency barrier, restore, the StoreKit-fallback path, and the price merge — the store's price winning where it answered, Adapty's kept where it did not. |
 | `premium-local-purchase-check.sh` | The local-purchase mark: what sets it, what may clear it, and what must never clear it. |
@@ -1051,9 +1112,11 @@ dashboard entry.
   most likely decrypting this one wrong.
 - **A purchase "fails" but the user was charged.** `.pending` is not `.failed`.
   If the UI collapses the five `PurchaseOutcome` cases into two, an Ask to Buy
-  approval or a paid-but-unconfirmed purchase reads as an error and the user
-  is invited to pay twice. Handle `.pending` as waiting, and wait for
-  `.premiumDidChange`.
+  request still waiting for a parent reads as an error and the user is invited
+  to make a second one. Handle `.pending` as waiting, and wait for
+  `.premiumDidChange`. A user who really was charged and whose confirmation was
+  lost is picked up without the app doing anything — by Adapty's profile push
+  and by the payment queue at the next launch — so it never has to guess.
 - **`isPremium` stays `false` after a real purchase.** Check `levels` at
   `configure` time against the Adapty access level id actually granted by
   the paywall — a mismatch here means a genuinely successful Adapty purchase
