@@ -28,6 +28,14 @@ final class PremiumService: PremiumServicing {
 	private var didStart = false
 	/// PM-04 row 7: a purchase is in flight. Lifted when it settles, whichever way it ends.
 	private var isPurchasing = false
+	/// PM-02 rows 7-10: Adapty has not yet answered for real in this process, so the verdict still
+	/// rests on what the last launch left behind. Closed by a verified answer and never reopened —
+	/// from then on the profile push keeps the verdict fresh, so there is nothing left to re-ask.
+	///
+	/// In memory on purpose, not in `PremiumState`: stored, it would carry one launch's knowledge
+	/// into a process that has asked nobody, and every new field in that struct costs a one-time
+	/// migration write (the PM-02 note on `Equatable`).
+	private var isQuestionOpen: Bool
 	/// How long `refresh()` waits for one source before deciding without it. Five seconds is a
 	/// number from practice, not a guarantee Adapty documents — an app on a worse network passes
 	/// its own instead of patching the package.
@@ -47,6 +55,9 @@ final class PremiumService: PremiumServicing {
 		self.levels = levels
 		self.sourceTimeout = sourceTimeout
 		self.productIds = productIds
+		// PM-02 row 9: an app built without Adapty has nobody to wait for. Its question is closed
+		// before it is ever asked, so returning to the foreground costs it nothing.
+		isQuestionOpen = adapty != nil
 	}
 
 	/// Convenience read for call sites that just need the current answer.
@@ -94,6 +105,19 @@ final class PremiumService: PremiumServicing {
 		Task { [weak self] in await self?.resolveBoth() }
 	}
 
+	/// PM-02 row 7: the app came back to the foreground. A barrier where nobody answered leaves the
+	/// verdict resting on the last launch's memory and re-asks nobody — a cold start with no network
+	/// would otherwise cost a whole session, either without the premium the user paid for elsewhere
+	/// or with one that has since expired. So while the question is still open, coming back asks
+	/// again; once Adapty has answered, the push keeps the verdict fresh and this does nothing.
+	func refreshIfUnanswered() {
+		lock.lock()
+		let open = isQuestionOpen
+		lock.unlock()
+		guard open else { return }
+		refresh()
+	}
+
 	/// PM-08 row 5: the payment queue handed over a purchase. The same barrier as `refresh()`,
 	/// marked as a local purchase — Apple's receipt can still be a version behind a transaction
 	/// finished seconds ago, and a cached verified `inactive` must not swallow it either.
@@ -135,6 +159,13 @@ final class PremiumService: PremiumServicing {
 
 	private func apply(adapty: PremiumAccess?, apple: ReceiptAnswer?, localPurchase: Bool = false) {
 		lock.lock()
+		// PM-02 row 8: only a verified answer closes the question. The profile the SDK pushes out of
+		// its own storage on activation is the last launch remembered, not a check — treating it as
+		// an answer would cancel the very retry this exists for. The receipt does not close it either:
+		// it cannot see a subscription bought outside the App Store, and it needs no network anyway.
+		if adapty?.isVerified == true {
+			isQuestionOpen = false
+		}
 		// The local-purchase mark and its cache-demotion trick now live entirely in
 		// PremiumResolver.resolve — this just hands over what it has and takes back the verdict.
 		let state = PremiumResolver.resolve(adapty: adapty, apple: apple, cached: store.cached, localPurchase: localPurchase, now: Date())

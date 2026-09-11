@@ -52,12 +52,13 @@ public struct IntegrationKit {
 	// optional because an app without a dev key simply has no attribution.
 	private let adapty: AdaptyServicing
 	private let appsFlyer: AppsFlyerServicing?
-	/// The `didBecomeActive` paywall-retry token. Holding it is not what keeps the observation
-	/// alive — `NotificationCenter` retains the block-based observer itself, whether or not anyone
-	/// keeps the token, and the block retains the Adapty layer with it. It is kept because it is
-	/// the only handle that could ever remove the observation, and a struct has no `deinit` to do
-	/// that from: the observation lasts the process, by construction.
-	private let adaptyRefreshObserver: NSObjectProtocol
+	/// The `didBecomeActive` token — paywall retry, plus the premium barrier while the question is
+	/// still open. Holding it is not what keeps the observation alive — `NotificationCenter` retains
+	/// the block-based observer itself, whether or not anyone keeps the token, and the block retains
+	/// the Adapty layer with it. It is kept because it is the only handle that could ever remove the
+	/// observation, and a struct has no `deinit` to do that from: the observation lasts the process,
+	/// by construction.
+	private let foregroundObserver: NSObjectProtocol
 
 	/// Builds and starts the whole layer. Call `FirebaseIntegration.configure()` before this one.
 	///
@@ -196,16 +197,6 @@ public struct IntegrationKit {
 			)
 			adapty = service
 		}
-		// Adapty's own paywall fetch can lose a race at cold start (flaky network, cold CDN) — retry
-		// every placement that is still missing each time the app comes back to the foreground.
-		let adaptyRefreshObserver = NotificationCenter.default.addObserver(
-			forName: UIApplication.didBecomeActiveNotification,
-			object: nil,
-			queue: .main
-		) { _ in
-			adapty.refreshPaywalls()
-		}
-
 		var appsFlyer: AppsFlyerService?
 		if !appsFlyerDevKey.isEmpty {
 			let service = AppsFlyerService(analytics: analytics, adapty: adapty)
@@ -269,6 +260,19 @@ public struct IntegrationKit {
 			// PM-08 decides what it means — the flag does not turn premium on by itself (TM-04 row 4).
 			premium.purchaseDelivered()
 		}
+		// Two retries on one notification, for the same reason: a cold start is where a flaky network
+		// costs the most. Adapty's own paywall fetch can lose that race (cold CDN), so every placement
+		// still missing is asked for again — and PM-02 row 7, if no source answered about premium
+		// either, the whole barrier runs again. The premium half is conditional: once Adapty has
+		// answered for real, the profile push keeps the verdict fresh and re-asking buys nothing.
+		let foregroundObserver = NotificationCenter.default.addObserver(
+			forName: UIApplication.didBecomeActiveNotification,
+			object: nil,
+			queue: .main
+		) { [weak premium] _ in
+			adapty.refreshPaywalls()
+			premium?.refreshIfUnanswered()
+		}
 
 		let kit = IntegrationKit(
 			premium: premium,
@@ -277,7 +281,7 @@ public struct IntegrationKit {
 			remoteConfig: remoteConfig,
 			adapty: adapty,
 			appsFlyer: appsFlyer,
-			adaptyRefreshObserver: adaptyRefreshObserver
+			foregroundObserver: foregroundObserver
 		)
 		built = kit
 		return kit

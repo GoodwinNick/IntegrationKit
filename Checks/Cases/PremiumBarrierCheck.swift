@@ -847,7 +847,62 @@ enum PremiumBarrierCheck {
 			"case 33: a purchase nobody paid for must write no placement — got \(fakeAdaptyProfileWrites)"
 		)
 
-		print("PremiumService barrier, restore, purchase fallback and prices: 33/33 OK")
+		// 34. PM-02 row 7: a barrier where nobody answered leaves the verdict resting on the last
+		//     launch's memory and re-asks nobody — a cold start with no network would cost a whole
+		//     session. Coming back to the foreground re-asks it, for as long as the question is open
+		//     and not one call after it closes. The store cannot show any of this: a barrier that
+		//     resolves to the state already cached writes nothing, so what is counted is the question.
+		let openAdapty = CountingAdapty(answer: nil)
+		let openService = PremiumService(store: SpyStore(cached: .free), adapty: openAdapty, apple: FakeApple(receipt: nil), levels: ["premium"], sourceTimeout: 1)
+		openService.start()
+		assert(wait { openAdapty.asks == 1 }, "case 34: start() must ask once, got \(openAdapty.asks)")
+		openService.refreshIfUnanswered()
+		assert(wait { openAdapty.asks == 2 }, "case 34: nobody answered the first barrier — coming back to the foreground must ask again, got \(openAdapty.asks)")
+		// Adapty finally answers, verified. From here the profile push keeps the verdict fresh, and
+		// re-asking on every foreground would buy nothing.
+		openAdapty.answer = profile(active: true, expiresAt: now + hour)
+		openService.refreshIfUnanswered()
+		assert(wait { openService.isPremium }, "case 34: the answer must land as premium")
+		assert(openAdapty.asks == 3, "case 34: exactly 3 asks — that third one is the one that got the answer, got \(openAdapty.asks)")
+		openService.refreshIfUnanswered()
+		Thread.sleep(forTimeInterval: 0.2)
+		assert(openAdapty.asks == 3, "case 34: the question is closed — a later foreground must ask nothing, still exactly 3, got \(openAdapty.asks)")
+		// Only the foreground retry is gated by the flag. The app's own `refresh()` never is.
+		openService.refresh()
+		assert(wait { openAdapty.asks == 4 }, "case 34: refresh() itself must still work after the question closed, got \(openAdapty.asks)")
+
+		// 35. PM-02 row 8: the first push of a process is the profile the SDK had on disk, handed over
+		//     before any request goes out (AD-05 row 2). Reading it as an answer would cancel the very
+		//     retry row 7 exists for — on a device with no network that push is all that ever arrives.
+		let pushAdapty = CountingAdapty(answer: nil)
+		let pushService = PremiumService(store: SpyStore(cached: .free), adapty: pushAdapty, apple: FakeApple(receipt: nil), levels: ["premium"], sourceTimeout: 1)
+		pushService.start()
+		assert(wait { pushAdapty.asks == 1 }, "case 35: start() must ask once, got \(pushAdapty.asks)")
+		pushAdapty.premiumObserver?(profile(active: true, expiresAt: now + hour), false)
+		assert(pushService.isPremium == true, "case 35: an unverified push saying active still grants — doubt goes to the user, got \(pushService.isPremium)")
+		pushService.refreshIfUnanswered()
+		assert(wait { pushAdapty.asks == 2 }, "case 35: a profile off the SDK's own disk is not an answer — the question must stay open, got \(pushAdapty.asks)")
+		// The same profile, this time from the network. That one is Adapty actually answering.
+		pushAdapty.premiumObserver?(profile(active: true, expiresAt: now + hour), true)
+		pushService.refreshIfUnanswered()
+		Thread.sleep(forTimeInterval: 0.2)
+		assert(pushAdapty.asks == 2, "case 35: a verified push closes the question — still exactly 2, got \(pushAdapty.asks)")
+
+		// 36. PM-02 row 9: an app built without Adapty has nobody to wait for, so its question is
+		//     closed before it is ever asked and a foreground costs it nothing. The second half is
+		//     what makes the first meaningful: it is the flag that stops the retry, not a service
+		//     that could not resolve — the same sources through `refresh()` grant premium at once.
+		let noWaitStore = SpyStore(cached: .free)
+		let noWaitService = PremiumService(store: noWaitStore, adapty: nil, apple: FakeApple(receipt: ReceiptAnswer(isActive: true, expiresAt: now + hour)), levels: ["premium"], sourceTimeout: 1)
+		noWaitService.refreshIfUnanswered()
+		Thread.sleep(forTimeInterval: 0.3)
+		assert(noWaitStore.writes == 0, "case 36: with no Adapty there is nothing to re-ask — expected 0 writes, got \(noWaitStore.writes)")
+		assert(noWaitService.isPremium == false, "case 36: and nothing was resolved, got \(noWaitService.isPremium)")
+		noWaitService.refresh()
+		assert(wait { noWaitService.isPremium }, "case 36: refresh() must still resolve the receipt — the flag stopped the foreground retry, not the service")
+		assert(noWaitStore.writes == 1, "case 36: exactly 1 write, got \(noWaitStore.writes)")
+
+		print("PremiumService barrier, restore, purchase fallback and prices: 36/36 OK")
 	}
 }
 
@@ -910,6 +965,52 @@ extension FakeAdapty {
 	func setProfileValue(value: String, key: String) {
 		fakeAdaptyProfileWrites.append("\(key)=\(value)")
 	}
+}
+
+/// Cases 34-36's Adapty: the one that counts how many times it was asked. PM-02 rows 7-10 are about
+/// whether the question gets asked again at all, and the store cannot show that — a barrier that
+/// resolves to the state already cached writes nothing, so a retry that ran and a retry that never
+/// ran look identical from there. Appended at the bottom for the same reason as the fakes above.
+final class CountingAdapty: AdaptyPremiumProviding {
+	var isActive: Bool { true }
+	var premiumObserver: ((AdaptyProfile, Bool) -> Void)?
+	/// What it answers when asked. Mutable so a case can turn silence into an answer mid-run.
+	var answer: AdaptyProfile?
+	private let lock = NSLock()
+	private var count = 0
+
+	init(answer: AdaptyProfile?) {
+		self.answer = answer
+	}
+
+	/// How many times the barrier has asked for a profile.
+	var asks: Int {
+		lock.lock()
+		defer { lock.unlock() }
+		return count
+	}
+
+	func profile() async -> AdaptyProfile? {
+		// The lock is taken in a synchronous helper: `NSLock` is unavailable from an async context
+		// and is a hard error in Swift 6 language mode.
+		record()
+	}
+
+	private func record() -> AdaptyProfile? {
+		lock.lock()
+		defer { lock.unlock() }
+		count += 1
+		return answer
+	}
+
+	func products(placement: String) async -> AdaptyProductsAnswer { .notReady }
+	func buy(productId: String, placement: String) async -> PurchaseVerdict { .failed }
+	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> { .notReady }
+	func logPaywallOpen(placement: String) {}
+	func hasPaywall(placement: String) -> Bool { false }
+	func paywallState(placement: String) -> PaywallState { .unavailable }
+	func syncReceipt() {}
+	func setProfileValue(value: String, key: String) {}
 }
 
 extension StatefulPaywallAdapty {
