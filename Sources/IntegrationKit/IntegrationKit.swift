@@ -161,7 +161,7 @@ public struct IntegrationKit {
 
 		var appsFlyer: AppsFlyerService?
 		if !appsFlyerDevKey.isEmpty {
-			let service = AppsFlyerService(analytics: analytics, adapty: adapty)
+			let service = AppsFlyerService(/*analytics: analytics, adapty: adapty*/)
 			service.configure(
 				devKey: appsFlyerDevKey,
 				appId: appsFlyerAppId,
