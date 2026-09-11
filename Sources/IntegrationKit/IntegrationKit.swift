@@ -127,7 +127,15 @@ public struct IntegrationKit {
 		remoteConfigDefaults: [String: NSObject] = [:],
 		remoteConfigTimeout: TimeInterval = 5
 	) -> IntegrationKit {
+		// No key is ever printed — they are credentials, and every branch below reads only whether one
+		// is there. The tag is left off on purpose: these lines belong to the graph, not to a service,
+		// so they come out as plain `[IntegrationKit]`.
+		debugLog("configure: deviceId \(deviceId), isDebug \(isDebug), isTestsRunning \(isTestsRunning)")
+		debugLog("configure: keys — amplitude \(amplitudeKey.isEmpty ? "empty" : "set"), adapty \(adaptyKey.isEmpty ? "empty" : "set"), appsFlyer \(appsFlyerDevKey.isEmpty ? "empty" : "set"), sharedSecret \(sharedSecret.isEmpty ? "empty — receipt validation off" : "set")")
+		debugLog("configure: levels \(levels.sorted()), placements \(placements), productIds \(productIds.sorted()), sessionsCounter \(sessionsCounter)")
+		debugLog("configure: sourceTimeout \(sourceTimeout)s, attTimeout \(attTimeout)s, remoteConfigTimeout \(remoteConfigTimeout)s, remoteConfigDefaults \(remoteConfigDefaults.keys.sorted()), adaptyAttributionEnabled \(adaptyAttributionEnabled), firstOpenEvent \(firstOpenEvent ?? "none")")
 		if let built {
+			debugLog(level: .error, "configure called a second time — the kit from the first call is returned and these arguments are ignored")
 			ConfigurationIssues.shared.record(
 				"IntegrationKit.configure was called more than once — the kit built by the first call is returned and these arguments are ignored",
 				tag: Self.tag
@@ -149,6 +157,7 @@ public struct IntegrationKit {
 				remoteConfigDefaults: remoteConfigDefaults
 			)
 			: nil
+		debugLog(testMode == nil ? "test mode off — every layer is the real one" : "test mode ON — fake sources replace Adapty, Apple, analytics and remote config")
 
 		// First of the four, and the only one that is not a network dependency of the others: a
 		// paywall variant is read on the way to the first screen, so the fetch gets whatever head
@@ -156,10 +165,12 @@ public struct IntegrationKit {
 		let remoteConfig: RemoteConfigServicing
 		if let testMode {
 			remoteConfig = testMode.remoteConfig
+			debugLog("remote config: fake, values come from the launch flags")
 		} else {
 			let service = RemoteConfigService(defaults: remoteConfigDefaults)
 			service.configure(timeout: remoteConfigTimeout, isDebug: isDebug, isTestsRunning: isTestsRunning)
 			remoteConfig = service
+			debugLog("remote config: real, \(remoteConfigDefaults.count) default(s), fetch waits up to \(remoteConfigTimeout)s")
 		}
 
 		// TM-07: Amplitude is not built at all in a test run — the sink replaces the sending, not the
@@ -167,10 +178,12 @@ public struct IntegrationKit {
 		let analytics: AnalyticsTracking
 		if let testMode {
 			analytics = testMode.analytics
+			debugLog("analytics: sink only — Amplitude is not built at all in a test run")
 		} else {
 			let amplitude = AmplitudeAnalytics(isDebug: isDebug)
 			amplitude.configure(apiKey: amplitudeKey, deviceId: deviceId, firstOpenEvent: firstOpenEvent, isTestsRunning: isTestsRunning)
 			analytics = amplitude
+			debugLog("analytics: Amplitude configured")
 		}
 
 		// Both protocols, because this one value fills both seats: `PremiumService` needs the premium
@@ -179,6 +192,7 @@ public struct IntegrationKit {
 		let adapty: any AdaptyServicing & AdaptyPremiumProviding
 		if let testMode {
 			adapty = testMode.adapty
+			debugLog("adapty: fake source — the arbiter above it stays the production one")
 		} else {
 			let service = AdaptyService()
 			service.configure(
@@ -196,6 +210,7 @@ public struct IntegrationKit {
 				adaptyAttributionEnabled: adaptyAttributionEnabled
 			)
 			adapty = service
+			debugLog("adapty: real service configured, attribution service \(adaptyAttributionEnabled ? "on" : "off")")
 		}
 		var appsFlyer: AppsFlyerService?
 		if !appsFlyerDevKey.isEmpty {
@@ -209,7 +224,9 @@ public struct IntegrationKit {
 				isTestsRunning: isTestsRunning
 			)
 			appsFlyer = service
+			debugLog("appsFlyer: layer built")
 		} else {
+			debugLog(level: .error, "appsFlyer: no dev key — the layer is not built at all, and the AppDelegate forwards will be no-ops")
 			// AF-01 row 1. The service records this itself, but only a service that was built — and
 			// an empty dev key is exactly the case where none is. Written here so the forgotten key
 			// has a reason in the one list the guide tells an integrator to read, with the same text
@@ -227,10 +244,12 @@ public struct IntegrationKit {
 		if let testMode {
 			apple = testMode.apple
 			storeKit = nil
+			debugLog("storeKit: not built — a test run touches no payment queue and validates no receipt")
 		} else {
 			let service = StoreKitService(sharedSecret: sharedSecret, productIds: productIds)
 			apple = service
 			storeKit = service
+			debugLog("storeKit: real service, \(productIds.count) product id(s) to look for in the receipt")
 		}
 		// `productIds` has to reach here too, not just StoreKit: it is the fallback list `products`
 		// prices directly when Adapty's own listing for a placement comes back empty, and an empty
@@ -248,13 +267,19 @@ public struct IntegrationKit {
 		// Started here on purpose: the seed-cache-then-refresh step is not a decision the app
 		// gets to make differently, and a composition root that leaves it to be forgotten is
 		// the defect this rewrite exists to remove.
+		debugLog("premium: service built, store \(testMode == nil ? "UserDefaults" : "test-mode store"), starting it now")
 		premium.start()
+		debugLog("premium: started — cache published, sources asked")
 		// The same argument, one level down: a purchase interrupted mid-flight is delivered by
 		// the payment queue, not by any call above, and it stays stuck in that queue until it is
 		// finished. Re-asking afterwards is what turns it into premium in this launch instead of
 		// the next one.
-		storeKit?.completeTransactions { [weak premium] in premium?.purchaseDelivered() }
+		storeKit?.completeTransactions { [weak premium] in
+			debugLog("payment queue delivered an interrupted purchase — re-asking the barrier")
+			premium?.purchaseDelivered()
+		}
 		if testMode?.flags.pendingTransaction == true {
+			debugLog("test mode: a pending transaction was seeded — delivering it as the payment queue would")
 			// TM-04: one unfinished transaction was already in the queue at launch. It reaches the
 			// arbiter as a delivered purchase, exactly as the real payment queue would deliver it, and
 			// PM-08 decides what it means — the flag does not turn premium on by itself (TM-04 row 4).
@@ -270,9 +295,11 @@ public struct IntegrationKit {
 			object: nil,
 			queue: .main
 		) { [weak premium] _ in
+			debugLog("foreground: re-asking for the paywalls that are still missing, and for premium if the question is still open")
 			adapty.refreshPaywalls()
 			premium?.refreshIfUnanswered()
 		}
+		debugLog("foreground observer installed")
 
 		let kit = IntegrationKit(
 			premium: premium,
@@ -284,6 +311,7 @@ public struct IntegrationKit {
 			foregroundObserver: foregroundObserver
 		)
 		built = kit
+		debugLog("configure done — the kit is ready, \(ConfigurationIssues.shared.all.count) configuration issue(s) so far")
 		return kit
 	}
 
@@ -300,7 +328,9 @@ public struct IntegrationKit {
 	/// inside `AppsFlyerService` stays where it is: it covers the other path, a service that exists
 	/// but was configured with an empty key.
 	public func handleContinue(_ userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void) {
+		debugLog("handleContinue: \(userActivity.activityType)")
 		guard let appsFlyer else {
+			debugLog("handleContinue: no AppsFlyer layer was ever built — answering the system with nothing, once")
 			restorationHandler(nil)
 			return
 		}
@@ -309,12 +339,31 @@ public struct IntegrationKit {
 
 	/// Forwards `application(_:open:options:)`.
 	public func handleOpen(_ url: URL, options: [UIApplication.OpenURLOptionsKey: Any]) {
+		debugLog("handleOpen: \(url.absoluteString)\(appsFlyer == nil ? " — no AppsFlyer layer, nothing to forward to" : "")")
 		appsFlyer?.handleOpen(url, options: options)
+	}
+
+	/// Forwards the pre-iOS 9 `application(_:open:sourceApplication:annotation:)`.
+	///
+	/// The system still calls that one, and the SDK keeps a separate entry point for it, so an app
+	/// that implements only the `options:` variant drops those opens without a trace. Implement both
+	/// in AppDelegate and hand both to the kit:
+	///
+	/// ```swift
+	/// func application(_ application: UIApplication, open url: URL, sourceApplication: String?, annotation: Any) -> Bool {
+	///     kit.handleOpen(url, sourceApplication: sourceApplication, annotation: annotation)
+	///     return true
+	/// }
+	/// ```
+	public func handleOpen(_ url: URL, sourceApplication: String?, annotation: Any?) {
+		debugLog("handleOpen (legacy): \(url.absoluteString), sourceApplication \(sourceApplication ?? "none")\(appsFlyer == nil ? " — no AppsFlyer layer, nothing to forward to" : "")")
+		appsFlyer?.handleOpen(url, sourceApplication: sourceApplication, annotation: annotation)
 	}
 
 	/// The ATT answer reaches both SDKs that cannot read it themselves. Adapty's half would be
 	/// unreachable otherwise, now that the app cannot hold an `AdaptyServicing`.
 	public func updateTrackingAuthorization(_ status: ATTrackingManager.AuthorizationStatus) {
+		debugLog("ATT answer \(status.rawValue) forwarded to Amplitude and Adapty")
 		analytics.updateTrackingAuthorization(status)
 		adapty.updateAppTrackingTransparencyStatus(status)
 	}
@@ -333,6 +382,7 @@ public struct IntegrationKit {
 	/// limit; the refusal lands in ``configurationIssues`` as it always does. Letting the stricter
 	/// SDK veto the other one would silently drop analytics data over a rule that is not analytics'.
 	public func setUserProperty(value: String, key: String) {
+		debugLog("setUserProperty \(key) = \(value) — to the Adapty profile and the Amplitude profile both")
 		adapty.setProfileValue(value: value, key: key)
 		analytics.setUserProperties([key: value])
 	}
@@ -352,6 +402,7 @@ public struct IntegrationKit {
 	/// 1…50 characters — is not sent, and the reason lands in ``configurationIssues`` instead of the
 	/// attribute quietly disappearing.
 	public func setProfileValue(value: String, key: String) {
+		debugLog("setProfileValue \(key) = \(value) — Adapty only")
 		adapty.setProfileValue(value: value, key: key)
 	}
 
@@ -362,7 +413,9 @@ public struct IntegrationKit {
 	/// or the call ran out of time. It never means "this user has no id". Ask again later in the same
 	/// run rather than storing the `nil`, which would turn a slow start into a permanent absence.
 	public func adaptyProfileId() async -> String? {
-		await adapty.profileId()
+		let id = await adapty.profileId()
+		debugLog("adaptyProfileId: \(id ?? "nil — Adapty did not answer, this is not \"no id\"")")
+		return id
 	}
 
 	/// Links Firebase's id for this install to the Adapty profile, so a purchase in one dashboard can
@@ -375,6 +428,7 @@ public struct IntegrationKit {
 	/// while Firebase analytics is still coming up, and passing that through as `""` would put a join
 	/// key on the profile that matches nothing.
 	public func setFirebaseAppInstanceId(_ id: String) {
+		debugLog("setFirebaseAppInstanceId: \(id.isEmpty ? "empty — refused, Firebase analytics has not come up yet" : id)")
 		adapty.setFirebaseAppInstanceId(id)
 	}
 
@@ -391,7 +445,9 @@ public struct IntegrationKit {
 	/// release; delete the call. Onboarding funnels belong in Amplitude — `analytics.log(_:)` — which
 	/// is where every other screen event in an app using this package already goes.
 	@available(*, deprecated, message: "Adapty 4.x removed onboarding reporting; log onboarding steps through analytics instead. This call does nothing.")
-	public func logOnboardingOpen(step: Int) {}
+	public func logOnboardingOpen(step: Int) {
+		debugLog(level: .error, "logOnboardingOpen(step: \(step)) does nothing since 0.3.0 — Adapty 4.x removed onboarding reporting; log the step through analytics instead")
+	}
 
 	/// AF-04 row 2: how many times AppsFlyer answered "deep link found" and handed over nothing.
 	/// A deep link the campaign was paid for disappears each time, and the only other trace is a

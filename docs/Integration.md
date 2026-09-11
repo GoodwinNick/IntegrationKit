@@ -236,8 +236,18 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 		kit?.handleOpen(url, options: options)
 		return true
 	}
+
+	func application(_ application: UIApplication, open url: URL, sourceApplication: String?, annotation: Any) -> Bool {
+		kit?.handleOpen(url, sourceApplication: sourceApplication, annotation: annotation)
+		return true
+	}
 }
 ```
+
+**Implement both `open url` methods, not just the `options:` one.** The system
+still calls the older `sourceApplication:annotation:` variant, and the SDK keeps
+a separate entry point for it — an app that forwards only the `options:` one
+drops those opens with nothing logged and nothing in `configurationIssues`.
 
 **The `private var kit` above is a requirement, not a style choice — keep the
 returned value for as long as the app runs.** `IntegrationKit` is a struct,

@@ -186,8 +186,12 @@ meaning of every `configure` parameter and the paywall-to-purchase flow.
   of `-uitest` / `XCTestConfigurationFilePath`. The package never derives either.
 - Calling `FirebaseIntegration.configure(isDebug:)` and
   `IntegrationKit.configure(...)` at app launch, and forwarding
-  `application(_:continue:restorationHandler:)` /
-  `application(_:open:options:)` through `kit.handleContinue` / `kit.handleOpen`.
+  `application(_:continue:restorationHandler:)`,
+  `application(_:open:options:)` and
+  `application(_:open:sourceApplication:annotation:)` through
+  `kit.handleContinue` / `kit.handleOpen`. Both `open url` methods, not just the
+  `options:` one — the system still calls the older variant, and an app that
+  forwards only the new one drops those opens silently.
 
 ## Package layout
 

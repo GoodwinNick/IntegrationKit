@@ -10,7 +10,8 @@
 //  `shared()` always answers the same instance — same as the real SDK's process-wide singleton —
 //  so a check can read what was set (`customerUserID`, `isDebug`, `delegate`, ...) straight off
 //  it. Calls that don't already land on a settable property are recorded on static vars instead:
-//  `initialize`'s arguments, the ATT wait limit, the URL `handleOpen` was handed, the
+//  `initialize`'s arguments, the ATT wait limit, the URL `handleOpen` was handed (and, for the
+//  legacy variant, the source application with it), the
 //  `customerUserID` that was in place when `start` ran, and how many times
 //  `initialize`/`start`/`continue`/`handleOpen` ran. Two knobs steer what the SDK answers back:
 //  `appsFlyerUID` (AF-03 row 2 needs an empty one) and `continueBehaviour` (AF-05 needs a block
@@ -38,6 +39,9 @@ public final class AppsFlyerLib {
 	/// AF-05 row 4: "forward it as it is" is a claim about the URL, not about a call happening, and a
 	/// counter cannot tell a forwarded link from a different one.
 	public static private(set) var lastOpenedURL: URL?
+	/// The legacy forward carries one more thing the SDK is entitled to see, and "forward it as it
+	/// is" covers that too — a counter would be green with it dropped.
+	public static private(set) var lastOpenSourceApplication: String?
 	/// AF-01: what `customerUserID` held at the moment `start()` ran. The docs are explicit that a
 	/// CUID set after `start` is not associated with the install event, so the ordering is the
 	/// requirement — and reading the property afterwards cannot say which came first.
@@ -61,6 +65,7 @@ public final class AppsFlyerLib {
 		continueCallCount = 0
 		handleOpenCallCount = 0
 		lastOpenedURL = nil
+		lastOpenSourceApplication = nil
 		customerUserIDAtStart = nil
 		lastATTTimeout = nil
 		appsFlyerUID = "stub-appsflyer-uid"
@@ -103,6 +108,12 @@ public final class AppsFlyerLib {
 	public func handleOpen(_ url: URL, options: [UIApplication.OpenURLOptionsKey: Any]?) {
 		AppsFlyerLib.handleOpenCallCount += 1
 		AppsFlyerLib.lastOpenedURL = url
+	}
+
+	public func handleOpen(_ url: URL, sourceApplication: String?, withAnnotation annotation: Any?) {
+		AppsFlyerLib.handleOpenCallCount += 1
+		AppsFlyerLib.lastOpenedURL = url
+		AppsFlyerLib.lastOpenSourceApplication = sourceApplication
 	}
 
 	public func start() {

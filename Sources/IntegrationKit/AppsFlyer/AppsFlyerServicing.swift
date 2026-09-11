@@ -22,6 +22,10 @@ protocol AppsFlyerServicing: AnyObject {
 	func handleContinue(_ userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void)
 	/// Forwards `application(_:open:options:)` from AppDelegate into the SDK.
 	func handleOpen(_ url: URL, options: [UIApplication.OpenURLOptionsKey: Any])
+	/// Forwards the pre-iOS 9 `application(_:open:sourceApplication:annotation:)` from AppDelegate
+	/// into the SDK's own entry point for it. Both variants exist because the system still calls the
+	/// legacy one, and an app that only forwards the `options:` one loses those opens silently.
+	func handleOpen(_ url: URL, sourceApplication: String?, annotation: Any?)
 	/// How many deep links the SDK reported as found and then handed over empty. Not a
 	/// configuration issue — nothing is misconfigured, the SDK contradicted itself — so it is
 	/// counted rather than filed as a cause. Surfaced by `IntegrationKit.droppedDeepLinks`,

@@ -103,6 +103,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 		return true
 	}
 
+	/// The pre-iOS 9 half of the same forward. Here for the same reason the rest of this host exists:
+	/// an app that implements only the `options:` variant loses every open the system delivers the
+	/// old way, and nothing anywhere says so.
+	func application(_ application: UIApplication, open url: URL, sourceApplication: String?, annotation: Any) -> Bool {
+		kit?.handleOpen(url, sourceApplication: sourceApplication, annotation: annotation)
+		return true
+	}
+
 	/// Everything a paywall screen needs, from the facade alone. Every case of every public enum is
 	/// spelled out rather than defaulted: an exhaustive `switch` is what turns a case added to the
 	/// package into a compile error here instead of a silently unhandled state in a real app.
