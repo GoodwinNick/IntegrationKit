@@ -81,6 +81,17 @@ final class FakeAdapty: AdaptyPremiumProviding {
 	var delay: TimeInterval
 	var buyResult: PurchaseVerdict = .failed
 	var catalogue: [PremiumProduct] = []
+	/// How many times the facade has asked for a profile. Case 23 waits on it: a race case that
+	/// pushes before the slow barrier has actually left the gate would be testing the opposite
+	/// order, so the count is what makes "the refresh is in flight" a fact rather than a sleep.
+	var asks: Int {
+		askLock.lock()
+		defer { askLock.unlock() }
+		return askCount
+	}
+
+	private let askLock = NSLock()
+	private var askCount = 0
 
 	init(answer: AdaptyProfile?, delay: TimeInterval = 0) {
 		self.answer = answer
@@ -88,10 +99,19 @@ final class FakeAdapty: AdaptyPremiumProviding {
 	}
 
 	func profile() async -> AdaptyProfile? {
+		countAsk()
 		if delay > 0 {
 			try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
 		}
 		return answer
+	}
+
+	/// `NSLock` is unavailable from an async context in Swift 6 language mode, so the counting
+	/// happens in a synchronous helper.
+	private func countAsk() {
+		askLock.lock()
+		askCount += 1
+		askLock.unlock()
 	}
 
 	func products(placement: String) async -> AdaptyProductsAnswer {
@@ -584,14 +604,16 @@ enum PremiumBarrierCheck {
 		assert(noAdaptyElapsed < 0.3, "case 22: the failure must not wait out sourceTimeout 1.0s, expected under 0.3s, took \(noAdaptyElapsed)s")
 		assert(noAdaptyStore.writes == 0, "case 22: nothing changed — expected 0 writes, got \(noAdaptyStore.writes)")
 
-		// 23. PM-06 row 2: the lock buys atomicity per apply, and NOTHING beyond that. A refresh that
-		//     started earlier and finished later overwrites a push that carried the fresher truth —
-		//     last writer wins, not freshest answer. The risk row calls this a recognised limit
-		//     ("саме так і працює"), so this case pins the behaviour, it does not object to it.
-		//     The two answers differ by their expiry, not by premium itself: since 2026-09-11 a denial
-		//     resolves like silence, so an inactive profile can no longer play the stale reader — it
-		//     would overwrite nothing and the race would be invisible. Two grants with different dates
-		//     show the same overwrite, and show it in the worse shape: the app is never told.
+		// 23. PM-06 row 2: the race is decided by which QUESTION is fresher, not by which answer was
+		//     written last. Every question takes a generation number on its way out and the push takes
+		//     one on arrival — that is when its answer was made — and an answer whose number is older
+		//     than the one already applied is dropped whole, write and notification included.
+		//
+		//     Rewritten 2026-09-11: the user cancelled his own 2026-09-08 "leave it, the lock buys
+		//     atomicity and the window is milliseconds". What changed it was what the race turned into
+		//     once Adapty stopped revoking: the two answers now differ only by their expiry, so
+		//     `isPremium` never flips, nothing notifies, and a renewal rolled back by a slower refresh
+		//     is something the app is never told about at all.
 		let raceStore = SpyStore()
 		let raceAdapty = FakeAdapty(answer: profile(active: true, expiresAt: now + hour))
 		let raceService = PremiumService(store: raceStore, adapty: raceAdapty, apple: nil, levels: ["premium"], sourceTimeout: 1)
@@ -601,18 +623,44 @@ enum PremiumBarrierCheck {
 		// The stale reader: it reads the SAME profile, it just takes 0.3s to come back.
 		raceAdapty.delay = 0.3
 		raceService.refresh()
-		Thread.sleep(forTimeInterval: 0.1)
-		// The fresher truth — a renewal pushing the expiry out — arriving 0.2s BEFORE the refresh that
-		// started before it.
+		// Not a sleep: the refresh has to be proven to have taken its number BEFORE the push takes
+		// one, or the case would be running the opposite order and failing for the wrong reason.
+		assert(wait { raceAdapty.asks == 2 }, "case 23: the slow refresh must be in flight before the push, got \(raceAdapty.asks) asks")
+		// The fresher truth — a renewal pushing the expiry out — arriving while that refresh is still
+		// waiting on its source.
 		raceAdapty.premiumObserver?(profile(active: true, expiresAt: now + 2 * hour), true)
-		assert(raceStore.cached?.expiresAt == now + 2 * hour, "case 23: the push must land first, expected the renewed expiry right after it, got \(String(describing: raceStore.cached?.expiresAt))")
-		assert(wait { raceStore.cached?.expiresAt == now + hour }, "case 23: the older, slower refresh must land last and overwrite the fresher push")
+		assert(raceStore.cached?.expiresAt == now + 2 * hour, "case 23: the push must land, expected the renewed expiry right after it, got \(String(describing: raceStore.cached?.expiresAt))")
+		assert(raceStore.writes == 3, "case 23: the push must write — expected exactly 3 writes, got \(raceStore.writes)")
+		// Now let the older refresh finish and land on nothing.
+		Thread.sleep(forTimeInterval: 0.4)
 		assert(
-			raceStore.cached == PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: now + hour),
-			"case 23: the last writer wins — expected the stale refresh's older expiry, got \(String(describing: raceStore.cached))"
+			raceStore.cached == PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: now + 2 * hour),
+			"case 23: the older refresh must be dropped whole — expected the push's renewed expiry to stand, got \(String(describing: raceStore.cached))"
 		)
-		assert(raceStore.writes == 4, "case 23: seed, start's refresh, the push, the stale refresh — exactly 4 writes, got \(raceStore.writes)")
-		assert(raceStore.notified == 1, "case 23: premium itself never flipped, so the app heard about the renewal being rolled back exactly never — 1 notification from the initial grant, got \(raceStore.notified)")
+		assert(raceStore.writes == 3, "case 23: a dropped answer writes nothing — still exactly 3 writes, got \(raceStore.writes)")
+		assert(raceStore.notified == 1, "case 23: premium itself never flipped — 1 notification from the initial grant, got \(raceStore.notified)")
+
+		// 23b. PM-06 row 2, the exception without which the counter does harm: an answer carrying a
+		//      local purchase is never dropped as stale. Money that just cleared is newer than any
+		//      source answer, and the mark it brings is the only thing holding access open until
+		//      Adapty has seen the payment. Here the purchase's barrier goes out first and comes back
+		//      last, overtaken by an ordinary dashboard grant — under the plain rule it would be
+		//      discarded, and the user who just paid would be left with someone else's verdict.
+		let markStore = SpyStore()
+		let markAdapty = FakeAdapty(answer: profile(active: false))
+		let markService = PremiumService(store: markStore, adapty: markAdapty, apple: nil, levels: ["premium"], sourceTimeout: 1)
+		markService.start()
+		assert(wait { markAdapty.asks == 1 }, "case 23b: start() must ask once")
+		assert(wait { markStore.writes == 1 }, "case 23b: a denied start writes only the seed, got \(markStore.writes)")
+		markAdapty.delay = 0.3
+		markService.purchaseDelivered()
+		assert(wait { markAdapty.asks == 2 }, "case 23b: the purchase's barrier must be in flight before the push, got \(markAdapty.asks) asks")
+		markAdapty.premiumObserver?(profile(active: true, expiresAt: now + hour), true)
+		assert(markStore.cached?.localPurchase == false, "case 23b: the overtaking grant carries no mark, got \(String(describing: markStore.cached))")
+		assert(markStore.writes == 2, "case 23b: the grant must write, expected exactly 2 writes, got \(markStore.writes)")
+		assert(wait { markStore.cached?.localPurchase == true }, "case 23b: a local purchase must never be dropped as stale — the user paid and would be left without the mark, got \(String(describing: markStore.cached))")
+		assert(markStore.cached?.isPremium == true, "case 23b: and access stays open, got \(String(describing: markStore.cached))")
+		assert(markStore.notified == 1, "case 23b: premium went on once and stayed on — exactly 1 notification, got \(markStore.notified)")
 
 		// 24. PM-06 row 3: Adapty re-pushing a profile it already pushed is free. The second delivery
 		//     of the identical profile must cost exactly zero writes and zero notifications.
@@ -998,7 +1046,7 @@ enum PremiumBarrierCheck {
 		assert(aheadStore.cached?.expiresAt == now + hour, "case 39: the profile's date replaces the cache's either way, got \(String(describing: aheadStore.cached?.expiresAt))")
 		assert(aheadStore.notified == 0, "case 39: premium never moved, so nothing to announce, got \(aheadStore.notified)")
 
-		print("PremiumService barrier, restore, purchase fallback and prices: 39/39 OK")
+		print("PremiumService barrier, restore, purchase fallback and prices: 40/40 OK")
 	}
 }
 

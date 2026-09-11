@@ -28,6 +28,17 @@ final class PremiumService: PremiumServicing {
 	private var didStart = false
 	/// PM-04 row 7: a purchase is in flight. Lifted when it settles, whichever way it ends.
 	private var isPurchasing = false
+	/// PM-06 row 2: which answer is fresher. Every question takes a number on its way out and the
+	/// profile push takes one on arrival — that is the moment its answer was made — and an answer
+	/// numbered lower than the one already applied is dropped. The lock buys atomicity per apply and
+	/// nothing beyond it, so without this the last writer won: a `refresh()` that started before a
+	/// push and finished after it put the push's answer back.
+	///
+	/// The user left that race alone on 2026-09-08 and cancelled his own decision on 2026-09-11,
+	/// once the rule "Adapty never revokes" made it silent — the two answers then differ only by
+	/// their expiry, so `isPremium` never flips and nobody is notified of the rollback.
+	private var generation = 0
+	private var appliedGeneration = 0
 	/// PM-02 rows 7-10: Adapty has not yet answered for real in this process, so the verdict still
 	/// rests on what the last launch left behind. Closed by a verified answer and never reopened —
 	/// from then on the profile push keeps the verdict fresh, so there is nothing left to re-ask.
@@ -96,7 +107,7 @@ final class PremiumService: PremiumServicing {
 			)
 		}
 		lock.unlock()
-		apply(adapty: nil, apple: nil)
+		apply(adapty: nil, apple: nil, generation: nextGeneration())
 
 		adapty?.premiumObserver = { [weak self] profile, isVerified in
 			guard let self else { return }
@@ -150,10 +161,14 @@ final class PremiumService: PremiumServicing {
 	/// device. That is a receipt saying yes, newer than any check we could run — see `apply`.
 	private func resolveBoth(localPurchase: Bool = false, timeout: TimeInterval? = nil) async {
 		let deadline = timeout ?? sourceTimeout
+		// The number is taken before the sources are asked, not after they answer: an answer is at
+		// best as fresh as the question that fetched it, and anything arriving later while this one
+		// was in flight knows more.
+		let generation = nextGeneration()
 		async let adaptyAnswer = askAdapty(timeout: deadline)
 		async let appleAnswer = askApple(timeout: deadline)
 		let (access, receipt) = await (adaptyAnswer, appleAnswer)
-		apply(adapty: access, apple: receipt, localPurchase: localPurchase)
+		apply(adapty: access, apple: receipt, localPurchase: localPurchase, generation: generation)
 	}
 
 	/// `nil` means Adapty did not answer — an error, no source at all, or slower than the deadline.
@@ -173,11 +188,33 @@ final class PremiumService: PremiumServicing {
 	/// PM-06: Adapty answered about the premium access level. The delegate push (`didLoadLatestProfile`)
 	/// comes in here — a one-way entrance that is deliberately not part of the `refresh()` barrier.
 	func apply(adapty: PremiumAccess?) {
-		apply(adapty: adapty, apple: nil)
+		// The push takes its number here, on arrival, because that is when its answer was made — a
+		// `refresh()` already in flight asked an older question and loses to it.
+		apply(adapty: adapty, apple: nil, generation: nextGeneration())
 	}
 
-	private func apply(adapty: PremiumAccess?, apple: ReceiptAnswer?, localPurchase: Bool = false) {
+	/// A ticket for one question. Taken under the lock so two callers never share one.
+	private func nextGeneration() -> Int {
 		lock.lock()
+		generation += 1
+		let ticket = generation
+		lock.unlock()
+		return ticket
+	}
+
+	private func apply(adapty: PremiumAccess?, apple: ReceiptAnswer?, localPurchase: Bool = false, generation: Int) {
+		lock.lock()
+		// PM-06 row 2: an answer to an older question than the one already applied is dropped whole —
+		// no write, no notification. A local purchase is the exception and is never dropped: money
+		// that just cleared is newer than any source answer, and the mark it carries is the only thing
+		// holding access open until Adapty has seen the payment. Without the exception a slow purchase
+		// overtaken by an ordinary refresh would lose that mark, and the counter meant to stop a
+		// flicker would cost someone the access they paid for.
+		guard localPurchase || generation > appliedGeneration else {
+			lock.unlock()
+			return
+		}
+		appliedGeneration = max(appliedGeneration, generation)
 		// PM-02 row 8: only a verified answer closes the question. The profile the SDK pushes out of
 		// its own storage on activation is the last launch remembered, not a check — treating it as
 		// an answer would cancel the very retry this exists for. The receipt does not close it either:
