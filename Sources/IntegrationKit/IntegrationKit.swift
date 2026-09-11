@@ -107,6 +107,16 @@ public struct IntegrationKit {
 	/// AppsFlyer holds the first session back until that link resolves only if it is given it. Left
 	/// out, the session is sent before the link is known and the install is attributed without it.
 	///
+	/// `appsFlyerResetsInstallInSandbox` makes a debug launch on a sandbox device attribute as a first
+	/// install: the reinstall counter AppsFlyer keeps in the Keychain is wiped before the SDK is stood
+	/// up, so a deferred deep link comes back instead of `af_status: Organic`. On by default, because
+	/// a debug run that cannot test a link is the case worth optimising for and the wipe costs a debug
+	/// device nothing. It needs all three of the switch, the app's own `isDebug` and a build that did
+	/// not come from the App Store, so a TestFlight or store build cannot reach it however this is
+	/// passed — the store strips the provisioning profile this looks for. Turn it off in an app
+	/// whose debug runs are meant to keep counting reinstalls — the price is that the AppsFlyer
+	/// dashboard counts a fresh install for every debug launch that has it on.
+	///
 	/// `adaptyAttributionEnabled` switches on Adapty's own attribution service, new in Adapty 4.x.
 	/// It is off unless asked for, and that is the one default here that has to be argued rather than
 	/// inherited: an app that already runs AppsFlyer would otherwise start sending a second,
@@ -128,6 +138,7 @@ public struct IntegrationKit {
 		appsFlyerAppId: String = "",
 		sourceTimeout: TimeInterval = 5,
 		attTimeout: TimeInterval = 60,
+		appsFlyerResetsInstallInSandbox: Bool = true,
 		adaptyAttributionEnabled: Bool = false,
 		remoteConfigDefaults: [String: NSObject] = [:],
 		remoteConfigTimeout: TimeInterval = 5,
@@ -139,7 +150,7 @@ public struct IntegrationKit {
 		debugLog("configure: deviceId \(deviceId), isDebug \(isDebug), isTestsRunning \(isTestsRunning)")
 		debugLog("configure: keys — amplitude \(amplitudeKey.isEmpty ? "empty" : "set"), adapty \(adaptyKey.isEmpty ? "empty" : "set"), appsFlyer \(appsFlyerDevKey.isEmpty ? "empty" : "set"), sharedSecret \(sharedSecret.isEmpty ? "empty — receipt validation off" : "set")")
 		debugLog("configure: levels \(levels.sorted()), placements \(placements), productIds \(productIds.sorted()), sessionsCounter \(sessionsCounter)")
-		debugLog("configure: sourceTimeout \(sourceTimeout)s, attTimeout \(attTimeout)s, remoteConfigTimeout \(remoteConfigTimeout)s, remoteConfigDefaults \(remoteConfigDefaults.keys.sorted()), adaptyAttributionEnabled \(adaptyAttributionEnabled), firstOpenEvent \(firstOpenEvent ?? "none")")
+		debugLog("configure: sourceTimeout \(sourceTimeout)s, attTimeout \(attTimeout)s, remoteConfigTimeout \(remoteConfigTimeout)s, remoteConfigDefaults \(remoteConfigDefaults.keys.sorted()), adaptyAttributionEnabled \(adaptyAttributionEnabled), appsFlyerResetsInstallInSandbox \(appsFlyerResetsInstallInSandbox), firstOpenEvent \(firstOpenEvent ?? "none")")
 		if let built {
 			debugLog(level: .error, "configure called a second time — the kit from the first call is returned and these arguments are ignored")
 			ConfigurationIssues.shared.record(
@@ -228,6 +239,7 @@ public struct IntegrationKit {
 				attTimeout: attTimeout,
 				isDebug: isDebug,
 				isTestsRunning: isTestsRunning,
+				resetsInstallInSandbox: appsFlyerResetsInstallInSandbox,
 				launchOptions: launchOptions
 			)
 			appsFlyer = service

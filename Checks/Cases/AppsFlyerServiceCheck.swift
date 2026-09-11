@@ -873,10 +873,46 @@ enum AppsFlyerServiceCheck {
 				+ "release build that reaches it has to be visible, got \(ConfigurationIssues.shared.all)"
 		)
 
+		// ── When the reset runs by itself ──
+		// The gate is asserted as a truth table rather than through a launch, because the live wiring
+		// looks for an embedded provisioning profile and this check is a command-line binary that has
+		// none: the true branch is unreachable here whatever the arguments say. What the table pins is
+		// the half that matters — that each of the three conditions alone can stop it, so neither a
+		// release build nor a store build can wipe an install however the switch is passed.
+		let resetCases: [(enabled: Bool, debug: Bool, sandbox: Bool)] = [
+			(true, true, true), (true, true, false), (true, false, true), (false, true, true),
+			(true, false, false), (false, true, false), (false, false, true), (false, false, false)
+		]
+		let wrongCases = resetCases.filter {
+			AppsFlyerService.shouldResetInstallState(isEnabled: $0.enabled, isDebug: $0.debug, isSandboxBuild: $0.sandbox)
+				!= ($0.enabled && $0.debug && $0.sandbox)
+		}
+		check(
+			wrongCases.isEmpty,
+			"T39: the reset must run only when all three of the switch, the app's isDebug and a "
+				+ "sandbox receipt hold — any one of them false keeps the install state, got wrong "
+				+ "answers for \(wrongCases)"
+		)
+
+		// And the live wiring, negatively: this host carries no provisioning profile, so a configure that
+		// asks for the reset must still leave the defaults alone. It is the same call the composition
+		// root makes, so a gate accidentally inverted in `configure` fails here rather than on a
+		// device — which is where the damage would be a dashboard, not a test.
+		AppsFlyerLib.reset()
+		defaults.set(9, forKey: "AppsFlyerReInstallCounter")
+		let hostResetService = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
+		hostResetService.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: true, isTestsRunning: false, resetsInstallInSandbox: true)
+		check(
+			defaults.object(forKey: "AppsFlyerReInstallCounter") as? Int == 9,
+			"T40: a build that carries no provisioning profile must keep its install state even with the reset "
+				+ "asked for, got \(String(describing: defaults.object(forKey: "AppsFlyerReInstallCounter")))"
+		)
+		defaults.removeObject(forKey: "AppsFlyerReInstallCounter")
+
 		if failures.isEmpty {
-			print("AppsFlyerService (AF-01…AF-06): 44/44 OK")
+			print("AppsFlyerService (AF-01…AF-06): 46/46 OK")
 		} else {
-			print("\(failures.count) of 44 asserts FAILED:")
+			print("\(failures.count) of 46 asserts FAILED:")
 			for failure in failures {
 				print("  - \(failure)")
 			}

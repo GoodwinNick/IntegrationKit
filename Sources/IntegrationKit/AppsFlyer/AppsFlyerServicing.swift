@@ -26,7 +26,12 @@ protocol AppsFlyerServicing: AnyObject {
 	/// advertising budget it is measured by (AF-01 rows 1 and 3). They are separate axes on
 	/// purpose: gluing them together would drag SDK logs into every test run, or silence
 	/// attribution in every debug build.
-	func configure(devKey: String, appId: String, deviceId: String, attTimeout: TimeInterval, isDebug: Bool, isTestsRunning: Bool, launchOptions: [UIApplication.LaunchOptionsKey: Any]?)
+	///
+	/// `resetsInstallInSandbox` asks for the install state to be wiped before the SDK is stood up, so
+	/// a debug launch on a sandbox device attributes as a first install and a deferred deep link comes
+	/// back. Asking is not enough on its own: it takes `isDebug` and a build that did not come from the
+	/// App Store as well.
+	func configure(devKey: String, appId: String, deviceId: String, attTimeout: TimeInterval, isDebug: Bool, isTestsRunning: Bool, resetsInstallInSandbox: Bool, launchOptions: [UIApplication.LaunchOptionsKey: Any]?)
 	/// The app's ATT answer. The first session is held until this arrives — or until `attTimeout`
 	/// runs out — because an install sent before the dialog is over carries no IDFA, and a click that
 	/// needs ID matching is then attributed to nobody.

@@ -72,6 +72,42 @@ final class AppsFlyerService: NSObject, AppsFlyerServicing {
 	/// other thing the SDK remembers about the install dies with the container.
 	private static let reinstallDetectionAccounts = ["KCAppsFlyerRICounter", "KCAppsFlyerLastInstallDate"]
 
+	/// Whether this build can only be talking to Apple's sandbox — which, for what this decides, means
+	/// "did not come from the App Store". The embedded provisioning profile is the signal: Apple
+	/// strips it when it re-signs a build for the store, so a run from Xcode and a TestFlight build
+	/// both carry one and a store build never does. A simulator carries none either, and is answered
+	/// before the lookup for exactly that reason.
+	///
+	/// The receipt file name would answer the same question and is the better-known way to ask it, but
+	/// `appStoreReceiptURL` is deprecated as of iOS 18 in favour of an async StoreKit call, and this
+	/// has to answer synchronously on the way into `configure`.
+	///
+	/// Read positively, not as "anything that is not production". An unanticipated case then reads as
+	/// production and the wipe does not happen, which is the failure worth having: a launch that keeps
+	/// its reinstall counter is a debugging nuisance, a launch that invents an install in a dashboard
+	/// shared with real money is not.
+	private static var isSandboxBuild: Bool {
+		#if targetEnvironment(simulator)
+			return true
+		#else
+			return Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision") != nil
+		#endif
+	}
+
+	/// The rule for whether a launch wipes the install state before standing the SDK up, kept apart
+	/// from the launch that applies it so a check can put every combination through it. It is not
+	/// readable from the live wiring: a command-line check runs on macOS, where the receipt carries
+	/// the production name and the true branch would be unreachable.
+	///
+	/// All three have to hold. `isDebug` is the app's own `#if DEBUG` — the only build configuration a
+	/// package ever gets to see, since it is compiled apart from the app. The provisioning profile
+	/// rules out a build that came from the store. And the switch exists because an app that wants its
+	/// debug runs to keep counting reinstalls has to be able to say so. TestFlight carries a profile
+	/// too, and is kept out by `isDebug`, which a release build answers false to.
+	static func shouldResetInstallState(isEnabled: Bool, isDebug: Bool, isSandboxBuild: Bool) -> Bool {
+		isEnabled && isDebug && isSandboxBuild
+	}
+
 	/// What a Keychain row holds, rendered for a log line. AppsFlyer writes these as text, so the UTF-8
 	/// reading is the expected one; the two fallbacks exist because a row written by a version that
 	/// stored something else must still print as something a reader can act on, rather than crash the
@@ -158,10 +194,10 @@ final class AppsFlyerService: NSObject, AppsFlyerServicing {
 
 	/// `isTestsRunning` and `launchOptions` default only so the checks' own call sites stay short —
 	/// the composition root always passes the app's answers, and the app always computes them.
-	func configure(devKey: String, appId: String, deviceId: String, attTimeout: TimeInterval, isDebug: Bool, isTestsRunning: Bool = false, launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) {
+	func configure(devKey: String, appId: String, deviceId: String, attTimeout: TimeInterval, isDebug: Bool, isTestsRunning: Bool = false, resetsInstallInSandbox: Bool = false, launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) {
 		// The dev key itself never reaches the log — it is a credential, and "set"/"empty" is the
 		// only thing about it any of the branches below actually reads.
-		debugLog(tag: Self.tag, "configure: devKey \(devKey.isEmpty ? "empty" : "set"), appId \(appId), deviceId \(deviceId), attTimeout \(attTimeout)s, isDebug \(isDebug), isTestsRunning \(isTestsRunning)")
+		debugLog(tag: Self.tag, "configure: devKey \(devKey.isEmpty ? "empty" : "set"), appId \(appId), deviceId \(deviceId), attTimeout \(attTimeout)s, isDebug \(isDebug), isTestsRunning \(isTestsRunning), resetsInstallInSandbox \(resetsInstallInSandbox)")
 		// AF-01 row 1, the second of the two switches: a test run must not stand the SDK up at all.
 		// Attribution is bought traffic — sessions and install data from a robot move the numbers
 		// an advertising budget is steered by. Its own reason, apart from the empty dev key: that
@@ -193,6 +229,18 @@ final class AppsFlyerService: NSObject, AppsFlyerServicing {
 		}
 		isConfigured = true
 		self.attTimeout = attTimeout
+
+		// Ahead of `initialize`, because that is where the SDK reads both stores. Afterwards the wipe
+		// clears rows the SDK is already holding in memory, and the launch is reported as a reinstall
+		// anyway — the state would come back on the next launch, having helped with nothing.
+		if Self.shouldResetInstallState(isEnabled: resetsInstallInSandbox, isDebug: isDebug, isSandboxBuild: Self.isSandboxBuild) {
+			debugLog(tag: Self.tag, "debug build on a sandbox device — wiping the install state so this launch is attributed as a first install")
+			Self.resetInstallState()
+		} else {
+			// Logged on the way past, because "the link did not come back" and "the wipe did not run"
+			// are the same sentence to whoever is looking, and the three values say which one it was.
+			debugLog(tag: Self.tag, "install state kept — resetsInstallInSandbox \(resetsInstallInSandbox), isDebug \(isDebug), sandbox build \(Self.isSandboxBuild). This device has been seen before, so the install goes out as a reinstall and carries no deferred link")
+		}
 
 		AppsFlyerLib.shared().initialize(devKey: devKey, appId: appId)
 		debugLog(tag: Self.tag, "SDK initialized for appId \(appId)")
