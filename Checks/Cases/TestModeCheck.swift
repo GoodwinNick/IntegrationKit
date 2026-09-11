@@ -296,16 +296,27 @@ enum TestModeCheck {
 		assert(!PremiumAccess(profile: goldProfile, levels: ["premium"]).isActive, "TM-03 row 5: and must NOT grant a level the app configured instead")
 		row()
 
-		// 16. TM-03 row 1: the difference between a denial and silence, measured where it shows — the
-		//     Apple reserve. A denial closes access; silence lets the receipt speak.
+		// 16. TM-03 row 1, rewritten for the arbitration rule of 2026-09-11. Adapty grants and never
+		//     revokes, so `-noPremium` means "the source hands out nothing", not "premium is off": put
+		//     a valid receipt on the table and the receipt decides, identically for a denial and for
+		//     silence. What the flag still guarantees — and what every test using it actually wants —
+		//     is the free state when nothing else is granting.
 		let denied = layer(["-noPremium", "-receiptValid", "-receiptDelay", "0"])
 		denied.service.start()
-		waitUntil { denied.store.cached?.source == .adapty }
-		assert(denied.service.isPremium == false, "TM-03 row 1: an explicit denial must close access even against a valid receipt")
+		waitUntil { denied.store.cached?.source == .apple }
+		assert(denied.service.isPremium, "TM-03 row 1: a denial must not close access against a valid receipt")
 		let silenced = layer(["-adaptySilent", "-receiptValid", "-receiptDelay", "0"])
 		silenced.service.start()
 		waitUntil { silenced.service.isPremium }
 		assert(silenced.service.isPremium, "TM-03 row 1: with the source silent the receipt must be allowed to grant")
+		assert(
+			denied.store.cached?.source == silenced.store.cached?.source && denied.store.cached?.isPremium == silenced.store.cached?.isPremium,
+			"TM-03 row 1: a denial and silence must resolve identically, got \(String(describing: denied.store.cached)) against \(String(describing: silenced.store.cached))"
+		)
+		let deniedAlone = layer(["-noPremium"])
+		deniedAlone.service.start()
+		pump(0.4)
+		assert(deniedAlone.service.isPremium == false, "TM-03 row 1: -noPremium with nothing else granting must still mean free, got \(deniedAlone.service.isPremium)")
 		row()
 
 		// 17. TM-03 row 2: a deferred transition arrives through the profile push, the same entrance a

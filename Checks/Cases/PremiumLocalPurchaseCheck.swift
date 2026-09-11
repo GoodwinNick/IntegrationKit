@@ -224,11 +224,14 @@ enum PremiumLocalPurchaseCheck {
 		check(t9.isPremium == false, "table B row 6: expected isPremium false, got \(t9.isPremium)")
 		check(t9.localPurchase == false, "table B row 6: expected localPurchase false, got \(t9.localPurchase)")
 
-		// T10 — regression, PM-03 row 1: no mark at all — Adapty still revokes over a positive
-		// receipt. Must be GREEN already; red here would mean the existing ladder broke.
+		// T10 — PM-03 row 1, turned around on 2026-09-11: no mark at all, and it no longer matters —
+		// a denial is not an answer for anybody, so the cached premium holds. The silent run is what
+		// makes this a statement about the denial rather than about the cache.
 		let t10Cached = PremiumState(isPremium: true, source: .apple, isVerified: false, localPurchase: false)
 		let t10 = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false), apple: ReceiptAnswer(isActive: true, expiresAt: nil), cached: t10Cached, now: now)
-		check(t10.isPremium == false, "PM-03 row 1 (regression): without the mark, Adapty must still revoke — expected isPremium false, got \(t10.isPremium)")
+		check(t10.isPremium == true, "PM-03 row 1: without a mark a denial still removes nothing — expected isPremium true, got \(t10.isPremium)")
+		let t10Silent = PremiumResolver.resolve(adapty: nil, apple: ReceiptAnswer(isActive: true, expiresAt: nil), cached: t10Cached, now: now)
+		check(t10 == t10Silent, "PM-03 row 1: the mark is no longer what makes a denial harmless — expected the silent verdict \(t10Silent), got \(t10)")
 
 		// T11 — PM-03 row 17: an expired, unmarked cache with nobody left to ask. Also GREEN
 		// already — this pins the real behaviour behind the row's lying comment.
@@ -273,19 +276,22 @@ enum PremiumLocalPurchaseCheck {
 			PremiumState(isPremium: true, source: .apple, isVerified: false, expiresAt: nil, localPurchase: true, localPurchaseAt: since)
 		}
 
-		// T23 — PM-03 row 19: past the deadline the mark stops demoting Adapty, and the verified
-		// denial it was holding back finally lands. This is the whole point: without it, a receipt
-		// that brought no date plus an Adapty that never confirms means premium forever.
+		// T23 — PM-03 row 19, hollowed out by the arbitration change of 2026-09-11. The ageing itself
+		// still runs and is still observable: past the deadline the mark is gone from the verdict,
+		// date and all. What no longer follows from it is the revoke it used to release — Adapty
+		// denies nobody now, marked or not, so the cache keeps premium either way. The surviving half
+		// is pinned here because a narrow cure for the dateless grant would be built on exactly it.
 		let t23 = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false), apple: nil, cached: markedPremium(now - 8 * day), now: now)
-		check(t23.isPremium == false, "PM-03 row 19: a mark past its deadline must stop demoting Adapty — expected isPremium false, got \(t23.isPremium)")
 		check(t23.localPurchase == false, "PM-03 row 19: the expired mark must be cleared, expected localPurchase false, got \(t23.localPurchase)")
 		check(t23.localPurchaseAt == nil, "PM-03 row 19: no mark means no date, expected nil, got \(String(describing: t23.localPurchaseAt))")
+		check(t23.isPremium == true, "PM-03 row 19: the denial this used to release no longer lands — expected the cache to hold, isPremium true, got \(t23.isPremium)")
 
-		// T24 — PM-03 row 19, the other side of the same deadline: one day short of it the mark still
-		// works exactly as before, and its date comes through untouched.
+		// T24 — PM-03 row 19, the other side of the same deadline: one day short of it the mark is
+		// still standing. `isPremium` says nothing here any more — the cache alone would carry it —
+		// so the mark's own two fields are what this case reads.
 		let t24Since = now - 6 * day
 		let t24 = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false), apple: nil, cached: markedPremium(t24Since), now: now)
-		check(t24.isPremium == true, "PM-03 row 19: a mark inside its deadline must still hold — expected isPremium true, got \(t24.isPremium)")
+		check(t24.localPurchase == true, "PM-03 row 19: a mark inside its deadline must survive the verdict, expected localPurchase true, got \(t24.localPurchase)")
 		check(t24.localPurchaseAt == t24Since, "PM-03 row 20: the birth date must come through unchanged, expected \(t24Since), got \(String(describing: t24.localPurchaseAt))")
 
 		// T25 — PM-03 row 21: a cache written before 0.6.0 carries the mark without a date. Reading

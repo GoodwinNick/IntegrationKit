@@ -197,9 +197,12 @@ enum PremiumBarrierCheck {
 		silentService.refresh()
 		assert(wait { silentStore.cached?.isPremium == true }, "case 2: a silent Adapty must not stop the receipt verdict")
 		assert(silentStore.cached?.source == .apple && silentStore.cached?.isVerified == false, "case 2: the receipt grants unverified premium")
-		silentAdapty.answer = profile(active: false)
+		// The observable for "the second run really happened" is a grant, not a denial: since
+		// 2026-09-11 a denial resolves exactly like silence, so it would leave the verdict untouched
+		// and this case would pass whether the barrier reran or stayed shut.
+		silentAdapty.answer = profile(active: true)
 		silentService.refresh()
-		assert(wait { silentStore.cached?.isPremium == false }, "case 2: a second refresh must run after Adapty went silent once")
+		assert(wait { silentStore.cached?.source == .adapty }, "case 2: a second refresh must run after Adapty went silent once")
 
 		// 3. Nobody answers — nothing changes, and the next refresh still works. This is the
 		//    exact scenario the two-flag version dead-locked on.
@@ -585,26 +588,31 @@ enum PremiumBarrierCheck {
 		//     started earlier and finished later overwrites a push that carried the fresher truth —
 		//     last writer wins, not freshest answer. The risk row calls this a recognised limit
 		//     ("саме так і працює"), so this case pins the behaviour, it does not object to it.
+		//     The two answers differ by their expiry, not by premium itself: since 2026-09-11 a denial
+		//     resolves like silence, so an inactive profile can no longer play the stale reader — it
+		//     would overwrite nothing and the race would be invisible. Two grants with different dates
+		//     show the same overwrite, and show it in the worse shape: the app is never told.
 		let raceStore = SpyStore()
-		let raceAdapty = FakeAdapty(answer: profile(active: false))
+		let raceAdapty = FakeAdapty(answer: profile(active: true, expiresAt: now + hour))
 		let raceService = PremiumService(store: raceStore, adapty: raceAdapty, apple: nil, levels: ["premium"], sourceTimeout: 1)
 		raceService.start()
 		assert(wait { raceStore.cached?.source == .adapty }, "case 23: start() must settle on Adapty's answer first")
 		assert(raceStore.writes == 2, "case 23: seed then start's refresh — exactly 2 writes before the race, got \(raceStore.writes)")
-		// The stale reader: it reads the SAME inactive profile, it just takes 0.3s to come back.
+		// The stale reader: it reads the SAME profile, it just takes 0.3s to come back.
 		raceAdapty.delay = 0.3
 		raceService.refresh()
 		Thread.sleep(forTimeInterval: 0.1)
-		// The fresher truth, arriving 0.2s BEFORE the refresh that started before it.
-		raceAdapty.premiumObserver?(profile(active: true, expiresAt: now + hour), true)
-		assert(raceStore.cached?.isPremium == true, "case 23: the push must land first, expected isPremium true right after it, got \(String(describing: raceStore.cached?.isPremium))")
-		assert(wait { raceStore.cached?.isPremium == false }, "case 23: the older, slower refresh must land last and overwrite the fresher push")
+		// The fresher truth — a renewal pushing the expiry out — arriving 0.2s BEFORE the refresh that
+		// started before it.
+		raceAdapty.premiumObserver?(profile(active: true, expiresAt: now + 2 * hour), true)
+		assert(raceStore.cached?.expiresAt == now + 2 * hour, "case 23: the push must land first, expected the renewed expiry right after it, got \(String(describing: raceStore.cached?.expiresAt))")
+		assert(wait { raceStore.cached?.expiresAt == now + hour }, "case 23: the older, slower refresh must land last and overwrite the fresher push")
 		assert(
-			raceStore.cached == PremiumState(isPremium: false, source: .adapty, isVerified: true, expiresAt: nil),
-			"case 23: the last writer wins — expected the stale refresh's verified inactive verdict, got \(String(describing: raceStore.cached))"
+			raceStore.cached == PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: now + hour),
+			"case 23: the last writer wins — expected the stale refresh's older expiry, got \(String(describing: raceStore.cached))"
 		)
 		assert(raceStore.writes == 4, "case 23: seed, start's refresh, the push, the stale refresh — exactly 4 writes, got \(raceStore.writes)")
-		assert(raceStore.notified == 2, "case 23: the flag went false-true-false — exactly 2 notifications, got \(raceStore.notified)")
+		assert(raceStore.notified == 1, "case 23: premium itself never flipped, so the app heard about the renewal being rolled back exactly never — 1 notification from the initial grant, got \(raceStore.notified)")
 
 		// 24. PM-06 row 3: Adapty re-pushing a profile it already pushed is free. The second delivery
 		//     of the identical profile must cost exactly zero writes and zero notifications.
@@ -724,9 +732,11 @@ enum PremiumBarrierCheck {
 		// 30. PM-06 row 5 (AD-05 row 2 through the facade): the first push of a process is the profile
 		//     the SDK had on disk from the last launch, handed to the delegate before any request goes
 		//     out. A "no premium" from there must not close access, or a paying user on a slow network
-		//     sees the paywall on every cold start. `premium-resolver-check.sh` case 9 pins the rule
-		//     itself; this case pins the wiring — that the observer forwards provenance at all, through
-		//     the real `PremiumAccess(profile:levels:isVerified:)` conversion.
+		//     sees the paywall on every cold start. Since 2026-09-11 no push saying "no premium" closes
+		//     access, verified or not, so the denial half is pinned as an identity. The wiring — that
+		//     the observer forwards provenance at all, through the real
+		//     `PremiumAccess(profile:levels:isVerified:)` conversion — is pinned below it, on a grant,
+		//     which is the only answer whose provenance still reaches the verdict.
 		let provenanceStore = SpyStore(cached: PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: now + hour), premium: true)
 		let provenanceAdapty = FakeAdapty(answer: nil)
 		let provenanceService = PremiumService(store: provenanceStore, adapty: provenanceAdapty, apple: nil, levels: ["premium"], sourceTimeout: 1)
@@ -735,13 +745,18 @@ enum PremiumBarrierCheck {
 		assert(provenanceStore.writes == 0, "case 30: a live cache and a silent source change nothing — expected 0 writes after start(), got \(provenanceStore.writes)")
 		provenanceAdapty.premiumObserver?(profile(active: false), false)
 		assert(provenanceService.isPremium == true, "case 30: an unverified push saying inactive must not close access, got \(provenanceService.isPremium)")
-		assert(provenanceStore.writes == 0, "case 30: it resolves back to the same cached verdict — expected still 0 writes, got \(provenanceStore.writes)")
-		assert(provenanceStore.notified == 0, "case 30: nothing changed — expected 0 notifications, got \(provenanceStore.notified)")
-		// The very same profile, this time from the network. That one is Adapty's actual verdict.
+		// The very same profile, this time from the network. It must change nothing either.
 		provenanceAdapty.premiumObserver?(profile(active: false), true)
-		assert(provenanceService.isPremium == false, "case 30: the same denial, verified, must revoke — got \(provenanceService.isPremium)")
-		assert(provenanceStore.cached == PremiumState(isPremium: false, source: .adapty, isVerified: true, expiresAt: nil), "case 30: expected Adapty's own verified denial, got \(String(describing: provenanceStore.cached))")
-		assert(provenanceStore.notified == 1, "case 30: exactly 1 .premiumDidChange, got \(provenanceStore.notified)")
+		assert(provenanceService.isPremium == true, "case 30: a verified push saying inactive must not close access either, got \(provenanceService.isPremium)")
+		assert(provenanceStore.writes == 0, "case 30: both denials resolve back to the same cached verdict — expected still 0 writes, got \(provenanceStore.writes)")
+		assert(provenanceStore.notified == 0, "case 30: nothing changed — expected 0 notifications, got \(provenanceStore.notified)")
+		// The wiring itself, read where provenance still decides something: a grant carries its own.
+		provenanceAdapty.premiumObserver?(profile(active: true, expiresAt: now + 2 * hour), false)
+		assert(provenanceStore.cached == PremiumState(isPremium: true, source: .adapty, isVerified: false, expiresAt: now + 2 * hour), "case 30: a grant pushed from the SDK's own storage must arrive unverified, got \(String(describing: provenanceStore.cached))")
+		provenanceAdapty.premiumObserver?(profile(active: true, expiresAt: now + 2 * hour), true)
+		assert(provenanceStore.cached?.isVerified == true, "case 30: the same grant from the network must arrive verified, got \(String(describing: provenanceStore.cached?.isVerified))")
+		assert(provenanceStore.writes == 2, "case 30: only the two grants moved the state — expected 2 writes, got \(provenanceStore.writes)")
+		assert(provenanceStore.notified == 0, "case 30: premium stayed true the whole way — expected 0 .premiumDidChange, got \(provenanceStore.notified)")
 
 		// 31. PM-07 row 11 (AD-02 row 5 through the facade): `hasPaywall` answers `false` both while a
 		//     placement is still loading and when nothing is ever coming, and a screen cannot choose

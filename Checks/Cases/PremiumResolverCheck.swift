@@ -19,10 +19,16 @@ enum PremiumResolverCheck {
 		let fromAdapty = PremiumResolver.resolve(adapty: PremiumAccess(isActive: true, expiresAt: now + hour), apple: nil, cached: nil, now: now)
 		assert(fromAdapty.isPremium && fromAdapty.isVerified && fromAdapty.source == .adapty, "PM-03 rule 1: Adapty active must grant verified premium")
 
-		// 2. Adapty inactive — takes premium away even from an unverified local purchase.
+		// 2. Adapty hands premium out and never takes it back (user's decision, 2026-09-11). A denial
+		//    is not an answer at all, so the cached premium stands. The silent run on the same fixture
+		//    is the half that carries the proof: equal verdicts mean the denial was ignored, not that
+		//    the resolver never reached it.
 		let unverified = PremiumState(isPremium: true, source: .apple, isVerified: false)
-		let revoked = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false), apple: ReceiptAnswer(isActive: true, expiresAt: nil), cached: unverified, now: now)
-		assert(!revoked.isPremium, "PM-03 rule 1: Adapty inactive must revoke, even against a receipt saying true")
+		let againstDenial = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false), apple: ReceiptAnswer(isActive: true, expiresAt: nil), cached: unverified, now: now)
+		assert(againstDenial.isPremium, "PM-03 rule 1: a verified Adapty denial must not remove premium, expected the cached premium to stand, got \(againstDenial)")
+		assert(againstDenial.source == .apple, "PM-03 rule 1: the verdict comes from the cache, not from the denial, expected source .apple, got \(againstDenial.source)")
+		let againstSilence = PremiumResolver.resolve(adapty: nil, apple: ReceiptAnswer(isActive: true, expiresAt: nil), cached: unverified, now: now)
+		assert(againstDenial == againstSilence, "PM-03 rule 1: a denial must resolve exactly like silence, expected \(againstSilence), got \(againstDenial)")
 
 		// 3. THE rule (2026-09-07): an unverified purchase is held until Adapty speaks — a `false`
 		//    receipt does not take it away.
@@ -71,17 +77,17 @@ enum PremiumResolverCheck {
 		assert(diskGrant.source == .adapty, "PM-03 row 6: expected source .adapty, got \(diskGrant.source)")
 		assert(diskGrant.expiresAt == now + hour, "PM-03 row 6: the profile's expiry must come through, expected \(now + hour), got \(String(describing: diskGrant.expiresAt))")
 
-		// 9. PM-03 row 18 (AD-05 row 2, the other half): the same disk-cached profile saying NO is a
-		//    memory of the last launch, not a check. It must not close access before the network has
-		//    answered — the resolver falls through as if Adapty had stayed silent. The verified denial
-		//    right after it is the contrast that proves `isVerified` is the field doing the deciding.
+		// 9. PM-03 row 18 (AD-05 row 2), now pointed the other way. Provenance used to be the gate that
+		//    let a network denial through and held a disk-cached one back; since 2026-09-11 neither gets
+		//    through, so what this case guards is that the two are still indistinguishable. The verified
+		//    run is the one that would catch the old branch coming back for network answers only.
 		let unverifiedCache = PremiumState(isPremium: true, source: .apple, isVerified: false)
+		let silent = PremiumResolver.resolve(adapty: nil, apple: nil, cached: unverifiedCache, now: now)
 		let diskDenial = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false, isVerified: false), apple: nil, cached: unverifiedCache, now: now)
-		assert(diskDenial.isPremium, "PM-03 row 18: an unverified Adapty denial must not close access, expected the cached premium to stand, got \(diskDenial)")
-		assert(diskDenial.source == .apple, "PM-03 row 18: the verdict must come from the cache, not from the denial, expected source .apple, got \(diskDenial.source)")
+		assert(diskDenial == silent, "PM-03 row 18: an unverified Adapty denial must resolve exactly like silence, expected \(silent), got \(diskDenial)")
 		let networkDenial = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false), apple: nil, cached: unverifiedCache, now: now)
-		assert(networkDenial.isPremium == false, "PM-03 row 18: the very same denial, verified, must revoke — expected isPremium false, got \(networkDenial.isPremium)")
-		assert(networkDenial.source == .adapty, "PM-03 row 18: a verified denial is Adapty's own verdict, expected source .adapty, got \(networkDenial.source)")
+		assert(networkDenial == silent, "PM-03 row 18: a verified denial must resolve like silence too, expected \(silent), got \(networkDenial)")
+		assert(networkDenial.isPremium && networkDenial.source == .apple, "PM-03 row 18: the cached premium stands against both, expected premium from .apple, got \(networkDenial)")
 
 		// 10. PM-03 row 8, the receipt half. The `<=` rule is written twice, in two files and two
 		//     shapes: `PremiumState.isExpired(at:)` guards the cache branch, and branch 3 compares the
