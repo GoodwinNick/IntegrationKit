@@ -159,31 +159,6 @@ public struct IntegrationKit {
 			: nil
 		debugLog(testMode == nil ? "test mode off — every layer is the real one" : "test mode ON — fake sources replace Adapty, Apple, analytics and remote config")
 
-		var appsFlyer: AppsFlyerService?
-		if !appsFlyerDevKey.isEmpty {
-			let service = AppsFlyerService(/*analytics: analytics, adapty: adapty*/)
-			service.configure(
-				devKey: appsFlyerDevKey,
-				appId: appsFlyerAppId,
-				deviceId: deviceId,
-				attTimeout: attTimeout,
-				isDebug: isDebug,
-				isTestsRunning: isTestsRunning
-			)
-			appsFlyer = service
-			debugLog("appsFlyer: layer built")
-		} else {
-			debugLog(level: .error, "appsFlyer: no dev key — the layer is not built at all, and the AppDelegate forwards will be no-ops")
-			// AF-01 row 1. The service records this itself, but only a service that was built — and
-			// an empty dev key is exactly the case where none is. Written here so the forgotten key
-			// has a reason in the one list the guide tells an integrator to read, with the same text
-			// the service would have used, so the two can never read as different causes.
-			ConfigurationIssues.shared.record(
-				"AppsFlyer got an empty dev key — attribution and deep links are off for this run",
-				tag: "AppsFlyer"
-			)
-		}
-
 		// First of the four, and the only one that is not a network dependency of the others: a
 		// paywall variant is read on the way to the first screen, so the fetch gets whatever head
 		// start the rest of this method takes.
@@ -236,6 +211,30 @@ public struct IntegrationKit {
 			)
 			adapty = service
 			debugLog("adapty: real service configured, attribution service \(adaptyAttributionEnabled ? "on" : "off")")
+		}
+		var appsFlyer: AppsFlyerService?
+		if !appsFlyerDevKey.isEmpty {
+			let service = AppsFlyerService(analytics: analytics, adapty: adapty)
+			service.configure(
+				devKey: appsFlyerDevKey,
+				appId: appsFlyerAppId,
+				deviceId: deviceId,
+				attTimeout: attTimeout,
+				isDebug: isDebug,
+				isTestsRunning: isTestsRunning
+			)
+			appsFlyer = service
+			debugLog("appsFlyer: layer built")
+		} else {
+			debugLog(level: .error, "appsFlyer: no dev key — the layer is not built at all, and the AppDelegate forwards will be no-ops")
+			// AF-01 row 1. The service records this itself, but only a service that was built — and
+			// an empty dev key is exactly the case where none is. Written here so the forgotten key
+			// has a reason in the one list the guide tells an integrator to read, with the same text
+			// the service would have used, so the two can never read as different causes.
+			ConfigurationIssues.shared.record(
+				"AppsFlyer got an empty dev key — attribution and deep links are off for this run",
+				tag: "AppsFlyer"
+			)
 		}
 
 		// TM-04/TM-05: a test run does not touch StoreKit at all — no payment queue, no receipt

@@ -14,8 +14,8 @@ final class AppsFlyerService: NSObject, AppsFlyerServicing {
 
 	private static let tag = "AppsFlyer"
 
-//	private let analytics: AnalyticsTracking
-//	private let adapty: AdaptyServicing
+	private let analytics: AnalyticsTracking
+	private let adapty: AdaptyServicing
 
 	/// Internal (not private) so unit tests can seed/observe it without going through the real
 	/// `AppsFlyerLib.shared().start()` network call. It no longer gates anything — AF-02 row 1: a
@@ -32,11 +32,11 @@ final class AppsFlyerService: NSObject, AppsFlyerServicing {
 	/// counted rather than filed as a cause.
 	private(set) var droppedDeepLinks = 0
 
-//	init(analytics: AnalyticsTracking, adapty: AdaptyServicing) {
-////		self.analytics = analytics
-////		self.adapty = adapty
-//		super.init()
-//	}
+	init(analytics: AnalyticsTracking, adapty: AdaptyServicing) {
+		self.analytics = analytics
+		self.adapty = adapty
+		super.init()
+	}
 
 	deinit {
 		// AF-01 row 4: the subscription ends with the object, rather than resting on `NotificationCenter`
@@ -193,7 +193,7 @@ extension AppsFlyerService: AppsFlyerLibDelegate {
 		// AF-03 row 3: both addressees speak from the same cleaned dictionary. Reading the raw one
 		// here used to let the event say `af_status = 42` while the profile said "unknown" — the
 		// same field, two answers, and a dashboard that contradicts itself.
-//		analytics.logEvent("af_onConversionData", properties: cleanedData)
+		analytics.logEvent("af_onConversionData", properties: cleanedData)
 		debugLog(tag: Self.tag, "event af_onConversionData sent with \(cleanedData.count) propertie(s)")
 		// AN-03 row 4 / AF-03 row 5: the profile properties carry the bare AppsFlyer names. Decided
 		// on 2026-09-10, reversing the `af_` prefix: the namespace shared with the app's own
@@ -204,14 +204,14 @@ extension AppsFlyerService: AppsFlyerLibDelegate {
 			"media_source": describe(cleanedData["media_source"]),
 			"campaign_name": describe(cleanedData["campaign"]),
 		]
-//		analytics.setUserProperties(properties)
+		analytics.setUserProperties(properties)
 		debugLog(tag: Self.tag, "user properties set: \(properties) — \"unknown\" means the SDK did not send that field")
 
 		// AF-03 row 2: an empty UID is "no UID". An empty string is worse than nothing — it looks
 		// like a real identifier and links the profile to nobody, permanently.
 		let appsFlyerUID = AppsFlyerLib.shared().getAppsFlyerUID()
 		debugLog(tag: Self.tag, appsFlyerUID.isEmpty ? "AppsFlyer UID is empty — Adapty gets nil, not an empty string" : "AppsFlyer UID \(appsFlyerUID) goes to Adapty as the network user id")
-//		adapty.updateAppsFlyerAttribution(cleanedData, networkUserId: appsFlyerUID.isEmpty ? nil : appsFlyerUID)
+		adapty.updateAppsFlyerAttribution(cleanedData, networkUserId: appsFlyerUID.isEmpty ? nil : appsFlyerUID)
 		debugLog(tag: Self.tag, "attribution handed to Adapty")
 	}
 
@@ -272,7 +272,7 @@ extension AppsFlyerService: AppsFlyerDeepLinkDelegate {
 	/// (SDK-internal only), so this takes plain types.
 	func applyDeepLink(deeplinkValue: String?, clickEvent: [String: Any]) {
 		let (payload, dlvValue) = AppsFlyerAttributionMapping.deepLinkPayload(deeplinkValue: deeplinkValue, clickEvent: clickEvent)
-//		analytics.logEvent("af_didResolveDeepLink", properties: payload)
+		analytics.logEvent("af_didResolveDeepLink", properties: payload)
 		debugLog(tag: Self.tag, "event af_didResolveDeepLink sent, deep_link_value \(dlvValue), \(payload.count) field(s)")
 
 		// AF-04 row 1: the `-` placeholder exists so the event keeps its fixed shape. In a profile
@@ -282,8 +282,8 @@ extension AppsFlyerService: AppsFlyerDeepLinkDelegate {
 			debugLog(tag: Self.tag, "deep link carries no value — the \"-\" placeholder stays in the event and reaches no profile")
 			return
 		}
-//		analytics.setUserProperties(["deep_link_value": dlvValue])
-//		adapty.setProfileValue(value: dlvValue, key: "deep_link_value")
+		analytics.setUserProperties(["deep_link_value": dlvValue])
+		adapty.setProfileValue(value: dlvValue, key: "deep_link_value")
 		debugLog(tag: Self.tag, "deep_link_value \(dlvValue) written to both the analytics profile and the Adapty profile")
 	}
 }
