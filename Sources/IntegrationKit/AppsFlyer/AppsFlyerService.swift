@@ -9,6 +9,7 @@
 import AppTrackingTransparency
 import AppsFlyerLib
 import Foundation
+import Security
 import UIKit
 
 final class AppsFlyerService: NSObject, AppsFlyerServicing {
@@ -62,6 +63,97 @@ final class AppsFlyerService: NSObject, AppsFlyerServicing {
 		// than resurrecting it — and it is not unregistered here on purpose, because the listener on
 		// the SDK's process-wide singleton may already belong to a newer service.
 		debugLog(tag: Self.tag, "deinit — the session-ready listener that captured this service is now inert")
+	}
+
+	/// The two Keychain accounts AppsFlyer's Reinstall Detection writes. The names are in no header —
+	/// they were read out of the 7.0.2 binary, next to `migrateRICounterKeychainData` and
+	/// `migrateRIKeychainData`, which are the functions that put them there. Keychain rows outlive the
+	/// app bundle, so these two are the entire reason a reinstall is reported as a reinstall: every
+	/// other thing the SDK remembers about the install dies with the container.
+	private static let reinstallDetectionAccounts = ["KCAppsFlyerRICounter", "KCAppsFlyerLastInstallDate"]
+
+	/// What a Keychain row holds, rendered for a log line. AppsFlyer writes these as text, so the UTF-8
+	/// reading is the expected one; the two fallbacks exist because a row written by a version that
+	/// stored something else must still print as something a reader can act on, rather than crash the
+	/// reset or silently read as empty.
+	private static func keychainValue(matching query: [String: Any]) -> String {
+		var query = query
+		query[kSecReturnData as String] = true
+		query[kSecMatchLimit as String] = kSecMatchLimitOne
+		var found: CFTypeRef?
+		let status = SecItemCopyMatching(query as CFDictionary, &found)
+		guard status == errSecSuccess, let data = found as? Data else {
+			return "unreadable (OSStatus \(status))"
+		}
+		return String(data: data, encoding: .utf8) ?? "\(data.count) bytes, not text"
+	}
+
+	/// Makes the next launch look like a first install to AppsFlyer. Debug builds only, by contract.
+	///
+	/// An install attributes once per device and not twice: the second one and every one after it come
+	/// back `af_status: Organic` with no deferred deep link, because the SDK reports a reinstall and
+	/// the server does not re-attribute those inside the re-attribution window. Erasing the simulator
+	/// is the other way back to a clean device, and it is the reason this exists — that erase costs a
+	/// reinstall of everything on the device, to clear what is two Keychain rows and a set of defaults.
+	///
+	/// There is no build-configuration guard in here on purpose: a package is compiled apart from the
+	/// app and cannot read the app's. The caller gates it, and every run is filed in
+	/// ``IntegrationKit/configurationIssues`` — so a release build that somehow reaches this says so
+	/// out loud, instead of quietly filing invented installs into a dashboard shared with production.
+	///
+	/// Must run before `configure`: the SDK reads both stores while it is being stood up.
+	static func resetInstallState() {
+		let defaults = UserDefaults.standard
+		// Dropped by prefix rather than from a list of names. The SDK adds keys between versions and a
+		// hardcoded list would go stale without saying so — and one surviving key is enough to keep
+		// `isFirstLaunch` false, which is the single thing this is for.
+		let dropped = defaults.dictionaryRepresentation()
+			.filter { $0.key.hasPrefix("AppsFlyer") }
+			.sorted { $0.key < $1.key }
+		for (key, value) in dropped {
+			// Every value is printed on its way out, because the values are the diagnosis.
+			// `AppsFlyerReInstallCounter = 3` is the whole explanation of an organic verdict — it says
+			// the server has been told about this device three times before — and "18 keys dropped"
+			// explains nothing at all. The cap is for `AppsFlyerConversiondataKey`, which is a keyed
+			// archive and stays unreadable at any length.
+			debugLog(tag: Self.tag, "dropping \(key) = \(String(describing: value).prefix(200))")
+			defaults.removeObject(forKey: key)
+		}
+
+		var removed: [String] = []
+		var failed: [String] = []
+		for account in Self.reinstallDetectionAccounts {
+			// Matched by account alone. The service name is derived from the bundle id at runtime, and
+			// these account names belong to nobody else, so narrowing further would only add a way to
+			// miss the row. The app's own access group is implied — nothing outside this app is
+			// reachable from here even if the query were wrong.
+			let query: [String: Any] = [
+				kSecClass as String: kSecClassGenericPassword,
+				kSecAttrAccount as String: account
+			]
+			// Read before the delete, or there is nothing left to read. This row is the one place the
+			// counter exists on the launch right after a reinstall — `AppsFlyerReInstallCounter` in the
+			// defaults above only holds it once the SDK has migrated it across, and a migration that
+			// failed is exactly the case worth seeing in a log.
+			let value = Self.keychainValue(matching: query)
+			switch SecItemDelete(query as CFDictionary) {
+				case errSecSuccess:
+					debugLog(tag: Self.tag, "dropping Keychain \(account) = \(value)")
+					removed.append(account)
+				case errSecItemNotFound:
+					debugLog(tag: Self.tag, "Keychain \(account) — nothing stored under it, this device had not been seen before")
+				case let status:
+					failed.append("\(account) (OSStatus \(status))")
+			}
+		}
+		debugLog(tag: Self.tag, "install state reset — \(dropped.count) UserDefaults keys dropped, Keychain rows removed: \(removed.isEmpty ? "none" : removed.joined(separator: ", "))")
+		if !failed.isEmpty {
+			debugLog(tag: Self.tag, level: .error, "Keychain rows that would not delete: \(failed.joined(separator: ", ")) — this launch is still going to be reported as a reinstall")
+		}
+		ConfigurationIssues.shared.record(
+			"AppsFlyer install state was wiped before configure — this launch reports a fresh install. Debug-only: a release build must never reach it",
+			tag: Self.tag
+		)
 	}
 
 	/// `isTestsRunning` and `launchOptions` default only so the checks' own call sites stay short —
@@ -123,7 +215,14 @@ final class AppsFlyerService: NSObject, AppsFlyerServicing {
 		// first and the link lands after the install was already attributed to nobody. A no-op when
 		// there is no link in there.
 		AppsFlyerLib.shared().handleLaunchOptions(launchOptions)
-		debugLog(tag: Self.tag, "launch options handed to the SDK — \(launchOptions == nil ? "none given, nothing to resolve" : "a cold-launch link in there now holds the session until it resolves")")
+		// The dictionary is printed, not just counted. "Something was in there" is the one thing that
+		// cannot answer "why did the link not arrive" — the answer is which key and which URL, and a
+		// log that withholds it sends the reader back to the AppDelegate to guess.
+		if let launchOptions {
+			debugLog(tag: Self.tag, "launch options handed to the SDK — \(launchOptions). A link in there now holds the session until it resolves")
+		} else {
+			debugLog(tag: Self.tag, "launch options handed to the SDK — the app passed none. Either this was an ordinary launch, or the app is not forwarding its AppDelegate dictionary to IntegrationKit.configure(launchOptions:) — in which case a cold launch from a link is lost before anything here can see it")
+		}
 		// AF-02 row 1: the session is started from the SDK's own readiness listener, never from
 		// `didBecomeActiveNotification`. `AppsFlyerLib.start` says so in as many words — "call this
 		// inside a registerSessionReadyListener: block, not directly in applicationDidBecomeActive:"
@@ -235,9 +334,26 @@ final class AppsFlyerService: NSObject, AppsFlyerServicing {
 		sendSession()
 	}
 
+	/// What iOS hands out when there is no advertising identifier — a simulator, or an ATT answer that
+	/// was not `authorized`. The SDK reports it as a normal value rather than as nothing, so the zeros
+	/// are the only way to tell "no IDFA" from "an IDFA".
+	private static let blankAdvertisingId = "00000000-0000-0000-0000-000000000000"
+
 	private func sendSession() {
 		let isFirst = !didStartAppsFlyer
 		didStartAppsFlyer = true
+		// AF-01 row 2, the half that only a device can answer. The identifier below is what the SDK is
+		// about to send with this session, and it decides which kinds of attribution are even possible:
+		// with it a click can be matched by id, without it only by fingerprint — and an install that
+		// needed id matching comes back organic no matter which campaign paid for it. Nothing here can
+		// fix that; what it can do is say so out loud, so "why is this organic" is read off the log
+		// instead of being investigated from scratch.
+		let advertisingId = AppsFlyerLib.shared().advertisingIdentifier
+		if advertisingId.isEmpty || advertisingId == Self.blankAdvertisingId {
+			debugLog(tag: Self.tag, level: .error, "no IDFA for this session — a simulator, a denied ATT answer, or the no-IDFA build of the SDK. Only fingerprint attribution is left, and an install that needs ID matching will read as organic")
+		} else {
+			debugLog(tag: Self.tag, "IDFA \(advertisingId) goes out with this session — ID matching is possible")
+		}
 		AppsFlyerLib.shared().start()
 		// AF-02 row 1: every foreground cycle starts a session; near-identical ones are collapsed by
 		// the SDK's own `minTimeBetweenSessions`, so a repeat here is expected, not a bug.

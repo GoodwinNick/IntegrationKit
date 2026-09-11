@@ -41,6 +41,8 @@
 //    T29 AF-06 row 1 — a failed attribution keeps the error's domain and code.
 //    T35 AF-01 row 1 — a test run leaves the layer down, with a reason of its own.
 //    T36 AF-01 row 3 — SDK logging rides the app's `isDebug`, the key crash collection uses too.
+//    T37 the install-state reset drops every `AppsFlyer*` default and nothing that is not one.
+//    T38 the install-state reset files an issue, so one that ships is visible rather than silent.
 //  The rest were green from the start — the silent failure callback (T23), the eleven-field
 //  deep-link payload (T17), last-attribution-wins (T20) — so no later change can loosen them.
 //
@@ -123,7 +125,7 @@ final class FakeAdapty: AdaptyServicing {
 	func setFirebaseAppInstanceId(_ id: String) {}
 }
 
-/// AF-05 row 2 needs at least one object that survives the filter at `AppsFlyerService.swift:108`.
+/// AF-05 row 2 needs at least one object that survives the filter at `AppsFlyerService.swift:169`.
 /// `UIUserActivityRestoring` carries no requirements, so conforming costs one line.
 final class FakeRestorer: UIUserActivityRestoring {}
 
@@ -162,7 +164,7 @@ enum AppsFlyerServiceCheck {
 		setbuf(stdout, nil)
 
 		// ── AF-01 row 1 — an empty dev key switches the whole layer off ──────────────────────
-		// Executes `AppsFlyerService.swift:51-57`. Green: `:51` returns before anything is
+		// Executes `AppsFlyerService.swift:88-95`. Green: `:88` returns before anything is
 		// touched, having recorded the cause first.
 		AppsFlyerLib.reset()
 		ConfigurationIssues.shared.reset()
@@ -182,8 +184,8 @@ enum AppsFlyerServiceCheck {
 				+ "deepLinkDelegate=\(AppsFlyerLib.shared().deepLinkDelegate == nil ? "nil" : "set"), "
 				+ "customerUserID=\(String(describing: AppsFlyerLib.shared().customerUserID))"
 		)
-		// The observer is proved absent by its effect: had `:77-82` run, this signal would set the
-		// flag at `:121` and reach `start()` at `:122`.
+		// The listener is proved absent by its effect: had `:133-135` run, this signal would reach
+		// `startAppsFlyer()` at `:202` and `start()` at `:241`.
 		postForegroundSignal()
 		check(
 			t1Service.didStartAppsFlyer == false && AppsFlyerLib.startCallCount == 0,
@@ -801,20 +803,19 @@ enum AppsFlyerServiceCheck {
 		// budget is steered by, moved by a robot. The app computes the answer itself (`-uitest`
 		// among the arguments, or `XCTestConfigurationFilePath` in the environment).
 		//
-		// The foreground signal is posted deliberately: `configure` never starts a session itself
-		// (T31), so the only way to prove the observer was not registered is to fire the thing it
-		// listens to and watch nothing happen. The reason is asserted apart from the dev-key one —
-		// a shared line would send whoever reads it looking for a key that is perfectly fine.
+		// The foreground signal is fired deliberately: `configure` never starts a session itself
+		// (T31), so the only way to prove no readiness listener was registered is to fire the thing
+		// that drives it and watch nothing happen. The reason is asserted apart from the dev-key one
+		// — a shared line would send whoever reads it looking for a key that is perfectly fine.
 		AppsFlyerLib.reset()
 		ConfigurationIssues.shared.reset()
 		let testRunService = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
 		testRunService.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false, isTestsRunning: true)
 		postForegroundSignal()
-		NotificationCenter.default.removeObserver(testRunService)
 		check(
 			AppsFlyerLib.initializeCallCount == 0 && AppsFlyerLib.startCallCount == 0,
 			"T35 AF-01 row 1: a test run must not initialize the SDK and must not register the "
-				+ "foreground observer, got \(AppsFlyerLib.initializeCallCount) initialize(s) and "
+				+ "session-ready listener, got \(AppsFlyerLib.initializeCallCount) initialize(s) and "
 				+ "\(AppsFlyerLib.startCallCount) start(s)"
 		)
 		check(
@@ -833,7 +834,6 @@ enum AppsFlyerServiceCheck {
 		AppsFlyerLib.reset()
 		let debugKeyService = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
 		debugKeyService.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: true, isTestsRunning: false)
-		NotificationCenter.default.removeObserver(debugKeyService)
 		check(
 			AppsFlyerLib.shared().isDebug && AppsFlyerLib.initializeCallCount == 1,
 			"T36 AF-01 row 3: the app's isDebug must reach AppsFlyerLib.isDebug on a run that is not "
@@ -841,10 +841,42 @@ enum AppsFlyerServiceCheck {
 				+ "\(AppsFlyerLib.initializeCallCount) initialize(s)"
 		)
 
+		// ── The debug-only install-state reset ──
+		// AppsFlyer attributes an install once per device: its reinstall counter sits in the Keychain,
+		// which outlives the app bundle, so every install after the first comes back organic with no
+		// deferred deep link. The reset is the cheap alternative to erasing the device.
+		//
+		// The prefix filter is the whole risk in it. It runs over the app's own UserDefaults, and one
+		// shade too wide takes the app's keys down with the SDK's. The survivor is asserted by value
+		// rather than by presence — a key left behind as nil fails the app exactly as a deleted one
+		// would. The Keychain half is not reachable from a command-line check and is left to the
+		// device; what is checked here is the half that can silently eat someone else's data.
+		ConfigurationIssues.shared.reset()
+		let defaults = UserDefaults.standard
+		defaults.set(7, forKey: "AppsFlyerReInstallCounter")
+		defaults.set("2026-09-11", forKey: "AppsFlyerFirstLaunchDate")
+		defaults.set("do-not-touch", forKey: "premiumKey")
+		AppsFlyerService.resetInstallState()
+		check(
+			defaults.object(forKey: "AppsFlyerReInstallCounter") == nil
+				&& defaults.object(forKey: "AppsFlyerFirstLaunchDate") == nil
+				&& defaults.string(forKey: "premiumKey") == "do-not-touch",
+			"T37: the reset must drop every AppsFlyer* default and leave everything else alone, got "
+				+ "counter=\(String(describing: defaults.object(forKey: "AppsFlyerReInstallCounter"))), "
+				+ "firstLaunch=\(String(describing: defaults.object(forKey: "AppsFlyerFirstLaunchDate"))), "
+				+ "premiumKey=\(String(describing: defaults.string(forKey: "premiumKey")))"
+		)
+		defaults.removeObject(forKey: "premiumKey")
+		check(
+			ConfigurationIssues.shared.all.contains { $0.contains("install state was wiped") },
+			"T38: the reset must file an issue — it has no build-configuration guard of its own, so a "
+				+ "release build that reaches it has to be visible, got \(ConfigurationIssues.shared.all)"
+		)
+
 		if failures.isEmpty {
-			print("AppsFlyerService (AF-01…AF-06): 42/42 OK")
+			print("AppsFlyerService (AF-01…AF-06): 44/44 OK")
 		} else {
-			print("\(failures.count) of 42 asserts FAILED:")
+			print("\(failures.count) of 44 asserts FAILED:")
 			for failure in failures {
 				print("  - \(failure)")
 			}

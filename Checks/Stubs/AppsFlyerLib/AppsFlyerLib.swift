@@ -90,12 +90,18 @@ public final class AppsFlyerLib {
 		instance.delegate = nil
 		instance.deepLinkDelegate = nil
 		instance.isDebug = false
+		instance.advertisingIdentifier = "stub-advertising-id"
 	}
 
 	public var customerUserID: String?
 	public weak var delegate: AppsFlyerLibDelegate?
 	public var deepLinkDelegate: AppsFlyerDeepLinkDelegate?
 	public var isDebug = false
+	/// Readonly in the real SDK and non-optional (its header sits inside `NS_ASSUME_NONNULL_BEGIN`),
+	/// so it imports as a plain `String`. Settable here because a check needs to play the two cases
+	/// the service tells apart: a real identifier, and the all-zero one a simulator or a denied ATT
+	/// answer leaves behind.
+	public var advertisingIdentifier = "stub-advertising-id"
 
 	private init() {}
 

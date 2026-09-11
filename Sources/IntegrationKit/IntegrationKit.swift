@@ -322,6 +322,24 @@ public struct IntegrationKit {
 		return kit
 	}
 
+	/// Makes the next launch look like a first install to AppsFlyer — debug builds only.
+	///
+	/// Call it before ``configure(deviceId:amplitudeKey:adaptyKey:placements:sessionsCounter:sharedSecret:productIds:isDebug:isTestsRunning:levels:firstOpenEvent:appsFlyerDevKey:appsFlyerAppId:sourceTimeout:attTimeout:adaptyAttributionEnabled:remoteConfigDefaults:remoteConfigTimeout:launchOptions:)``.
+	/// Afterwards is too late: the SDK reads the state this clears while it is being stood up.
+	///
+	/// What it is for: an install attributes once per device. The second one and every one after it
+	/// come back `af_status: Organic` with no deferred deep link, because AppsFlyer keeps its reinstall
+	/// counter in the Keychain — which survives deleting the app, and dies only with the device. That
+	/// is why attribution appears to work exactly once per simulator erase.
+	///
+	/// Gate it in the app: `#if DEBUG`, and behind a launch argument if you want it per run. The
+	/// package will not read `ProcessInfo` for this — outside a test run it does not touch process
+	/// arguments at all, and that invariant buys more than the convenience would. Every call is filed
+	/// in ``configurationIssues``, so one that ships is visible rather than silent.
+	public static func resetAppsFlyerInstallState() {
+		AppsFlyerService.resetInstallState()
+	}
+
 	// MARK: - AppDelegate forwards.
 	// The app physically needs these — a deep link arrives at the app, not at the package — but
 	// they travel through the kit so `AppsFlyerServicing` stays internal.
