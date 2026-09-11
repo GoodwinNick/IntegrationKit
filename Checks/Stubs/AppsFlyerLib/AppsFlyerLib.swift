@@ -10,10 +10,13 @@
 //  `shared()` always answers the same instance — same as the real SDK's process-wide singleton —
 //  so a check can read what was set (`customerUserID`, `isDebug`, `delegate`, ...) straight off
 //  it. Calls that don't already land on a settable property are recorded on static vars instead:
-//  `initialize`'s arguments, the ATT wait limit, the URL `handleOpen` was handed (and, for the
-//  legacy variant, the source application with it), the
+//  `initialize`'s arguments, the ATT wait limit, the launch options, the URL `handleOpen` was
+//  handed (and, for the legacy variant, the source application with it), the
 //  `customerUserID` that was in place when `start` ran, and how many times
-//  `initialize`/`start`/`continue`/`handleOpen` ran. Two knobs steer what the SDK answers back:
+//  `initialize`/`start`/`continue`/`handleOpen`/`handleLaunchOptions` ran. The session-ready
+//  listener is kept rather than counted: firing `sessionReadyListener` is how a check plays one
+//  foreground cycle, which since 7.0 is the only way a session is supposed to start. Two knobs
+//  steer what the SDK answers back:
 //  `appsFlyerUID` (AF-03 row 2 needs an empty one) and `continueBehaviour` (AF-05 needs a block
 //  that is never called, and one that answers a mixed array). `reset()` clears every recording,
 //  both knobs and the singleton's own properties; call it at the top of each row so one row's
@@ -46,9 +49,18 @@ public final class AppsFlyerLib {
 	/// CUID set after `start` is not associated with the install event, so the ordering is the
 	/// requirement — and reading the property afterwards cannot say which came first.
 	public static private(set) var customerUserIDAtStart: String?
-	/// `nil` means "never asked" — AF-01 row 2 has to tell a limit nobody set from the hardwired
-	/// one, and a plain `Double` cannot say that.
+	/// `nil` means "never asked". The package stopped calling this in 0.6.1 — the real method is
+	/// deprecated in 7.0 and does nothing — so AF-01 row 2 now reads it to prove the call is gone.
 	public static private(set) var lastATTTimeout: Double?
+	/// AF-05: what `handleLaunchOptions(_:)` was handed, and whether it ran at all. `nil` in
+	/// `lastLaunchOptions` cannot say "never called" on its own — an app with no cold-launch link
+	/// passes `nil` too — so the counter is kept beside it.
+	public static private(set) var handleLaunchOptionsCallCount = 0
+	public static private(set) var lastLaunchOptions: [UIApplication.LaunchOptionsKey: Any]?
+	/// AF-02: the block the service registered. Holding it is the whole point — a check fires it to
+	/// play one foreground cycle, which is how the real SDK delivers one now.
+	public static var sessionReadyListener: (() -> Void)?
+	public static private(set) var registerSessionReadyListenerCallCount = 0
 
 	/// What `getAppsFlyerUID()` answers. Settable so a check can seed it before exercising code
 	/// that reads the UID.
@@ -68,6 +80,10 @@ public final class AppsFlyerLib {
 		lastOpenSourceApplication = nil
 		customerUserIDAtStart = nil
 		lastATTTimeout = nil
+		handleLaunchOptionsCallCount = 0
+		lastLaunchOptions = nil
+		sessionReadyListener = nil
+		registerSessionReadyListenerCallCount = 0
 		appsFlyerUID = "stub-appsflyer-uid"
 		continueBehaviour = .callsWithNil
 		instance.customerUserID = nil
@@ -91,6 +107,21 @@ public final class AppsFlyerLib {
 
 	public func waitForATTUserAuthorization(timeoutInterval: Double) {
 		AppsFlyerLib.lastATTTimeout = timeoutInterval
+	}
+
+	public func handleLaunchOptions(_ launchOptions: [UIApplication.LaunchOptionsKey: Any]?) {
+		AppsFlyerLib.handleLaunchOptionsCallCount += 1
+		AppsFlyerLib.lastLaunchOptions = launchOptions
+	}
+
+	public func registerSessionReadyListener(_ listener: @escaping () -> Void) {
+		AppsFlyerLib.registerSessionReadyListenerCallCount += 1
+		// The real SDK replaces the current listener on a second call rather than keeping both.
+		AppsFlyerLib.sessionReadyListener = listener
+	}
+
+	public func unregisterSessionReadyListener() {
+		AppsFlyerLib.sessionReadyListener = nil
 	}
 
 	public func `continue`(_ userActivity: NSUserActivity, _ handler: (([Any]?) -> Void)?) {

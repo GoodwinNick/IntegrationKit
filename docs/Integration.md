@@ -202,11 +202,15 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 			firstOpenEvent: "first_open",
 			appsFlyerDevKey: ObfuscatedSecret.reveal(encrypted: SDKKeys.appsFlyerEncrypted, secret: SDKKeys.secret),
 			appsFlyerAppId: "1234567890",
-			// 60 s fits an ATT prompt shown at launch; raise it if the prompt comes after onboarding.
+			// How long the first attribution session is held waiting for the ATT answer. 60 s fits a
+			// prompt shown at launch; raise it if the prompt comes after onboarding.
 			attTimeout: 60,
 			// Your Remote Config keys and the value each answers until the fetch lands. The
 			// package defines none of its own; omit the argument if you use no remote config.
-			remoteConfigDefaults: ["paywallReview": NSNumber(value: false)]
+			remoteConfigDefaults: ["paywallReview": NSNumber(value: false)],
+			// Straight through, untouched. A cold launch that came from a link carries it here, and
+			// AppsFlyer holds the session until that link resolves only if it is handed this.
+			launchOptions: launchOptions
 		)
 		self.kit = kit
 
@@ -249,6 +253,26 @@ still calls the older `sourceApplication:annotation:` variant, and the SDK keeps
 a separate entry point for it — an app that forwards only the `options:` one
 drops those opens with nothing logged and nothing in `configurationIssues`.
 
+**Report the ATT answer, or your installs are organic.** AppsFlyer 7.0 stopped
+waiting for ATT on its own — its `waitForATTUserAuthorization` is deprecated
+with "the SDK no longer manages ATT timing internally", and ATT is explicitly
+not one of the conditions its session-readiness listener waits for. So the wait
+belongs to this package now, and the thing it waits for is your call:
+
+```swift
+ATTrackingManager.requestTrackingAuthorization { [weak self] status in
+    // Whatever the answer is. The value is not what matters — the dialog being
+    // over is, because that is when the IDFA either exists or never will.
+    self?.kit?.updateTrackingAuthorization(status)
+}
+```
+
+Skip it and the first session goes out after `attTimeout` with no IDFA. A click
+that can only be matched by one — anything coming through Google Ads, most
+paid networks — is then matched to nobody, and the install lands in the
+dashboard as organic. The symptom is indistinguishable from a broken key, which
+is why this is worth saying twice.
+
 **The `private var kit` above is a requirement, not a style choice — keep the
 returned value for as long as the app runs.** `IntegrationKit` is a struct,
 and the things the package cannot reach on its own are stored inside it. Write
@@ -259,8 +283,8 @@ the end of that line, taking with it:
   only strong reference to the attribution service. `AppsFlyerLib` declares
   both of the properties it is handed to as `weak`
   (`@property(weak, nonatomic) id<AppsFlyerLibDelegate> delegate;` and the same
-  for `deepLinkDelegate`), and the foreground observer it registers does not
-  own it either. So the service deallocates, its `deinit` unsubscribes it, and
+  for `deepLinkDelegate`), and the session-readiness listener it registers
+  captures it weakly too. So the service deallocates, and
   from then on: no AppsFlyer session is ever started, `onConversionDataSuccess`
   has nowhere to arrive, and `didResolveDeepLink` is never called. `AppsFlyerLib`
   itself stays up and looks healthy — it just has no delegate to deliver to.

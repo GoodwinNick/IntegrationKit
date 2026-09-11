@@ -29,7 +29,7 @@ Adapty 2.10.x.
 ## Installation
 
 ```swift
-.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.5.0")
+.package(url: "https://github.com/GoodwinNick/IntegrationKit", from: "0.6.1")
 ```
 
 In Xcode: File → Add Package Dependencies → the same URL, product `IntegrationKit`.
@@ -56,7 +56,11 @@ let kit = IntegrationKit.configure(
 	firstOpenEvent: "first_open",
 	appsFlyerDevKey: appsFlyerDevKey,
 	appsFlyerAppId: appsFlyerAppId,
-	remoteConfigDefaults: ["paywallReview": NSNumber(value: false)]
+	remoteConfigDefaults: ["paywallReview": NSNumber(value: false)],
+	// The AppDelegate's own dictionary, passed straight through. A cold launch that came from a
+	// link carries it in here, and AppsFlyer holds the first session until that link resolves
+	// only if it is given it.
+	launchOptions: launchOptions
 )
 
 kit.analytics.logEvent("app_open")
@@ -128,7 +132,12 @@ Besides `logEvent`, `kit.analytics` carries `setUserId(_:)` (re-point analytics
 at another id after a login), `setUserProperties(_:)` (Amplitude user properties)
 and `deviceId` (Amplitude's own id, `nil` until the layer is up). Deep links go
 through `kit.handleContinue(...)` / `kit.handleOpen(...)`, and the ATT answer
-through `kit.updateTrackingAuthorization(_:)`. Four more forwards reach the SDKs
+through `kit.updateTrackingAuthorization(_:)` — **which is not optional any
+more.** Since AppsFlyer 7.0 the SDK no longer waits for ATT on its own, so the
+package holds the first attribution session until that call arrives or
+`attTimeout` runs out. An app that shows the prompt and never reports the
+outcome sends its install with no IDFA, and the install reads as organic no
+matter which campaign paid for it. Four more forwards reach the SDKs
 directly, and beside them sits the one call that no longer reaches anything:
 
 ```swift
@@ -184,8 +193,14 @@ meaning of every `configure` parameter and the paywall-to-purchase flow.
   prices shown on the paywall all live inside it.
 - `isDebug` and `isTestsRunning` — the app's own `#if DEBUG` and its own reading
   of `-uitest` / `XCTestConfigurationFilePath`. The package never derives either.
+- Showing the ATT prompt and reporting its answer through
+  `kit.updateTrackingAuthorization(_:)`. The package never shows the prompt —
+  where it belongs is the app's decision — but the first attribution session
+  waits for the answer, so an app that never reports one attributes its installs
+  to nobody.
 - Calling `FirebaseIntegration.configure(isDebug:)` and
-  `IntegrationKit.configure(...)` at app launch, and forwarding
+  `IntegrationKit.configure(...)` at app launch, passing `launchOptions`
+  through, and forwarding
   `application(_:continue:restorationHandler:)`,
   `application(_:open:options:)` and
   `application(_:open:sourceApplication:annotation:)` through

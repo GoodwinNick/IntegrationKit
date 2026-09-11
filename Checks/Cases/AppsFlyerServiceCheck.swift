@@ -2,20 +2,30 @@
 //  AppsFlyerServiceCheck.swift
 //  IntegrationKit
 //
-//  Written from the approved schemas AF-01…AF-06, not from the code. Thirty-nine asserts carry
+//  Written from the approved schemas AF-01…AF-06, not from the code. Forty-two asserts carry
 //  twenty-four of the thirty-two rows plus AN-03 row 4, whose code lives here rather than in
 //  Amplitude's; the eight rows that carry none say why — four in a comment above their block,
 //  four (the logging rows of 2026-09-09) in the risk row itself — not with a lookalike assert.
+//
+//  T4b, T4c and T4d arrived with 0.6.1, when AppsFlyer 7.0 turned the two things this layer relied
+//  on into defects: the SDK-side ATT wait became a deprecated no-op, and starting a session from
+//  `didBecomeActiveNotification` became the thing its own header tells you not to do. The wait is
+//  the package's now, the session comes from the SDK's readiness listener, and those three assert
+//  it — a held first session, an answer that releases it, and the launch options reaching the SDK
+//  before the listener is registered.
 //
 //  The last five (T30…T34) came out of the 2026-09-09 schema/code re-check, which found three
 //  rules the schemas state and no assert held: what a successful `configure` hands the SDK and in
 //  which order (AF-01 row 6), the "unknown" default for an attribution field the SDK did not send
 //  (AF-03 row 6), and the URL forward reaching the SDK unchanged (AF-05 row 4).
 //
-//  All thirty-nine are green. Seventeen of them were written red first, against
+//  All forty-two are green. Twenty of them were written red first, against
 //  schemas the wrapper did not satisfy yet, and each one names the behaviour the code had to grow
 //  rather than the shape it happened to have:
-//    T4  AF-01 row 2 — the ATT wait limit is the app's, not the constant 60.
+//    T4  AF-01 row 2 — the deprecated SDK-side ATT wait is not called at all.
+//    T4b AF-01 row 2 — with no ATT answer yet the first session is held, not sent.
+//    T4c AF-01 row 2 — the answer releases that session, once.
+//    T4d AF-05    — the launch options reach the SDK before the readiness listener exists.
 //    T5  AF-01 row 3 — SDK debug logging follows the app's key, not a hardwired `false`.
 //    T6  AF-01 row 5 — a second `configure` does not initialize the SDK a second time.
 //    T11 AF-03 row 2 — an empty AppsFlyer UID reaches Adapty as nil, not as "".
@@ -130,10 +140,19 @@ enum AppsFlyerServiceCheck {
 		print("FAILED: \(text)")
 	}
 
-	/// The foreground signal AF-01/AF-02 are triggered by. The shim makes
-	/// `didBecomeActiveNotification` a plain `Notification.Name`, so posting it is the whole thing.
+	/// One foreground cycle, the way the SDK has delivered it since 7.0: the readiness listener the
+	/// service registered in `configure` fires. Posting `didBecomeActiveNotification` proves nothing
+	/// here any more — no part of the AppsFlyer layer observes it, and a layer that was never
+	/// configured registered no listener, so "nothing happens" still means what it used to.
 	static func postForegroundSignal() {
-		NotificationCenter.default.post(name: UIApplication.didBecomeActiveNotification, object: nil)
+		AppsFlyerLib.sessionReadyListener?()
+	}
+
+	/// The ATT answer, which the first session of a process now waits for. Every row that is about
+	/// something else answers it right after `configure`, the way a real app does from its prompt
+	/// callback; the rows that are about the wait itself (T4, T4b) do not.
+	static func answerTracking(_ service: AppsFlyerService) {
+		service.updateTrackingAuthorization(.authorized)
 	}
 
 	static func main() {
@@ -183,18 +202,53 @@ enum AppsFlyerServiceCheck {
 				+ "\(ConfigurationIssues.shared.all)"
 		)
 
-		// ── AF-01 row 2 — the ATT wait limit is the app's parameter, not a package constant ───
-		// The documented limit is scenario-dependent — 60 s for a prompt at launch, 120 s for one
-		// after a tutorial — so a constant in the package is a guess about an app it cannot see.
-		// The assert names 12 s: a value no default would produce by accident.
+		// ── AF-01 row 2 — the install data waits for the ATT answer, and the wait is ours ─────
+		// Until SDK 7.0 this row was held by handing `attTimeout` to
+		// `waitForATTUserAuthorization(timeoutInterval:)`. That method is deprecated in 7.0.2 — its
+		// own header says "the SDK no longer manages ATT timing internally" — and the readiness
+		// listener that replaced the old start path states that ATT is not a readiness condition. So
+		// calling it is now the defect: it looks like a wait and is a no-op, and the install goes out
+		// with no IDFA, which is an attribution that reads as organic. Both halves are asserted: the
+		// dead call is gone, and the session really is held until the answer.
 		AppsFlyerLib.reset()
 		let t4Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
 		t4Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
-		NotificationCenter.default.removeObserver(t4Service)
 		check(
-			AppsFlyerLib.lastATTTimeout == 12,
-			"T4 AF-01 row 2: the ATT wait limit must be the app's own 12 s, got "
-				+ "\(String(describing: AppsFlyerLib.lastATTTimeout))"
+			AppsFlyerLib.lastATTTimeout == nil,
+			"T4 AF-01 row 2: the deprecated SDK-side ATT wait must not be called at all, got a limit "
+				+ "of \(String(describing: AppsFlyerLib.lastATTTimeout))"
+		)
+		postForegroundSignal()
+		check(
+			AppsFlyerLib.startCallCount == 0,
+			"T4b AF-01 row 2: with no ATT answer yet the first session must be held, got "
+				+ "\(AppsFlyerLib.startCallCount) start(s)"
+		)
+		answerTracking(t4Service)
+		check(
+			AppsFlyerLib.startCallCount == 1,
+			"T4c AF-01 row 2: the ATT answer must release the held session exactly once, got "
+				+ "\(AppsFlyerLib.startCallCount) start(s)"
+		)
+
+		// ── AF-05 — the cold-launch link reaches the SDK before the session does ──────────────
+		// `handleLaunchOptions(_:)` is the SDK's own prerequisite for the readiness listener: given
+		// the dictionary, it holds the session until a Universal Link in it resolves. Never calling
+		// it means the session is sent first and the link lands after the install was attributed
+		// without it. The assert names the order, not the call: the listener must be registered
+		// after the launch options were handed over.
+		AppsFlyerLib.reset()
+		let t4dService = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
+		let t4dOptions: [UIApplication.LaunchOptionsKey: Any] = [UIApplication.LaunchOptionsKey(rawValue: "UIApplicationLaunchOptionsURLKey"): "https://example.com/link"]
+		t4dService.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false, launchOptions: t4dOptions)
+		check(
+			AppsFlyerLib.handleLaunchOptionsCallCount == 1
+				&& (AppsFlyerLib.lastLaunchOptions?.count ?? 0) == 1
+				&& AppsFlyerLib.sessionReadyListener != nil,
+			"T4d AF-05: configure must hand the launch options to the SDK and only then register the "
+				+ "readiness listener, got \(AppsFlyerLib.handleLaunchOptionsCallCount) call(s) with "
+				+ "\(AppsFlyerLib.lastLaunchOptions?.count ?? 0) option(s) and a listener that is "
+				+ "\(AppsFlyerLib.sessionReadyListener == nil ? "missing" : "registered")"
 		)
 
 		// ── AF-01 row 3 — SDK debug logging follows the app's `isDebug` key ──────────────────
@@ -206,7 +260,6 @@ enum AppsFlyerServiceCheck {
 		AppsFlyerLib.reset()
 		let t5Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
 		t5Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: true)
-		NotificationCenter.default.removeObserver(t5Service)
 		check(
 			AppsFlyerLib.shared().isDebug == true,
 			"T5 AF-01 row 3: configured with the app's debug key on, the SDK's isDebug must be "
@@ -215,7 +268,6 @@ enum AppsFlyerServiceCheck {
 		AppsFlyerLib.reset()
 		let t5OffService = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
 		t5OffService.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
-		NotificationCenter.default.removeObserver(t5OffService)
 		check(
 			AppsFlyerLib.shared().isDebug == false,
 			"T5 AF-01 row 3: configured with the key off, the SDK's isDebug must be false, got "
@@ -244,8 +296,8 @@ enum AppsFlyerServiceCheck {
 		// Green because the second `configure` never reached `:77-82`, so there is only one
 		// observer. It used to be green for a different reason — the AF-02 flag swallowed the
 		// second start — and that reason is gone, which is exactly why this assert stays here.
+		answerTracking(t6Service)
 		postForegroundSignal()
-		NotificationCenter.default.removeObserver(t6Service)
 		check(
 			AppsFlyerLib.startCallCount == 1,
 			"T7 AF-01 row 5: after a doubled configure one foreground signal must reach the SDK "
@@ -265,8 +317,8 @@ enum AppsFlyerServiceCheck {
 		AppsFlyerLib.reset()
 		let t8Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
 		t8Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
+		answerTracking(t8Service)
 		postForegroundSignal()
-		NotificationCenter.default.removeObserver(t8Service)
 		check(
 			t8Service.didStartAppsFlyer == true && AppsFlyerLib.startCallCount == 1,
 			"T8 AF-02 row 2: one foreground signal must set didStartAppsFlyer true and reach the "
@@ -282,10 +334,10 @@ enum AppsFlyerServiceCheck {
 		AppsFlyerLib.reset()
 		let t9Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
 		t9Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
+		answerTracking(t9Service)
 		postForegroundSignal()
 		t9Service.didStartAppsFlyer = false
 		postForegroundSignal()
-		NotificationCenter.default.removeObserver(t9Service)
 		check(
 			AppsFlyerLib.startCallCount == 2,
 			"T9 AF-02 row 3: two overlapping foreground signals must both reach the SDK, got "
@@ -651,9 +703,9 @@ enum AppsFlyerServiceCheck {
 		AppsFlyerLib.reset()
 		let t25Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: FakeAdapty())
 		t25Service.configure(devKey: "key-1", appId: "id-1", deviceId: "device-1", attTimeout: 12, isDebug: false)
+		answerTracking(t25Service)
 		postForegroundSignal()
 		postForegroundSignal()
-		NotificationCenter.default.removeObserver(t25Service)
 		check(
 			AppsFlyerLib.startCallCount == 2,
 			"T25 AF-02 row 1: a second foreground return must start a new session, got "
@@ -692,8 +744,8 @@ enum AppsFlyerServiceCheck {
 			"T31 AF-01 row 6: configure alone must start 0 sessions — the session belongs to the "
 				+ "foreground signal (AF-02) — got \(AppsFlyerLib.startCallCount)"
 		)
+		answerTracking(handedOverService)
 		postForegroundSignal()
-		NotificationCenter.default.removeObserver(handedOverService)
 		check(
 			AppsFlyerLib.customerUserIDAtStart == "device-1",
 			"T32 AF-01 row 6: customerUserID must already be device-1 when start() runs, or the "
@@ -790,9 +842,9 @@ enum AppsFlyerServiceCheck {
 		)
 
 		if failures.isEmpty {
-			print("AppsFlyerService (AF-01…AF-06): 39/39 OK")
+			print("AppsFlyerService (AF-01…AF-06): 42/42 OK")
 		} else {
-			print("\(failures.count) of 39 asserts FAILED:")
+			print("\(failures.count) of 42 asserts FAILED:")
 			for failure in failures {
 				print("  - \(failure)")
 			}

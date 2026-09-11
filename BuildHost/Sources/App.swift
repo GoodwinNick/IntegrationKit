@@ -62,7 +62,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 				"onboardingVariant": NSString(string: "control"),
 				"freeGenerations": NSNumber(value: 3),
 				"discountRate": NSNumber(value: 0.5)
-			]
+			],
+			// Handed straight through. A cold launch that came from a Universal Link carries it in
+			// here, and AppsFlyer holds the first session until that link resolves only if it gets it.
+			launchOptions: launchOptions
 		)
 		self.kit = kit
 
@@ -162,6 +165,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 		kit.premium.configurationIssues.forEach { print("[IntegrationKit] \($0)") }
 	}
 
+	/// Answer or refusal, this call has to happen — the package holds the first AppsFlyer session
+	/// until it does, because since SDK 7.0 nothing inside AppsFlyer waits for ATT any more. An app
+	/// that shows the prompt and never reports the outcome spends the whole `attTimeout` and then
+	/// sends the install with no IDFA.
 	func askTracking() {
 		ATTrackingManager.requestTrackingAuthorization { [weak self] status in
 			self?.kit?.updateTrackingAuthorization(status)

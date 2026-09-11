@@ -6,6 +6,7 @@
 //  No custom backend involved: everything stays inside AnalyticsTracking/AdaptyServicing.
 //
 
+import AppTrackingTransparency
 import AppsFlyerLib
 import Foundation
 import UIKit
@@ -32,6 +33,22 @@ final class AppsFlyerService: NSObject, AppsFlyerServicing {
 	/// counted rather than filed as a cause.
 	private(set) var droppedDeepLinks = 0
 
+	/// AF-01 row 2. The limit the app named, kept because the wait it limits is ours now. Until 7.0
+	/// the SDK held the install data for the ATT answer itself; its own header deprecates that with
+	/// "the SDK no longer manages ATT timing internally", and says in the same file that ATT is not a
+	/// session-readiness condition either. The parameter means what it always meant — how long to wait
+	/// before giving up on the answer — only the waiting moved in here.
+	private var attTimeout: TimeInterval = 0
+
+	/// Whether the app has reported the ATT answer. Any answer settles the question: what the session
+	/// is waiting for is the dialog being over, not a particular verdict.
+	private var isTrackingAnswered = false
+
+	/// Whether a session is sitting here waiting for that answer. Separate from `isTrackingAnswered`
+	/// because "nobody asked yet" and "asked and held" behave differently on the next foreground
+	/// cycle — the second must not queue a second hold.
+	private var isSessionHeldForTracking = false
+
 	init(analytics: AnalyticsTracking, adapty: AdaptyServicing) {
 		self.analytics = analytics
 		self.adapty = adapty
@@ -39,15 +56,17 @@ final class AppsFlyerService: NSObject, AppsFlyerServicing {
 	}
 
 	deinit {
-		// AF-01 row 4: the subscription ends with the object, rather than resting on `NotificationCenter`
-		// zeroing its own reference — which it does on current iOS and did not always.
-		NotificationCenter.default.removeObserver(self)
-		debugLog(tag: Self.tag, "deinit — foreground observer removed")
+		// AF-01 row 4 is gone along with the mechanism it was about: there is no `NotificationCenter`
+		// subscription any more, so nothing can outlive this object holding it. The SDK's readiness
+		// listener captures the service weakly, so one that survives it does nothing at all rather
+		// than resurrecting it — and it is not unregistered here on purpose, because the listener on
+		// the SDK's process-wide singleton may already belong to a newer service.
+		debugLog(tag: Self.tag, "deinit — the session-ready listener that captured this service is now inert")
 	}
 
-	/// `isTestsRunning` defaults only so the checks' own call sites stay short — the composition
-	/// root always passes the app's answer, and the app always computes it.
-	func configure(devKey: String, appId: String, deviceId: String, attTimeout: TimeInterval, isDebug: Bool, isTestsRunning: Bool = false) {
+	/// `isTestsRunning` and `launchOptions` default only so the checks' own call sites stay short —
+	/// the composition root always passes the app's answers, and the app always computes them.
+	func configure(devKey: String, appId: String, deviceId: String, attTimeout: TimeInterval, isDebug: Bool, isTestsRunning: Bool = false, launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) {
 		// The dev key itself never reaches the log — it is a credential, and "set"/"empty" is the
 		// only thing about it any of the branches below actually reads.
 		debugLog(tag: Self.tag, "configure: devKey \(devKey.isEmpty ? "empty" : "set"), appId \(appId), deviceId \(deviceId), attTimeout \(attTimeout)s, isDebug \(isDebug), isTestsRunning \(isTestsRunning)")
@@ -81,6 +100,7 @@ final class AppsFlyerService: NSObject, AppsFlyerServicing {
 			return
 		}
 		isConfigured = true
+		self.attTimeout = attTimeout
 
 		AppsFlyerLib.shared().initialize(devKey: devKey, appId: appId)
 		debugLog(tag: Self.tag, "SDK initialized for appId \(appId)")
@@ -91,23 +111,29 @@ final class AppsFlyerService: NSObject, AppsFlyerServicing {
 		AppsFlyerLib.shared().delegate = self
 		AppsFlyerLib.shared().deepLinkDelegate = self
 		debugLog(tag: Self.tag, "delegate and deepLinkDelegate wired to the service")
-		// AF-01 row 2: how long to wait for the ATT answer depends on where the app shows the prompt
-		// — 60 s at launch, 120 s after a tutorial — and only the app knows that.
-		AppsFlyerLib.shared().waitForATTUserAuthorization(timeoutInterval: attTimeout)
-		debugLog(tag: Self.tag, "waiting up to \(attTimeout)s for the ATT answer before the install data goes out")
 		// AF-01 row 3: the app's flag, not the build configuration. A package cannot know whether
 		// this build wants SDK logs; leaving it hardwired means nobody can turn them on to check an
 		// integration, or off in a debug build that ships.
 		AppsFlyerLib.shared().isDebug = isDebug
 		debugLog(tag: Self.tag, "SDK console logging \(isDebug ? "on" : "off") — the app's own key")
 
-		NotificationCenter.default.addObserver(
-			self,
-			selector: #selector(startAppsFlyer),
-			name: UIApplication.didBecomeActiveNotification,
-			object: nil
-		)
-		debugLog(tag: Self.tag, "configure done — every foreground return now starts a session")
+		// AF-05: a cold launch that arrived through a Universal Link carries it in `launchOptions`,
+		// and the SDK only learns about it if it is handed over here — before the listener below.
+		// With it, session readiness waits for that link to resolve; without it the session goes out
+		// first and the link lands after the install was already attributed to nobody. A no-op when
+		// there is no link in there.
+		AppsFlyerLib.shared().handleLaunchOptions(launchOptions)
+		debugLog(tag: Self.tag, "launch options handed to the SDK — \(launchOptions == nil ? "none given, nothing to resolve" : "a cold-launch link in there now holds the session until it resolves")")
+		// AF-02 row 1: the session is started from the SDK's own readiness listener, never from
+		// `didBecomeActiveNotification`. `AppsFlyerLib.start` says so in as many words — "call this
+		// inside a registerSessionReadyListener: block, not directly in applicationDidBecomeActive:"
+		// — and that listener is what waits for the deep link to resolve first. The cadence is
+		// unchanged: it fires once per foreground cycle and resets on background, so every return to
+		// the foreground still gets its session.
+		AppsFlyerLib.shared().registerSessionReadyListener { [weak self] in
+			self?.startAppsFlyer()
+		}
+		debugLog(tag: Self.tag, "configure done — the SDK's session-ready listener now drives every session")
 	}
 
 	func handleContinue(_ userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void) {
@@ -173,13 +199,49 @@ final class AppsFlyerService: NSObject, AppsFlyerServicing {
 		debugLog(tag: Self.tag, "open (legacy): forwarded to the SDK unchanged")
 	}
 
-	@objc func startAppsFlyer() {
+	func startAppsFlyer() {
+		// AF-01 row 2: the first session of the process waits for the ATT answer, because as of SDK
+		// 7.0 nothing else does. An install that goes out before the dialog is over carries no IDFA,
+		// and a click that can only be matched by one is then attributed to nobody — the install lands
+		// as organic and the campaign that paid for it never sees it. Every later foreground cycle
+		// goes straight through: the question is settled once per process, not once per session.
+		guard didStartAppsFlyer || isTrackingAnswered else {
+			guard !isSessionHeldForTracking else {
+				debugLog(tag: Self.tag, "start: a session is already held for the ATT answer — this cycle joins it rather than queuing a second one")
+				return
+			}
+			isSessionHeldForTracking = true
+			debugLog(tag: Self.tag, "start held: no ATT answer yet, waiting up to \(attTimeout)s so the install data can carry the IDFA")
+			DispatchQueue.main.asyncAfter(deadline: .now() + attTimeout) { [weak self] in
+				guard let self, self.isSessionHeldForTracking else { return }
+				self.isSessionHeldForTracking = false
+				debugLog(tag: Self.tag, level: .error, "no ATT answer in \(self.attTimeout)s — the session goes out without the IDFA. The app never called updateTrackingAuthorization; attribution that needs ID matching will read as organic")
+				self.sendSession()
+			}
+			return
+		}
+		sendSession()
+	}
+
+	/// AF-01 row 2. The app's ATT answer, whatever it is — the value is not passed to the SDK, which
+	/// reads the identifier itself. What matters here is that the dialog is over, so a session held
+	/// for it can go out now instead of waiting out the whole timeout.
+	func updateTrackingAuthorization(_ status: ATTrackingManager.AuthorizationStatus) {
+		debugLog(tag: Self.tag, "ATT answer \(status.rawValue) recorded — the question is settled for this process")
+		isTrackingAnswered = true
+		guard isSessionHeldForTracking else { return }
+		isSessionHeldForTracking = false
+		debugLog(tag: Self.tag, "the session held for that answer goes out now")
+		sendSession()
+	}
+
+	private func sendSession() {
 		let isFirst = !didStartAppsFlyer
 		didStartAppsFlyer = true
 		AppsFlyerLib.shared().start()
-		// AF-02 row 1: every foreground return starts a session; near-identical ones are collapsed by
+		// AF-02 row 1: every foreground cycle starts a session; near-identical ones are collapsed by
 		// the SDK's own `minTimeBetweenSessions`, so a repeat here is expected, not a bug.
-		debugLog(tag: Self.tag, isFirst ? "started — first session of this process" : "started — another foreground return")
+		debugLog(tag: Self.tag, isFirst ? "started — first session of this process" : "started — another foreground cycle")
 	}
 }
 

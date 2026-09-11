@@ -102,6 +102,11 @@ public struct IntegrationKit {
 	/// practice — comfortably inside a splash plus the taps it takes to reach a paywall — and an app
 	/// that shows a remote-driven screen sooner passes its own.
 	///
+	/// `launchOptions` is the dictionary `application(_:didFinishLaunchingWithOptions:)` was handed.
+	/// Pass it through: a cold launch that came from a Universal Link carries the link in there, and
+	/// AppsFlyer holds the first session back until that link resolves only if it is given it. Left
+	/// out, the session is sent before the link is known and the install is attributed without it.
+	///
 	/// `adaptyAttributionEnabled` switches on Adapty's own attribution service, new in Adapty 4.x.
 	/// It is off unless asked for, and that is the one default here that has to be argued rather than
 	/// inherited: an app that already runs AppsFlyer would otherwise start sending a second,
@@ -125,7 +130,8 @@ public struct IntegrationKit {
 		attTimeout: TimeInterval = 60,
 		adaptyAttributionEnabled: Bool = false,
 		remoteConfigDefaults: [String: NSObject] = [:],
-		remoteConfigTimeout: TimeInterval = 5
+		remoteConfigTimeout: TimeInterval = 5,
+		launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
 	) -> IntegrationKit {
 		// No key is ever printed — they are credentials, and every branch below reads only whether one
 		// is there. The tag is left off on purpose: these lines belong to the graph, not to a service,
@@ -221,7 +227,8 @@ public struct IntegrationKit {
 				deviceId: deviceId,
 				attTimeout: attTimeout,
 				isDebug: isDebug,
-				isTestsRunning: isTestsRunning
+				isTestsRunning: isTestsRunning,
+				launchOptions: launchOptions
 			)
 			appsFlyer = service
 			debugLog("appsFlyer: layer built")
@@ -360,12 +367,18 @@ public struct IntegrationKit {
 		appsFlyer?.handleOpen(url, sourceApplication: sourceApplication, annotation: annotation)
 	}
 
-	/// The ATT answer reaches both SDKs that cannot read it themselves. Adapty's half would be
+	/// The ATT answer reaches all three SDKs that cannot read it themselves. Adapty's half would be
 	/// unreachable otherwise, now that the app cannot hold an `AdaptyServicing`.
+	///
+	/// **Call this as soon as the prompt is answered, whatever the answer.** Since SDK 7.0 AppsFlyer
+	/// no longer waits for ATT on its own, so this package holds the first session until this call —
+	/// or until `attTimeout` runs out. An app that never makes it spends that whole timeout and then
+	/// sends the install with no IDFA, which is an attribution that reads as organic.
 	public func updateTrackingAuthorization(_ status: ATTrackingManager.AuthorizationStatus) {
-		debugLog("ATT answer \(status.rawValue) forwarded to Amplitude and Adapty")
+		debugLog("ATT answer \(status.rawValue) forwarded to Amplitude, Adapty and AppsFlyer")
 		analytics.updateTrackingAuthorization(status)
 		adapty.updateAppTrackingTransparencyStatus(status)
+		appsFlyer?.updateTrackingAuthorization(status)
 	}
 
 	/// One fact about this user, written to both dashboards at once — the Adapty profile and the

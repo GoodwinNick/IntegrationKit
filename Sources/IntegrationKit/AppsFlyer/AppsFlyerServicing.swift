@@ -3,6 +3,7 @@
 //  IntegrationKit
 //
 
+import AppTrackingTransparency
 import Foundation
 import UIKit
 
@@ -11,13 +12,25 @@ protocol AppsFlyerServicing: AnyObject {
 	/// (or already holds) them and passes the plain values in. deviceId ties AppsFlyer to the
 	/// same stable id Amplitude/Adapty use.
 	///
-	/// `attTimeout` is how long the SDK holds the install data waiting for the ATT answer.
+	/// `attTimeout` is how long the install data is held waiting for the ATT answer. The holding is
+	/// this layer's own since SDK 7.0, which deprecated the SDK-side wait with "the SDK no longer
+	/// manages ATT timing internally" and made ATT explicitly not a session-readiness condition. The
+	/// limit still belongs to the app, because where it shows the prompt is what decides it — 60 s for
+	/// one at launch, 120 s for one after a tutorial.
+	///
+	/// `launchOptions` is the AppDelegate's own dictionary, handed to the SDK untouched. A cold launch
+	/// that came from a Universal Link carries it there, and without this the session is sent before
+	/// that link resolves.
 	/// `isDebug` and `isTestsRunning` are the app's own two keys: the first turns the SDK's console
 	/// logging on, the second leaves the layer down altogether — a test run must not spend the
 	/// advertising budget it is measured by (AF-01 rows 1 and 3). They are separate axes on
 	/// purpose: gluing them together would drag SDK logs into every test run, or silence
 	/// attribution in every debug build.
-	func configure(devKey: String, appId: String, deviceId: String, attTimeout: TimeInterval, isDebug: Bool, isTestsRunning: Bool)
+	func configure(devKey: String, appId: String, deviceId: String, attTimeout: TimeInterval, isDebug: Bool, isTestsRunning: Bool, launchOptions: [UIApplication.LaunchOptionsKey: Any]?)
+	/// The app's ATT answer. The first session is held until this arrives — or until `attTimeout`
+	/// runs out — because an install sent before the dialog is over carries no IDFA, and a click that
+	/// needs ID matching is then attributed to nobody.
+	func updateTrackingAuthorization(_ status: ATTrackingManager.AuthorizationStatus)
 	/// Forwards `application(_:continue:restorationHandler:)` from AppDelegate into the SDK.
 	func handleContinue(_ userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void)
 	/// Forwards `application(_:open:options:)` from AppDelegate into the SDK.
