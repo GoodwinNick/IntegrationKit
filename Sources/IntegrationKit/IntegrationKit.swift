@@ -133,30 +133,69 @@ public struct IntegrationKit {
 			)
 			return built
 		}
+		// TM-01: the one decision the test-mode layer makes, taken here and nowhere else. Every fake
+		// source in the package hangs off this single branch, and there is no other entrance to any of
+		// them — outside a launch the app itself called a test launch, `ProcessInfo` is not read at
+		// all. `#if DEBUG` would be the wrong guard and not a stricter one: the package arrives as a
+		// release dependency while the app's own test build is Debug, so it would remove the layer
+		// exactly where it is needed and leave it where it is not (TM-01 row 4).
+		let testMode: TestModeGraph? = isTestsRunning
+			? TestModeGraph.make(
+				arguments: ProcessInfo.processInfo.arguments,
+				environment: ProcessInfo.processInfo.environment,
+				levels: levels,
+				productIds: productIds,
+				remoteConfigDefaults: remoteConfigDefaults
+			)
+			: nil
+
 		// First of the four, and the only one that is not a network dependency of the others: a
 		// paywall variant is read on the way to the first screen, so the fetch gets whatever head
 		// start the rest of this method takes.
-		let remoteConfig = RemoteConfigService(defaults: remoteConfigDefaults)
-		remoteConfig.configure(timeout: remoteConfigTimeout, isDebug: isDebug, isTestsRunning: isTestsRunning)
+		let remoteConfig: RemoteConfigServicing
+		if let testMode {
+			remoteConfig = testMode.remoteConfig
+		} else {
+			let service = RemoteConfigService(defaults: remoteConfigDefaults)
+			service.configure(timeout: remoteConfigTimeout, isDebug: isDebug, isTestsRunning: isTestsRunning)
+			remoteConfig = service
+		}
 
-		let analytics = AmplitudeAnalytics(isDebug: isDebug)
-		analytics.configure(apiKey: amplitudeKey, deviceId: deviceId, firstOpenEvent: firstOpenEvent, isTestsRunning: isTestsRunning)
+		// TM-07: Amplitude is not built at all in a test run — the sink replaces the sending, not the
+		// SDK, so there is nothing left that could reach the live dashboard.
+		let analytics: AnalyticsTracking
+		if let testMode {
+			analytics = testMode.analytics
+		} else {
+			let amplitude = AmplitudeAnalytics(isDebug: isDebug)
+			amplitude.configure(apiKey: amplitudeKey, deviceId: deviceId, firstOpenEvent: firstOpenEvent, isTestsRunning: isTestsRunning)
+			analytics = amplitude
+		}
 
-		let adapty = AdaptyService()
-		adapty.configure(
-			apiKey: adaptyKey,
-			customerUserId: deviceId,
-			sessionsCounter: sessionsCounter,
-			placements: placements,
-			analytics: analytics,
-			// AD-06 row 6: the current answer, on every launch. Read here rather than inside the
-			// service — the app already owns this value and forwards it through
-			// `updateTrackingAuthorization(_:)`, and the read itself is a system call the service
-			// has no business making on its own.
-			attStatus: ATTrackingManager.trackingAuthorizationStatus,
-			isTestsRunning: isTestsRunning,
-			adaptyAttributionEnabled: adaptyAttributionEnabled
-		)
+		// Both protocols, because this one value fills both seats: `PremiumService` needs the premium
+		// source, the facade and AppsFlyer need the app-facing surface. The fake implements the same
+		// two, which is what keeps the arbiter above it the production one (TM-03).
+		let adapty: any AdaptyServicing & AdaptyPremiumProviding
+		if let testMode {
+			adapty = testMode.adapty
+		} else {
+			let service = AdaptyService()
+			service.configure(
+				apiKey: adaptyKey,
+				customerUserId: deviceId,
+				sessionsCounter: sessionsCounter,
+				placements: placements,
+				analytics: analytics,
+				// AD-06 row 6: the current answer, on every launch. Read here rather than inside the
+				// service — the app already owns this value and forwards it through
+				// `updateTrackingAuthorization(_:)`, and the read itself is a system call the service
+				// has no business making on its own.
+				attStatus: ATTrackingManager.trackingAuthorizationStatus,
+				isTestsRunning: isTestsRunning,
+				adaptyAttributionEnabled: adaptyAttributionEnabled
+			)
+			adapty = service
+		}
 		// Adapty's own paywall fetch can lose a race at cold start (flaky network, cold CDN) — retry
 		// every placement that is still missing each time the app comes back to the foreground.
 		let adaptyRefreshObserver = NotificationCenter.default.addObserver(
@@ -190,13 +229,27 @@ public struct IntegrationKit {
 			)
 		}
 
-		let storeKit = StoreKitService(sharedSecret: sharedSecret, productIds: productIds)
+		// TM-04/TM-05: a test run does not touch StoreKit at all — no payment queue, no receipt
+		// validation, no system dialog that could stop a run dead (TM-04 row 5).
+		let apple: AppleSubscribing
+		let storeKit: StoreKitService?
+		if let testMode {
+			apple = testMode.apple
+			storeKit = nil
+		} else {
+			let service = StoreKitService(sharedSecret: sharedSecret, productIds: productIds)
+			apple = service
+			storeKit = service
+		}
 		// `productIds` has to reach here too, not just StoreKit: it is the fallback list `products`
 		// prices directly when Adapty's own listing for a placement comes back empty, and an empty
 		// list would leave an unloaded paywall with no prices at all.
 		let premium = PremiumService(
+			// The store is handed over rather than defaulted so that a test run can wipe the previous
+			// run's verdict through the same object, before anything reads it (TM-03 row 7).
+			store: testMode?.store ?? UserDefaultsPremiumStore(),
 			adapty: adapty,
-			apple: storeKit,
+			apple: apple,
 			levels: levels,
 			sourceTimeout: sourceTimeout,
 			productIds: productIds
@@ -209,7 +262,13 @@ public struct IntegrationKit {
 		// the payment queue, not by any call above, and it stays stuck in that queue until it is
 		// finished. Re-asking afterwards is what turns it into premium in this launch instead of
 		// the next one.
-		storeKit.completeTransactions { [weak premium] in premium?.purchaseDelivered() }
+		storeKit?.completeTransactions { [weak premium] in premium?.purchaseDelivered() }
+		if testMode?.flags.pendingTransaction == true {
+			// TM-04: one unfinished transaction was already in the queue at launch. It reaches the
+			// arbiter as a delivered purchase, exactly as the real payment queue would deliver it, and
+			// PM-08 decides what it means — the flag does not turn premium on by itself (TM-04 row 4).
+			premium.purchaseDelivered()
+		}
 
 		let kit = IntegrationKit(
 			premium: premium,

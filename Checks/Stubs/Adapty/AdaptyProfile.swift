@@ -13,15 +13,28 @@
 //  `AdaptyProfile(accessLevels:)` unchanged. The type is the same — a non-optional `String`, which
 //  is what makes `AdaptyService.profileId()` answer `nil` only when the PROFILE is missing.
 //
+//  `Decodable` is here because the test-mode layer has no other way in: upstream has no public
+//  memberwise initializer at all, so `TestModeProfile` builds a profile by decoding one. The key
+//  names and the "missing means empty" rule are copied from upstream's own `init(from:)`
+//  (`AdaptyProfile.swift:108-127`, `AdaptyProfile.AccessLevel.swift:114-135`) so that the check
+//  exercises the same JSON the shipping build does.
+//
 
 import Foundation
 
-public struct AdaptyProfile {
-	public struct AccessLevel {
+public struct AdaptyProfile: Decodable {
+	public struct AccessLevel: Decodable {
 		public let id: String
 		public let isActive: Bool
 		public let isLifetime: Bool
 		public let expiresAt: Date?
+
+		enum CodingKeys: String, CodingKey {
+			case id
+			case isActive = "is_active"
+			case isLifetime = "is_lifetime"
+			case expiresAt = "expires_at"
+		}
 
 		public init(id: String, isActive: Bool, isLifetime: Bool, expiresAt: Date?) {
 			self.id = id
@@ -34,8 +47,22 @@ public struct AdaptyProfile {
 	public let profileId: String
 	public let accessLevels: [String: AccessLevel]
 
+	enum CodingKeys: String, CodingKey {
+		case profileId = "profile_id"
+		case accessLevels = "paid_access_levels"
+	}
+
 	public init(profileId: String = "profile-stub", accessLevels: [String: AccessLevel]) {
 		self.profileId = profileId
 		self.accessLevels = accessLevels
+	}
+
+	/// Written by hand rather than synthesized: a profile with no active level carries no
+	/// `paid_access_levels` key at all, and upstream reads that as an empty dictionary rather than an
+	/// error.
+	public init(from decoder: Decoder) throws {
+		let container = try decoder.container(keyedBy: CodingKeys.self)
+		profileId = try container.decode(String.self, forKey: .profileId)
+		accessLevels = try container.decodeIfPresent([String: AccessLevel].self, forKey: .accessLevels) ?? [:]
 	}
 }
