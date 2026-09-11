@@ -121,6 +121,26 @@ enum PremiumResolverCheck {
 			"PM-03 row 23: a denial dated ahead must move the expiry and nothing else, got \(livingLevel)"
 		)
 
-		print("PremiumResolver: 11/11 OK")
+		// 12. PM-03 row 22 — and this assert is green on purpose, because the answer is "leave it". A
+		//     grant that arrived with no date (a lifetime level, or one the dashboard handed out and
+		//     then took back) is cached with `expiresAt == nil`, and after that nothing can close it:
+		//     branch 2 stands before the receipt, and a cache with no date never expires. The user was
+		//     shown that price on 2026-09-11 and took it — lifetime means lifetime, and the rule that
+		//     Adapty never revokes stays whole rather than gaining a narrow exception here. So what is
+		//     pinned below is a decision, not a hole, and the run seven years out is what tells the
+		//     next session that "forever" is meant literally and is not a bug to be fixed.
+		let datelessCache = PremiumState(isPremium: true, source: .adapty, isVerified: true)
+		let sevenYears = now + 7 * 365 * 24 * hour
+		let datelessRuns: [(String, PremiumAccess?)] = [("silence", nil), ("a denial", PremiumAccess(isActive: false))]
+		for (label, answer) in datelessRuns {
+			// The receipt says no outright, which is the strongest "no" left in the resolver — and it
+			// never gets asked, because branch 2 returns first.
+			let later = PremiumResolver.resolve(adapty: answer, apple: ReceiptAnswer(isActive: false, expiresAt: nil), cached: datelessCache, now: sevenYears)
+			assert(later.isPremium, "PM-03 row 22: a dateless cached premium must survive \(label) forever, got \(later.isPremium)")
+			assert(later.expiresAt == nil, "PM-03 row 22: and it must stay dateless — a date appearing here would quietly close it later, got \(String(describing: later.expiresAt))")
+			assert(later.source == .adapty, "PM-03 row 22: the verdict still comes from the cache, expected source .adapty, got \(later.source)")
+		}
+
+		print("PremiumResolver: 12/12 OK")
 	}
 }
