@@ -172,13 +172,12 @@ enum TestModeCheck {
 		assert(TestModeFlagParser.parse(["-adaptyLevelId", "a", "-adaptyLevelId", "b"]).adaptyLevelId == "b", "TM-02 row 6: the last value must win")
 		row()
 
-		// 7. TM-02 row 9: a dash-prefixed name the package does not know is one recorded line naming
-		//    itself — the shape of a rename left half-done. A bare argument is somebody else's value
-		//    and stays silent, or the log would be unreadable in every real run.
+		// 7. TM-02 row 9: the package answers for its own names only. A dash-prefixed name it does not
+		//    know belongs to the app and passes without a word, exactly like a bare argument — a real
+		//    run carries 8–15 of them, and one line each would bury the list the apps assert on.
+		//    A malformed name of OURS still speaks up: that is rows 4 and 5 above.
 		let unknown = TestModeFlagParser.parse(["-storePricesFail", "somefile.mp3", "-premium"])
-		assert(unknown.issues.count == 1, "TM-02 row 9: exactly one issue, got \(unknown.issues)")
-		assert(unknown.issues[0].contains("-storePricesFail"), "TM-02 row 9: the issue must name the flag, got \(unknown.issues[0])")
-		assert(!unknown.issues[0].contains("somefile.mp3"), "TM-02 row 9: a bare argument must not be mentioned anywhere")
+		assert(unknown.issues.isEmpty, "TM-02 row 9: somebody else's flag must pass silently, got \(unknown.issues)")
 		assert(unknown.adapty == .grant, "TM-02 row 9: the rest of the parse must carry on")
 		row()
 
@@ -486,11 +485,14 @@ enum TestModeCheck {
 		row()
 
 		// 30. TM-06 row 5: an unknown KEY is silent — keys belong to the app and the package has
-		//     nothing to check them against. An unknown FLAG is an error. The contrast is the row.
+		//     nothing to check them against. Since the decision of 2026-09-11 an unknown FLAG is silent
+		//     for the same reason: the name is not ours either. What still speaks is a name of OURS
+		//     used wrongly, and that is the contrast the row now draws.
 		ConfigurationIssues.shared.reset()
 		let unknownKey = TestModeFlagParser.parse(["-paywallValue", "somethingNobodyKnows=1"])
 		assert(unknownKey.issues.isEmpty, "TM-06 row 5: an unknown key must not be recorded, got \(unknownKey.issues)")
-		assert(TestModeFlagParser.parse(["-storePricesFail"]).issues.count == 1, "TM-06 row 5: an unknown flag must be")
+		assert(TestModeFlagParser.parse(["-storePricesFail"]).issues.isEmpty, "TM-06 row 5: nor an unknown flag")
+		assert(TestModeFlagParser.parse(["-paywallValue", "somethingNobodyKnows"]).issues.count == 1, "TM-06 row 5: but our own flag used wrongly must be")
 		row()
 
 		// MARK: TM-01 — activation
@@ -501,7 +503,7 @@ enum TestModeCheck {
 		let store = UserDefaultsPremiumStore()
 		store.cached = PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: Date() + hour)
 		let graph = TestModeGraph.make(
-			arguments: ["-noPremiumCache", "-legacyPremium", "-storePricesFail"],
+			arguments: ["-noPremiumCache", "-legacyPremium", "-receiptDelay"],
 			environment: [:],
 			levels: ["premium"],
 			productIds: ["sub.month"],
@@ -509,7 +511,9 @@ enum TestModeCheck {
 		)
 		let issues = ConfigurationIssues.shared.all
 		assert(issues.contains { $0.contains("TEST MODE") }, "TM-01 row 1: the active mode must announce itself, got \(issues)")
-		assert(issues.contains { $0.contains("-storePricesFail") }, "TM-01 row 3: a parse issue must reach the same list, got \(issues)")
+		// A flag of OURS used wrongly — an unrecognised name is somebody else's and passes silently
+		// since the decision of 2026-09-11, so it can no longer stand for "a parse issue travels".
+		assert(issues.contains { $0.contains("-receiptDelay") }, "TM-01 row 3: a parse issue must reach the same list, got \(issues)")
 		assert(graph.store.cached == nil, "TM-03 row 7: -noPremiumCache must wipe the stored verdict before start")
 		assert(graph.store.premium, "TM-02 row 8: -legacyPremium must leave the app's old flag on")
 		store.cached = nil

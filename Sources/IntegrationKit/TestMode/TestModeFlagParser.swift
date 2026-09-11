@@ -100,10 +100,11 @@ enum TestModeFlagParser {
 				continue
 			}
 			guard valueFlags.contains(name) else {
-				// TM-02 row 9: a name that starts with a dash and is not ours is the exact shape of a
-				// rename left half-done, and silence is what made the AISONG suite red without a
-				// readable cause.
-				flags.issues.append("test mode does not know the launch flag \(name) — check it against the approved dictionary (skills/xcuitest/reference/kit-flags.md)")
+				// TM-02 row 9: a leading dash does not make a name ours. Apps pass their own flags
+				// through the same array, so answering for every unknown one would put 8–15 lines into
+				// the very list the apps assert on. The package answers for its own names only — and a
+				// name the dictionary drops in a rename stops being ours the moment it is dropped, so
+				// keeping the retired spelling listed is what would keep that rename visible.
 				continue
 			}
 			// TM-02 row 4: the next element is a value only if there is one and it is not itself a
