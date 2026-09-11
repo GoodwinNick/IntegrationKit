@@ -41,9 +41,23 @@ enum PremiumResolver {
 		// ...and it must not be swallowed by the cached verdict that was written before the purchase.
 		// Dropping `isVerified` is what makes rule 2 let go: a cached "no premium" only holds the
 		// verdict because it was verified, and against a payment that just cleared it is simply old.
-		let cache = localPurchase
-			? cached.map { PremiumState(isPremium: $0.isPremium, source: $0.source, isVerified: false, expiresAt: $0.expiresAt, localPurchase: $0.localPurchase, localPurchaseAt: $0.localPurchaseAt) }
-			: cached
+		//
+		// The expiry is refreshed from Adapty's answer in the same breath (PM-03 row 23, user's rule:
+		// the expiry mirrors the profile). It matters only on a denial — a grant returns from rule 1
+		// long before this is read — and it is what turns "Adapty never revokes" into something other
+		// than "premium is forever": the denial still decides nothing, the date it arrived with does.
+		// Adapty having no date at all leaves the cache's own, which is the honest answer and also the
+		// hole in row 22.
+		let cache = cached.map {
+			PremiumState(
+				isPremium: $0.isPremium,
+				source: $0.source,
+				isVerified: localPurchase ? false : $0.isVerified,
+				expiresAt: adapty?.expiresAt ?? $0.expiresAt,
+				localPurchase: $0.localPurchase,
+				localPurchaseAt: $0.localPurchaseAt
+			)
+		}
 
 		// 1. Adapty grants, and only grants (user's decision, 2026-09-11: "Adapty is only there to
 		//    hand out a custom premium, not to remove an existing one"). A grant counts even when it
@@ -70,6 +84,6 @@ enum PremiumResolver {
 		}
 		// 4. Nobody answered. Whatever reaches here is expired or was never premium, so the verdict
 		//    is always "no premium" — the expiry is carried through so the caller can still see it.
-		return PremiumState(isPremium: false, source: .none, isVerified: false, expiresAt: cached?.expiresAt, localPurchase: false)
+		return PremiumState(isPremium: false, source: .none, isVerified: false, expiresAt: cache?.expiresAt, localPurchase: false)
 	}
 }

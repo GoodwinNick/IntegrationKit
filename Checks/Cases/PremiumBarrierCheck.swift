@@ -970,7 +970,35 @@ enum PremiumBarrierCheck {
 		let clampElapsed = Date().timeIntervalSince(clampStarted)
 		assert(clampElapsed < 0.6, "case 38: the impatient deadline must be clamped to the patient one the app configured, took \(clampElapsed)s")
 
-		print("PremiumService barrier, restore, purchase fallback and prices: 38/38 OK")
+		// 39. PM-03 row 23, the half the resolver cannot see: whether the profile's date reaches the
+		//     verdict at all. `PremiumResolverCheck` case 11 builds a `PremiumAccess` by hand, so it
+		//     stays green even if the Adapty mapping keeps throwing the date away — which is exactly
+		//     what it did until 2026-09-11. Only a real profile, through the real conversion, tells
+		//     the two apart. The level here is inactive and dated in the past: a refunded subscription.
+		let endedStore = SpyStore(cached: PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: now + 10 * hour), premium: true)
+		let endedAdapty = FakeAdapty(answer: nil)
+		let endedService = PremiumService(store: endedStore, adapty: endedAdapty, apple: nil, levels: ["premium"], sourceTimeout: 1)
+		endedService.start()
+		Thread.sleep(forTimeInterval: 0.3)
+		assert(endedService.isPremium == true, "case 39: a live cache and a silent source must leave premium alone, got \(endedService.isPremium)")
+		endedAdapty.premiumObserver?(profile(active: false, expiresAt: now - hour), true)
+		assert(endedService.isPremium == false, "case 39: an ended level's own expiry must reach the verdict and close access, got \(endedService.isPremium)")
+		assert(endedStore.cached?.expiresAt == now - hour, "case 39: the verdict must carry the profile's date, not the cache's, got \(String(describing: endedStore.cached?.expiresAt))")
+		assert(endedStore.notified == 1, "case 39: premium actually flipped, so the app must hear about it exactly once, got \(endedStore.notified)")
+		// The contrast, on the same fixture: the same inactive level dated ahead closes nothing. It is
+		// what keeps the rule "Adapty never revokes" honest — the denial is not what did the closing
+		// above, the date was.
+		let aheadStore = SpyStore(cached: PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: now + 10 * hour), premium: true)
+		let aheadAdapty = FakeAdapty(answer: nil)
+		let aheadService = PremiumService(store: aheadStore, adapty: aheadAdapty, apple: nil, levels: ["premium"], sourceTimeout: 1)
+		aheadService.start()
+		Thread.sleep(forTimeInterval: 0.3)
+		aheadAdapty.premiumObserver?(profile(active: false, expiresAt: now + hour), true)
+		assert(aheadService.isPremium == true, "case 39: an inactive level dated ahead must not close access, got \(aheadService.isPremium)")
+		assert(aheadStore.cached?.expiresAt == now + hour, "case 39: the profile's date replaces the cache's either way, got \(String(describing: aheadStore.cached?.expiresAt))")
+		assert(aheadStore.notified == 0, "case 39: premium never moved, so nothing to announce, got \(aheadStore.notified)")
+
+		print("PremiumService barrier, restore, purchase fallback and prices: 39/39 OK")
 	}
 }
 

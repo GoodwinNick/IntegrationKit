@@ -92,8 +92,8 @@ enum PremiumResolverCheck {
 		// 10. PM-03 row 8, the receipt half. The `<=` rule is written twice, in two files and two
 		//     shapes: `PremiumState.isExpired(at:)` guards the cache branch, and branch 3 compares the
 		//     receipt's own date inline. Case 7 above pins the first. Nothing pinned the second — and
-		//     while the local-purchase mark stands that second comparison is the only thing left that
-		//     can close access at all (invariant 2), so a drift to `<` there would go unnoticed.
+		//     since 2026-09-11 those two comparisons are the only things left in the whole resolver
+		//     that can close access at all, so a drift to `<` there would go unnoticed.
 		let receiptExpiry = now + hour
 		let liveReceipt = ReceiptAnswer(isActive: true, expiresAt: receiptExpiry)
 		let atReceiptBoundary = PremiumResolver.resolve(adapty: nil, apple: liveReceipt, cached: nil, now: receiptExpiry)
@@ -103,6 +103,24 @@ enum PremiumResolverCheck {
 		let beforeReceiptBoundary = PremiumResolver.resolve(adapty: nil, apple: liveReceipt, cached: nil, now: receiptExpiry - 0.001)
 		assert(beforeReceiptBoundary.isPremium, "PM-03 row 8: one millisecond earlier the same receipt still grants, expected isPremium true, got \(beforeReceiptBoundary.isPremium)")
 
-		print("PremiumResolver: 10/10 OK")
+		// 11. PM-03 row 23: the expiry mirrors the Adapty profile, on a denial too. A level that has
+		//     ended still carries a real date — a refund moves it to the refund date — and until
+		//     2026-09-11 the mapping dropped it, so a cache written while the level was live went on
+		//     granting off its own stale date. The rule that Adapty never revokes is untouched: the
+		//     denial closes nothing by itself, the date it brought does, and only once that is past.
+		let staleCache = PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: now + 10 * hour)
+		let endedLevel = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false, expiresAt: now - hour), apple: nil, cached: staleCache, now: now)
+		assert(endedLevel.isPremium == false, "PM-03 row 23: the profile's own expiry, already past, must close access, got \(endedLevel.isPremium)")
+		assert(endedLevel.expiresAt == now - hour, "PM-03 row 23: the verdict must carry Adapty's date, not the cache's, expected \(now - hour), got \(String(describing: endedLevel.expiresAt))")
+		// The half that proves it was the date and not something else: the very same denial, dated
+		// ahead, changes nothing but the expiry. Without this run the assert above would be green off
+		// ordinary cache expiry, which has nothing to do with the profile.
+		let livingLevel = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false, expiresAt: now + hour), apple: nil, cached: staleCache, now: now)
+		assert(
+			livingLevel == PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: now + hour),
+			"PM-03 row 23: a denial dated ahead must move the expiry and nothing else, got \(livingLevel)"
+		)
+
+		print("PremiumResolver: 11/11 OK")
 	}
 }

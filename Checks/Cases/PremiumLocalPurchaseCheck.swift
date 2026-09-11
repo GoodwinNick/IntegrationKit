@@ -251,8 +251,9 @@ enum PremiumLocalPurchaseCheck {
 		// cache present. Every other marked case above takes its mark from `cached.localPurchase` and
 		// leaves the parameter false, so the cache demotion has never once run against a live
 		// verified denial — the gap looked closed because its two halves were covered apart.
-		// The denial must change nothing: `!mark` keeps branch 1 shut, the demoted denial-cache is
-		// disqualified from branch 2, and the mark's own receipt opens access.
+		// The denial must change nothing — since 2026-09-11 that part is free, because branch 1 has no
+		// denial exit at all. What this pair still earns its keep for is the other half: the demoted
+		// denial-cache has to be disqualified from branch 2 so the mark's own receipt can open access.
 		// (Numbered past part B: the pair was added after both parts were already written.)
 		let deniedCache = PremiumState(isPremium: false, source: .adapty, isVerified: true, expiresAt: nil, localPurchase: false)
 		let t21 = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false), apple: nil, cached: deniedCache, localPurchase: true, now: now)
@@ -260,8 +261,8 @@ enum PremiumLocalPurchaseCheck {
 		check(t21.source == .apple, "PM-03 rows 7+10: the verdict comes from the purchase, expected source .apple, got \(t21.source)")
 		check(t21.localPurchase == true, "PM-03 rows 7+10: expected the mark to survive the denial, localPurchase true, got \(t21.localPurchase)")
 
-		// T22 — the other half, and it is not decoration. With only T21 the `!mark` branch could be
-		// "fixed" by never reaching it at all. Same cache, same mark, Adapty silent instead of
+		// T22 — the other half, and it is not decoration. With only T21 the demotion could be "fixed"
+		// by never reaching the denial at all. Same cache, same mark, Adapty silent instead of
 		// denying: the verdict has to be identical, and that identity is what proves the denial was
 		// ignored rather than simply absent.
 		let t22 = PremiumResolver.resolve(adapty: nil, apple: nil, cached: deniedCache, localPurchase: true, now: now)
@@ -270,7 +271,9 @@ enum PremiumLocalPurchaseCheck {
 		// MARK: - Part A2: the mark's birth date and ageing (PM-03 rows 19-21).
 
 		// The window the mark opens had no way to close except Adapty's own confirmation, which may
-		// never arrive — that was the eternal premium. These five pin the second stop.
+		// never arrive — that was the eternal premium, and the ageing was the second stop. Since
+		// 2026-09-11 there is no first stop left for it to back up, so these five pin the arithmetic
+		// itself: when the mark is dropped, when its date is kept, when a fresh one is stamped.
 		let day: TimeInterval = 24 * 3600
 		let markedPremium = { (since: Date?) in
 			PremiumState(isPremium: true, source: .apple, isVerified: false, expiresAt: nil, localPurchase: true, localPurchaseAt: since)
@@ -307,11 +310,12 @@ enum PremiumLocalPurchaseCheck {
 		let t26 = PremiumResolver.resolve(adapty: nil, apple: nil, cached: markedPremium(t24Since), localPurchase: true, now: now)
 		check(t26.localPurchaseAt == t24Since, "PM-03 row 20: re-asserting a live mark must not move its date, expected \(t24Since), got \(String(describing: t26.localPurchaseAt))")
 
-		// T27 — PM-03 row 20, the case that keeps row 19 from overshooting: once the old mark has
-		// aged out, a genuinely new purchase opens its own window rather than inheriting a deadline
-		// that has already passed.
+		// T27 — PM-03 row 20, the case that keeps row 19 from overshooting: once the old mark has aged
+		// out, a genuinely new purchase opens its own window rather than inheriting a deadline that
+		// has already passed. The date is the assertion; `isPremium` would be true here from the cache
+		// alone and proves nothing about the mark.
 		let t27 = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false), apple: nil, cached: markedPremium(now - 8 * day), localPurchase: true, now: now)
-		check(t27.isPremium == true, "PM-03 row 20: a new purchase after the old mark aged out must still be protected — expected isPremium true, got \(t27.isPremium)")
+		check(t27.localPurchase == true, "PM-03 row 20: a new purchase after the old mark aged out must carry its own mark, expected localPurchase true, got \(t27.localPurchase)")
 		check(t27.localPurchaseAt == now, "PM-03 row 20: the new purchase starts its own window, expected \(now), got \(String(describing: t27.localPurchaseAt))")
 
 		// MARK: - Part B: PremiumService, with mocks.
