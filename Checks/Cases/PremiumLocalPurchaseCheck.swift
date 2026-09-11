@@ -264,6 +264,50 @@ enum PremiumLocalPurchaseCheck {
 		let t22 = PremiumResolver.resolve(adapty: nil, apple: nil, cached: deniedCache, localPurchase: true, now: now)
 		check(t22 == t21, "PM-03 rows 7+10: silence and a verified denial must give the same verdict under a standing mark — expected \(t21), got \(t22)")
 
+		// MARK: - Part A2: the mark's birth date and ageing (PM-03 rows 19-21).
+
+		// The window the mark opens had no way to close except Adapty's own confirmation, which may
+		// never arrive — that was the eternal premium. These five pin the second stop.
+		let day: TimeInterval = 24 * 3600
+		let markedPremium = { (since: Date?) in
+			PremiumState(isPremium: true, source: .apple, isVerified: false, expiresAt: nil, localPurchase: true, localPurchaseAt: since)
+		}
+
+		// T23 — PM-03 row 19: past the deadline the mark stops demoting Adapty, and the verified
+		// denial it was holding back finally lands. This is the whole point: without it, a receipt
+		// that brought no date plus an Adapty that never confirms means premium forever.
+		let t23 = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false), apple: nil, cached: markedPremium(now - 8 * day), now: now)
+		check(t23.isPremium == false, "PM-03 row 19: a mark past its deadline must stop demoting Adapty — expected isPremium false, got \(t23.isPremium)")
+		check(t23.localPurchase == false, "PM-03 row 19: the expired mark must be cleared, expected localPurchase false, got \(t23.localPurchase)")
+		check(t23.localPurchaseAt == nil, "PM-03 row 19: no mark means no date, expected nil, got \(String(describing: t23.localPurchaseAt))")
+
+		// T24 — PM-03 row 19, the other side of the same deadline: one day short of it the mark still
+		// works exactly as before, and its date comes through untouched.
+		let t24Since = now - 6 * day
+		let t24 = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false), apple: nil, cached: markedPremium(t24Since), now: now)
+		check(t24.isPremium == true, "PM-03 row 19: a mark inside its deadline must still hold — expected isPremium true, got \(t24.isPremium)")
+		check(t24.localPurchaseAt == t24Since, "PM-03 row 20: the birth date must come through unchanged, expected \(t24Since), got \(String(describing: t24.localPurchaseAt))")
+
+		// T25 — PM-03 row 21: a cache written before 0.6.0 carries the mark without a date. Reading
+		// that as "infinitely old" would take premium away from live payers on the upgrade alone, so
+		// it counts as brand new and gets stamped once, here.
+		let t25 = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false), apple: nil, cached: markedPremium(nil), now: now)
+		check(t25.isPremium == true, "PM-03 row 21: a dateless mark counts as brand new — expected isPremium true, got \(t25.isPremium)")
+		check(t25.localPurchaseAt == now, "PM-03 row 21: the missing date is stamped with the current moment, expected \(now), got \(String(describing: t25.localPurchaseAt))")
+
+		// T26 — PM-03 row 20: the same unfinished transaction is handed over by the payment queue on
+		// every launch. It re-asserts the mark, and the date must NOT move — otherwise one repeating
+		// event pushes the deadline out forever and the ageing never happens.
+		let t26 = PremiumResolver.resolve(adapty: nil, apple: nil, cached: markedPremium(t24Since), localPurchase: true, now: now)
+		check(t26.localPurchaseAt == t24Since, "PM-03 row 20: re-asserting a live mark must not move its date, expected \(t24Since), got \(String(describing: t26.localPurchaseAt))")
+
+		// T27 — PM-03 row 20, the case that keeps row 19 from overshooting: once the old mark has
+		// aged out, a genuinely new purchase opens its own window rather than inheriting a deadline
+		// that has already passed.
+		let t27 = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false), apple: nil, cached: markedPremium(now - 8 * day), localPurchase: true, now: now)
+		check(t27.isPremium == true, "PM-03 row 20: a new purchase after the old mark aged out must still be protected — expected isPremium true, got \(t27.isPremium)")
+		check(t27.localPurchaseAt == now, "PM-03 row 20: the new purchase starts its own window, expected \(now), got \(String(describing: t27.localPurchaseAt))")
+
 		// MARK: - Part B: PremiumService, with mocks.
 
 		// T13 — PM-04 row 9: Adapty asks for the StoreKit fallback and the fallback purchase
@@ -360,7 +404,7 @@ enum PremiumLocalPurchaseCheck {
 		check(t20Result?.first(where: { $0.id == "b" })?.localizedPrice == "$2.99", "PM-07 row 9: expected product 'b' priced at the store's $2.99, got \(String(describing: t20Result?.first(where: { $0.id == "b" })?.localizedPrice))")
 
 		if failures.isEmpty {
-			print("PremiumService local-purchase mark (PM-03/04/05/07/08): 22/22 OK")
+			print("PremiumService local-purchase mark (PM-03/04/05/07/08): 27/27 OK")
 		} else {
 			print("\(failures.count) check(s) failed:")
 			for failure in failures {

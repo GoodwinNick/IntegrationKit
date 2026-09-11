@@ -526,9 +526,17 @@ enum PremiumBarrierCheck {
 		freshBuyService.purchase("year.sub", placement: "main") { freshBuyOutcome = $0 }
 		assert(wait { freshBuyOutcome != nil }, "case 19: purchase must call back")
 		assert(freshBuyOutcome == .purchased, "case 19: the Adapty answer is passed through, expected .purchased, got \(String(describing: freshBuyOutcome))")
+		let freshBuyCached = freshBuyStore.cached
 		assert(
-			freshBuyStore.cached == PremiumState(isPremium: true, source: .apple, isVerified: false, expiresAt: nil, localPurchase: true),
-			"case 19: a stale verified denial must not swallow a fresh purchase, expected unverified premium from .apple, got \(String(describing: freshBuyStore.cached))"
+			freshBuyCached?.isPremium == true && freshBuyCached?.source == .apple && freshBuyCached?.isVerified == false && freshBuyCached?.expiresAt == nil && freshBuyCached?.localPurchase == true,
+			"case 19: a stale verified denial must not swallow a fresh purchase, expected unverified premium from .apple, got \(String(describing: freshBuyCached))"
+		)
+		// The mark is stamped when it is set — PM-03 gives it a birth date so the window it opens
+		// cannot stay open forever. It is checked for being present and young rather than compared to
+		// a literal, because the resolver reads its own clock.
+		assert(
+			freshBuyCached?.localPurchaseAt.map { abs($0.timeIntervalSinceNow) < 5 } == true,
+			"case 19: a fresh mark must carry its birth date, got \(String(describing: freshBuyCached?.localPurchaseAt))"
 		)
 		assert(freshBuyStore.writes == 1, "case 19: exactly 1 write, got \(freshBuyStore.writes)")
 		assert(freshBuyStore.notified == 1, "case 19: exactly 1 .premiumDidChange, got \(freshBuyStore.notified)")

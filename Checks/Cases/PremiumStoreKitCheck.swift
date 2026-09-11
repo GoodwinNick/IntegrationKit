@@ -342,7 +342,11 @@ enum PremiumStoreKitCheck {
 		// writes proves nothing on its own — it is exactly what a delivery that never arrived would
 		// look like too — so the row also pins that the resolve ran all the way out to the receipt.
 		let markedStoreKit = StoreKitService(sharedSecret: "shared-secret", productIds: ["year.sub"])
-		let markedStore = SpyStore(cached: PremiumState(isPremium: true, source: .apple, isVerified: false, expiresAt: nil, localPurchase: true), premium: true)
+		// The mark carries its birth date, as every cache written by 0.6.0 or later does. Without one
+		// the resolver would stamp it on this very resolve and the state would differ from the cache —
+		// a write, and a true one: that is the legacy-cache migration, pinned separately in
+		// `premium-local-purchase-check.sh`, not the re-delivery this row is about.
+		let markedStore = SpyStore(cached: PremiumState(isPremium: true, source: .apple, isVerified: false, expiresAt: nil, localPurchase: true, localPurchaseAt: now), premium: true)
 		let markedService = PremiumService(store: markedStore, adapty: nil, apple: markedStoreKit, levels: ["premium"], sourceTimeout: 1)
 		markedStoreKit.completeTransactions { [weak markedService] in markedService?.purchaseDelivered() }
 		check(wait { SwiftyStoreKit.verifyReceiptCallCount == 1 }, "PM-08 row 10: the delivery must actually reach a resolve — expected the receipt to be checked once, got \(SwiftyStoreKit.verifyReceiptCallCount)")
