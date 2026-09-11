@@ -36,10 +36,19 @@ final class PremiumService: PremiumServicing {
 	/// into a process that has asked nobody, and every new field in that struct costs a one-time
 	/// migration write (the PM-02 note on `Equatable`).
 	private var isQuestionOpen: Bool
-	/// How long `refresh()` waits for one source before deciding without it. Five seconds is a
-	/// number from practice, not a guarantee Adapty documents — an app on a worse network passes
-	/// its own instead of patching the package.
+	/// How long a source gets when nobody is waiting for the answer. Five seconds is a number from
+	/// practice, not a guarantee Adapty documents — an app on a worse network passes its own
+	/// instead of patching the package.
 	private let sourceTimeout: TimeInterval
+	/// PM-02: the same deadline for the call sites where a person is looking at the screen — the
+	/// splash at cold start, and the paywall a purchase or a restore was just started from.
+	///
+	/// Being impatient there costs nothing, and that is a condition rather than a coincidence:
+	/// after a purchase the verdict is held by the local-purchase mark, so Adapty's answer would
+	/// be ignored anyway, and at start an Adapty that did not make it leaves the question open —
+	/// the next foreground asks again, patiently. Never longer than `sourceTimeout`, or the two
+	/// names would be lying.
+	private let waitingTimeout: TimeInterval
 
 	init(
 		store: PremiumStateStoring = UserDefaultsPremiumStore(),
@@ -47,6 +56,7 @@ final class PremiumService: PremiumServicing {
 		apple: AppleSubscribing? = nil,
 		levels: Set<String> = ["premium"],
 		sourceTimeout: TimeInterval = 5,
+		waitingTimeout: TimeInterval = 2,
 		productIds: Set<String> = []
 	) {
 		self.store = store
@@ -54,6 +64,7 @@ final class PremiumService: PremiumServicing {
 		self.apple = apple
 		self.levels = levels
 		self.sourceTimeout = sourceTimeout
+		self.waitingTimeout = min(waitingTimeout, sourceTimeout)
 		self.productIds = productIds
 		// PM-02 row 9: an app built without Adapty has nobody to wait for. Its question is closed
 		// before it is ever asked, so returning to the foreground costs it nothing.
@@ -91,18 +102,25 @@ final class PremiumService: PremiumServicing {
 			guard let self else { return }
 			self.apply(adapty: PremiumAccess(profile: profile, levels: self.levels, isVerified: isVerified))
 		}
-		refresh()
+		// PM-02: the impatient deadline. The splash is waiting behind this one, and a source that
+		// does not make it leaves the question open rather than unanswered for good.
+		refresh(timeout: waitingTimeout)
 	}
 
 	/// PM-02: one barrier instead of two in-flight flags. Both sources are asked at once and the
 	/// verdict is taken when both have answered — one resolve, one store write, one notification.
-	/// A source that never answers costs `sourceTimeout` and nothing more: there is no flag left
+	/// A source that never answers costs its own deadline and nothing more: there is no flag left
 	/// raised, so it cannot block any later `refresh()`.
 	///
 	/// An intermediate state no longer exists either: the receipt cannot land first, flash a
 	/// value at the UI, and be overwritten by Adapty a moment later.
 	func refresh() {
-		Task { [weak self] in await self?.resolveBoth() }
+		refresh(timeout: sourceTimeout)
+	}
+
+	/// The same barrier with the deadline the call site chose — `start()` is the impatient one.
+	private func refresh(timeout: TimeInterval) {
+		Task { [weak self] in await self?.resolveBoth(timeout: timeout) }
 	}
 
 	/// PM-02 row 7: the app came back to the foreground. A barrier where nobody answered leaves the
@@ -130,25 +148,26 @@ final class PremiumService: PremiumServicing {
 	///
 	/// `localPurchase` marks that a purchase or a StoreKit restore has just gone through on this
 	/// device. That is a receipt saying yes, newer than any check we could run — see `apply`.
-	private func resolveBoth(localPurchase: Bool = false) async {
-		async let adaptyAnswer = askAdapty()
-		async let appleAnswer = askApple()
+	private func resolveBoth(localPurchase: Bool = false, timeout: TimeInterval? = nil) async {
+		let deadline = timeout ?? sourceTimeout
+		async let adaptyAnswer = askAdapty(timeout: deadline)
+		async let appleAnswer = askApple(timeout: deadline)
 		let (access, receipt) = await (adaptyAnswer, appleAnswer)
 		apply(adapty: access, apple: receipt, localPurchase: localPurchase)
 	}
 
-	/// `nil` means Adapty did not answer — an error, no source at all, or slower than
-	/// `sourceTimeout`. Never "no premium": that is `PremiumAccess(isActive: false)`.
-	private func askAdapty() async -> PremiumAccess? {
+	/// `nil` means Adapty did not answer — an error, no source at all, or slower than the deadline.
+	/// Never "no premium": that is `PremiumAccess(isActive: false)`.
+	private func askAdapty(timeout: TimeInterval) async -> PremiumAccess? {
 		guard let adapty else { return nil }
-		let profile = await withTimeout(sourceTimeout) { await adapty.profile() }
+		let profile = await withTimeout(timeout) { await adapty.profile() }
 		return profile.flatMap { $0 }.map { PremiumAccess(profile: $0, levels: levels) }
 	}
 
 	/// `nil` means the receipt could not be checked, in time or at all — never "no subscription".
-	private func askApple() async -> ReceiptAnswer? {
+	private func askApple(timeout: TimeInterval) async -> ReceiptAnswer? {
 		guard let apple else { return nil }
-		return await withTimeout(sourceTimeout) { await apple.checkReceipt() }.flatMap { $0 }
+		return await withTimeout(timeout) { await apple.checkReceipt() }.flatMap { $0 }
 	}
 
 	/// PM-06: Adapty answered about the premium access level. The delegate push (`didLoadLatestProfile`)
@@ -218,11 +237,14 @@ final class PremiumService: PremiumServicing {
 			DispatchQueue.main.async { completion(.failed) }
 			return
 		}
+		// PM-02: the paywall the restore was started from is still on screen, so the barrier behind
+		// it gets the impatient deadline.
+		let deadline = waitingTimeout
 		Task { [weak self] in
 			// No timeout around this one on purpose: StoreKit may be showing an account prompt,
 			// and there is no continuation to leak — the deadline guard belongs to the sources.
 			let outcome = await apple.restore()
-			await self?.resolveBoth(localPurchase: outcome == .restored)
+			await self?.resolveBoth(localPurchase: outcome == .restored, timeout: deadline)
 			DispatchQueue.main.async { completion(outcome) }
 		}
 	}
@@ -246,6 +268,10 @@ final class PremiumService: PremiumServicing {
 			DispatchQueue.main.async { completion(.failed) }
 			return
 		}
+		// PM-02: same as `restore` — the user just paid and is watching the paywall wait. And the
+		// verdict behind this barrier is held by the mark anyway, so a slow Adapty has nothing to
+		// add to it.
+		let deadline = waitingTimeout
 		Task { [weak self] in
 			let outcome: PurchaseOutcome
 			// Whether this device just paid for something. Drives the local-purchase mark, which
@@ -292,7 +318,7 @@ final class PremiumService: PremiumServicing {
 				// `didPay` as the mark above on purpose: one condition, not two that drift apart.
 				adapty.setProfileValue(value: placement, key: "purchasePlace")
 			}
-			await self?.resolveBoth(localPurchase: didPay)
+			await self?.resolveBoth(localPurchase: didPay, timeout: deadline)
 			self?.endPurchase()
 			DispatchQueue.main.async { completion(outcome) }
 		}

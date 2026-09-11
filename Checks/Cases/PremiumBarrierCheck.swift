@@ -902,7 +902,60 @@ enum PremiumBarrierCheck {
 		assert(wait { noWaitService.isPremium }, "case 36: refresh() must still resolve the receipt — the flag stopped the foreground retry, not the service")
 		assert(noWaitStore.writes == 1, "case 36: exactly 1 write, got \(noWaitStore.writes)")
 
-		print("PremiumService barrier, restore, purchase fallback and prices: 36/36 OK")
+		// 37. PM-02 rows 11 and 12: the deadline is chosen by the call site. `start()` has the splash
+		//     behind it and gives up early; the app's own `refresh()` is in no hurry and waits the
+		//     full one. The second half is what makes the first safe rather than a trade of accuracy
+		//     for speed: the source that did not make it left the question open, so the foreground
+		//     retry gets, patiently, the answer the impatient start missed.
+		let hurryStore = SpyStore(cached: .free)
+		let hurryAdapty = FakeAdapty(answer: profile(active: true, expiresAt: now + hour), delay: 0.5)
+		let hurryService = PremiumService(store: hurryStore, adapty: hurryAdapty, apple: FakeApple(receipt: nil), levels: ["premium"], sourceTimeout: 1.5, waitingTimeout: 0.15)
+		hurryService.start()
+		Thread.sleep(forTimeInterval: 0.3)
+		assert(hurryService.isPremium == false, "case 37: start() must not wait out a source slower than the impatient deadline, got \(hurryService.isPremium)")
+		assert(hurryStore.writes == 0, "case 37: it resolved to the cached free verdict — expected 0 writes, got \(hurryStore.writes)")
+		// Past the source's own delay: an answer that missed its deadline is dropped, not applied late.
+		Thread.sleep(forTimeInterval: 0.4)
+		assert(hurryService.isPremium == false, "case 37: an answer that missed the deadline must not land afterwards, got \(hurryService.isPremium)")
+		// The same source, the same delay, the patient deadline — this one waits for it.
+		let patientStarted = Date()
+		hurryService.refreshIfUnanswered()
+		assert(wait { hurryService.isPremium }, "case 37: the question stayed open, so the patient retry must get the answer the impatient start missed")
+		let patientElapsed = Date().timeIntervalSince(patientStarted)
+		assert(patientElapsed >= 0.5, "case 37: the patient deadline must actually wait out the 0.5s source, took \(patientElapsed)s")
+		assert(hurryStore.cached?.source == .adapty, "case 37: and the verdict is Adapty's, got \(String(describing: hurryStore.cached?.source))")
+
+		// 38. PM-02 rows 11 and 13: `restore` awaits the barrier before calling back, so the barrier's
+		//     deadline IS the user's wait. A source slower than the impatient one must not hold the
+		//     completion — and the verdict does not need it anyway: the restore's own mark decided.
+		let restoreSlowAdapty = FakeAdapty(answer: profile(active: false), delay: 1.0)
+		let restoreSlowApple = FakeApple(receipt: nil)
+		restoreSlowApple.restoreResult = .restored
+		let restoreSlowStore = SpyStore(cached: .free)
+		let restoreSlowService = PremiumService(store: restoreSlowStore, adapty: restoreSlowAdapty, apple: restoreSlowApple, levels: ["premium"], sourceTimeout: 3, waitingTimeout: 0.2)
+		var restoreSlowOutcome: RestoreOutcome?
+		let restoreSlowStarted = Date()
+		restoreSlowService.restore { restoreSlowOutcome = $0 }
+		assert(wait { restoreSlowOutcome != nil }, "case 38: restore must call back")
+		let restoreSlowElapsed = Date().timeIntervalSince(restoreSlowStarted)
+		assert(restoreSlowElapsed < 0.6, "case 38: a source slower than the impatient deadline must not hold the completion, took \(restoreSlowElapsed)s")
+		assert(restoreSlowOutcome == .restored, "case 38: the restore outcome is passed through, got \(String(describing: restoreSlowOutcome))")
+		assert(restoreSlowService.isPremium == true, "case 38: the mark decides the verdict without waiting for Adapty, got \(restoreSlowService.isPremium)")
+
+		// Row 13: an app that configured the patient deadline SHORTER than the impatient default.
+		// The impatient one can never be the longer of the two, or both names are lying — it is
+		// clamped, and this restore must still come back inside the 0.2s the app asked for.
+		let clampApple = FakeApple(receipt: nil)
+		clampApple.restoreResult = .restored
+		let clampService = PremiumService(store: SpyStore(cached: .free), adapty: FakeAdapty(answer: profile(active: false), delay: 1.0), apple: clampApple, levels: ["premium"], sourceTimeout: 0.2, waitingTimeout: 2)
+		var clampOutcome: RestoreOutcome?
+		let clampStarted = Date()
+		clampService.restore { clampOutcome = $0 }
+		assert(wait { clampOutcome != nil }, "case 38: the restore must call back")
+		let clampElapsed = Date().timeIntervalSince(clampStarted)
+		assert(clampElapsed < 0.6, "case 38: the impatient deadline must be clamped to the patient one the app configured, took \(clampElapsed)s")
+
+		print("PremiumService barrier, restore, purchase fallback and prices: 38/38 OK")
 	}
 }
 
