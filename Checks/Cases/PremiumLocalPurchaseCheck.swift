@@ -202,8 +202,9 @@ enum PremiumLocalPurchaseCheck {
 		let t6 = PremiumResolver.resolve(adapty: PremiumAccess(isActive: true, expiresAt: now + hour), apple: nil, cached: nil, localPurchase: false, now: now)
 		check(t6.localPurchase == false, "PM-03 row 15: expected localPurchase false, got \(t6.localPurchase)")
 
-		// T7 — PM-03 row 16: the receipt's own expiresAt must survive branch 3. Today it is
-		// hardcoded to nil — a pre-existing bug this row pins, not something this task introduces.
+		// T7 — PM-03 row 16: the receipt's own expiresAt must survive branch 3. It does — branch 3
+		// carries `receipt.expiresAt` into the verdict. (This comment used to claim the date was
+		// hardcoded to nil; that was true before row 16 was fixed and has been stale since.)
 		let t7 = PremiumResolver.resolve(adapty: nil, apple: ReceiptAnswer(isActive: true, expiresAt: now + hour), cached: nil, now: now)
 		check(t7.isPremium == true, "PM-03 row 16: expected isPremium true, got \(t7.isPremium)")
 		check(t7.expiresAt == now + hour, "PM-03 row 16: branch 3 must carry the receipt's expiresAt through — expected \(now + hour), got \(String(describing: t7.expiresAt))")
@@ -241,6 +242,27 @@ enum PremiumLocalPurchaseCheck {
 		let t12 = PremiumResolver.resolve(adapty: nil, apple: nil, cached: t12Cached, now: now)
 		check(t12.isPremium == false, "PM-03 row 13 (expired): an expired cache must not grant premium even when marked — expected isPremium false, got \(t12.isPremium)")
 		check(t12.localPurchase == false, "PM-03 row 13 (expired): the mark must not survive an expired cache — expected localPurchase false, got \(t12.localPurchase)")
+
+		// T21 — PM-03 rows 7 and 10 crossed, and the one combination no table here ever fed: a
+		// verified Adapty denial arriving in the SAME call as a mark passed by PARAMETER, with a
+		// cache present. Every other marked case above takes its mark from `cached.localPurchase` and
+		// leaves the parameter false, so the cache demotion has never once run against a live
+		// verified denial — the gap looked closed because its two halves were covered apart.
+		// The denial must change nothing: `!mark` keeps branch 1 shut, the demoted denial-cache is
+		// disqualified from branch 2, and the mark's own receipt opens access.
+		// (Numbered past part B: the pair was added after both parts were already written.)
+		let deniedCache = PremiumState(isPremium: false, source: .adapty, isVerified: true, expiresAt: nil, localPurchase: false)
+		let t21 = PremiumResolver.resolve(adapty: PremiumAccess(isActive: false), apple: nil, cached: deniedCache, localPurchase: true, now: now)
+		check(t21.isPremium == true, "PM-03 rows 7+10: a verified denial must not swallow a purchase that just went through — expected isPremium true, got \(t21.isPremium)")
+		check(t21.source == .apple, "PM-03 rows 7+10: the verdict comes from the purchase, expected source .apple, got \(t21.source)")
+		check(t21.localPurchase == true, "PM-03 rows 7+10: expected the mark to survive the denial, localPurchase true, got \(t21.localPurchase)")
+
+		// T22 — the other half, and it is not decoration. With only T21 the `!mark` branch could be
+		// "fixed" by never reaching it at all. Same cache, same mark, Adapty silent instead of
+		// denying: the verdict has to be identical, and that identity is what proves the denial was
+		// ignored rather than simply absent.
+		let t22 = PremiumResolver.resolve(adapty: nil, apple: nil, cached: deniedCache, localPurchase: true, now: now)
+		check(t22 == t21, "PM-03 rows 7+10: silence and a verified denial must give the same verdict under a standing mark — expected \(t21), got \(t22)")
 
 		// MARK: - Part B: PremiumService, with mocks.
 
@@ -338,7 +360,7 @@ enum PremiumLocalPurchaseCheck {
 		check(t20Result?.first(where: { $0.id == "b" })?.localizedPrice == "$2.99", "PM-07 row 9: expected product 'b' priced at the store's $2.99, got \(String(describing: t20Result?.first(where: { $0.id == "b" })?.localizedPrice))")
 
 		if failures.isEmpty {
-			print("PremiumService local-purchase mark (PM-03/04/05/07/08): 20/20 OK")
+			print("PremiumService local-purchase mark (PM-03/04/05/07/08): 22/22 OK")
 		} else {
 			print("\(failures.count) check(s) failed:")
 			for failure in failures {

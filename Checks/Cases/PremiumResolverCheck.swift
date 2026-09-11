@@ -83,6 +83,20 @@ enum PremiumResolverCheck {
 		assert(networkDenial.isPremium == false, "PM-03 row 18: the very same denial, verified, must revoke — expected isPremium false, got \(networkDenial.isPremium)")
 		assert(networkDenial.source == .adapty, "PM-03 row 18: a verified denial is Adapty's own verdict, expected source .adapty, got \(networkDenial.source)")
 
-		print("PremiumResolver: 9/9 OK")
+		// 10. PM-03 row 8, the receipt half. The `<=` rule is written twice, in two files and two
+		//     shapes: `PremiumState.isExpired(at:)` guards the cache branch, and branch 3 compares the
+		//     receipt's own date inline. Case 7 above pins the first. Nothing pinned the second — and
+		//     while the local-purchase mark stands that second comparison is the only thing left that
+		//     can close access at all (invariant 2), so a drift to `<` there would go unnoticed.
+		let receiptExpiry = now + hour
+		let liveReceipt = ReceiptAnswer(isActive: true, expiresAt: receiptExpiry)
+		let atReceiptBoundary = PremiumResolver.resolve(adapty: nil, apple: liveReceipt, cached: nil, now: receiptExpiry)
+		assert(atReceiptBoundary.isPremium == false, "PM-03 row 8: at the receipt's expiresAt == now premium is already gone, expected isPremium false, got \(atReceiptBoundary.isPremium)")
+		assert(atReceiptBoundary.source == .none, "PM-03 row 8: a receipt that closed access is not a source of premium, expected source .none, got \(atReceiptBoundary.source)")
+		assert(atReceiptBoundary.expiresAt == receiptExpiry, "PM-03 row 8: the receipt's expiry is carried through even when it closed access, expected \(receiptExpiry), got \(String(describing: atReceiptBoundary.expiresAt))")
+		let beforeReceiptBoundary = PremiumResolver.resolve(adapty: nil, apple: liveReceipt, cached: nil, now: receiptExpiry - 0.001)
+		assert(beforeReceiptBoundary.isPremium, "PM-03 row 8: one millisecond earlier the same receipt still grants, expected isPremium true, got \(beforeReceiptBoundary.isPremium)")
+
+		print("PremiumResolver: 10/10 OK")
 	}
 }
