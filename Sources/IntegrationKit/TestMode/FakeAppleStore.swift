@@ -38,7 +38,9 @@ final class FakeAppleStore: AppleSubscribing {
 				debugLog(tag: Self.tag, "receipt not checked — the verdict is built without it")
 				return nil
 			case .valid:
-				return ReceiptAnswer(isActive: true, expiresAt: Date().addingTimeInterval(30 * 24 * 3600))
+				// -receiptExpiresIn overrides the fixed 30 days — the only way a test can make the
+				// cache hold a date it can outlive, rather than one 30 days out (AISONG SPL02).
+				return ReceiptAnswer(isActive: true, expiresAt: Date().addingTimeInterval(flags.receiptExpiresIn ?? 30 * 24 * 3600))
 			case .expired:
 				return ReceiptAnswer(isActive: false, expiresAt: Date().addingTimeInterval(-24 * 3600))
 		}
