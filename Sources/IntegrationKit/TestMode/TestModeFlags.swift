@@ -61,6 +61,11 @@ struct TestModeFlags {
 
 	var receipt: Receipt = .unknown
 	var receiptDelay: TimeInterval = 0.5
+	/// Overrides the fixed 30-day window a `.valid` receipt answers with. `nil` leaves that
+	/// default untouched; set only through `-receiptExpiresIn`, and read only in the `.valid`
+	/// case — a cache with a controllable expiry is otherwise unreachable, every grant handing
+	/// out a month at once (AISONG SPL02).
+	var receiptExpiresIn: TimeInterval?
 	var pendingTransaction = false
 
 	var purchase: PurchaseResult = .succeeds

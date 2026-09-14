@@ -18,6 +18,7 @@ enum TestModeFlagParser {
 		"-premiumAfter",
 		"-noPremiumAfter",
 		"-receiptDelay",
+		"-receiptExpiresIn",
 		"-storePurchaseDelay",
 		"-paywallValue",
 		"-remoteConfig",
@@ -125,6 +126,8 @@ enum TestModeFlagParser {
 					flags.noPremiumAfter = seconds(raw, flag: name, into: &flags)
 				case "-receiptDelay":
 					flags.receiptDelay = seconds(raw, flag: name, into: &flags) ?? flags.receiptDelay
+				case "-receiptExpiresIn":
+					flags.receiptExpiresIn = seconds(raw, flag: name, into: &flags)
 				case "-storePurchaseDelay":
 					flags.purchaseDelay = seconds(raw, flag: name, into: &flags) ?? flags.purchaseDelay
 				case "-paywallValue":
