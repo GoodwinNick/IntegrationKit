@@ -562,6 +562,29 @@ enum TestModeCheck {
 		assert(externalLines.last == "kit_event|{}", "EVT01: the sink's own line must append after it, got \(externalLines)")
 		row()
 
-		print("TestMode: \(passed)/33 OK")
+		// 34. PAY01 / TM-05 row 7: id decides period and price too, not just "a price exists" — a
+		//     paywall that buckets by period needs both buckets non-empty and actually different.
+		let periodPriced = layer([], productIds: ["sub.month", "sub.year"])
+		var periodPrices: [PremiumProduct] = []
+		periodPriced.service.products(placement: "main") { periodPrices = $0 }
+		assert(waitUntil({ periodPrices.count == 2 }), "PAY01: both products must price")
+		let month = periodPrices.first { $0.id == "sub.month" }
+		let year = periodPrices.first { $0.id == "sub.year" }
+		assert(month?.subscriptionPeriod?.unit == .month, "PAY01: an id naming month must get a month period, got \(String(describing: month?.subscriptionPeriod))")
+		assert(year?.subscriptionPeriod?.unit == .year, "PAY01: an id naming year must get a year period, got \(String(describing: year?.subscriptionPeriod))")
+		assert(month?.price != year?.price, "PAY01: two different periods must not share one price")
+		// The exact ids from the regression this row exists for (AI Logo Generator, 2026-09-14).
+		let logoPriced = layer([], productIds: ["e_trial_month_sub", "e_year_sub"])
+		var logoPrices: [PremiumProduct] = []
+		logoPriced.service.products(placement: "main") { logoPrices = $0 }
+		assert(waitUntil({ logoPrices.count == 2 }), "PAY01: Logo's own ids must price too")
+		let logoMonth = logoPrices.first { $0.id == "e_trial_month_sub" }
+		let logoYear = logoPrices.first { $0.id == "e_year_sub" }
+		assert(logoMonth?.subscriptionPeriod?.unit == .month, "PAY01: e_trial_month_sub must get a month period, got \(String(describing: logoMonth?.subscriptionPeriod))")
+		assert(logoYear?.subscriptionPeriod?.unit == .year, "PAY01: e_year_sub must get a year period, got \(String(describing: logoYear?.subscriptionPeriod))")
+		assert(logoMonth?.price != logoYear?.price, "PAY01: Logo's two products must not share one price")
+		row()
+
+		print("TestMode: \(passed)/34 OK")
 	}
 }
