@@ -469,28 +469,54 @@ extension AppsFlyerService: AppsFlyerLibDelegate {
 
 extension AppsFlyerService: AppsFlyerDeepLinkDelegate {
 
+	/// AF-04: whether this call to `didResolveDeepLink` is the first the package has ever seen —
+	/// across launches, the same "first open" AN-01 already gates Amplitude's own event with
+	/// (`AmplitudeAnalytics.firstOpenTrackedKey`). Read once per call, and the read itself closes
+	/// it, so a `.notFound` on the second launch — the ordinary case, no link, no news — stays as
+	/// silent as it always has.
+	private static let deepLinkFirstOpenKey = "IntegrationKit.appsflyer.deepLinkFirstOpenTracked"
+
+	private func consumeDeepLinkFirstOpen() -> Bool {
+		let isFirstOpen = !UserDefaults.standard.bool(forKey: Self.deepLinkFirstOpenKey)
+		UserDefaults.standard.set(true, forKey: Self.deepLinkFirstOpenKey)
+		return isFirstOpen
+	}
+
 	func didResolveDeepLink(_ result: DeepLinkResult) {
 		// The status is not interpolated here on purpose: in the real SDK it is an ObjC enum, and
 		// `\(…)` on one prints `__C.…(rawValue: 0)`. Each branch below says it in words instead.
 		debugLog(tag: Self.tag, "UDL: the SDK reported a resolution")
+		// AF-04: consumed unconditionally, ahead of the switch, for every status including a real
+		// `.found` — a first open that resolves a real link must still close the gate, or the very
+		// next ordinary open (typically `.notFound`) would read as "first" again.
+		let isFirstOpen = consumeDeepLinkFirstOpen()
 		switch result.status {
 			case .found:
 				guard let deepLink = result.deepLink else {
 					// AF-04 row 2: the SDK said "found" and handed over nothing. A deep link the
 					// campaign was paid for disappears here, and the count is what makes that
-					// visible outside Xcode.
+					// visible outside Xcode. Logged once too, on first open only — same rule as
+					// the two silent branches below.
 					droppedDeepLinks += 1
 					debugLog(tag: Self.tag, level: .error, "UDL: status found, but deepLink is nil — dropped deep links so far: \(droppedDeepLinks)")
+					guard isFirstOpen else { return }
+					applyDeepLink(deeplinkValue: "found_unknown", clickEvent: [:])
 					return
 				}
 				debugLog(tag: Self.tag, "UDL: found, deeplinkValue \(deepLink.deeplinkValue ?? "none"), clickEvent \(deepLink.clickEvent.keys.sorted())")
 				applyDeepLink(deeplinkValue: deepLink.deeplinkValue, clickEvent: deepLink.clickEvent)
 			case .notFound:
 				debugLog(tag: Self.tag, "UDL: not found")
+				guard isFirstOpen else { return }
+				applyDeepLink(deeplinkValue: "unknown", clickEvent: [:])
 			case .failure:
 				debugLog(tag: Self.tag, level: .error, "UDL failure: \(result.error?.localizedDescription ?? "unknown")")
+				guard isFirstOpen else { return }
+				applyDeepLink(deeplinkValue: "error", clickEvent: [:])
 			@unknown default:
 				debugLog(tag: Self.tag, level: .error, "UDL: unknown status")
+				guard isFirstOpen else { return }
+				applyDeepLink(deeplinkValue: "default_error", clickEvent: [:])
 		}
 	}
 
