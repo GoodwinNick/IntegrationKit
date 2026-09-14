@@ -585,6 +585,41 @@ enum TestModeCheck {
 		assert(logoMonth?.price != logoYear?.price, "PAY01: Logo's two products must not share one price")
 		row()
 
-		print("TestMode: \(passed)/34 OK")
+		// 35. -receiptExpiresIn: the flag AISONG SPL02 needed. Every existing grant fixes a window
+		//     (+30d for -receiptValid, -24h for -receiptExpired), so "premium is cached, its own date
+		//     has already passed" was unreachable — rule 2 below always found a cache good for a
+		//     month. The flag only replaces the +30d half, and only for .valid; .expired's -24h and
+		//     .unknown's "not checked" are untouched, matching the parser's own priority (TM-04).
+		let tunedFlags = TestModeFlagParser.parse(["-receiptValid", "-receiptExpiresIn", "5"])
+		assert(tunedFlags.receiptExpiresIn == 5, "the flag must parse into its own field, got \(String(describing: tunedFlags.receiptExpiresIn))")
+		var tunedAnswer: ReceiptAnswer?
+		Task { tunedAnswer = await FakeAppleStore(flags: tunedFlags, productIds: []).checkReceipt() }
+		assert(waitUntil({ tunedAnswer != nil }), "the tuned receipt must still answer")
+		guard let tunedExpiry = tunedAnswer?.expiresAt else {
+			assertionFailure("a .valid receipt must carry an expiry")
+			return
+		}
+		assert(abs(tunedExpiry.timeIntervalSinceNow - 5) < 1, "expiresAt must be now + 5s, not the fixed 30 days, got \(tunedExpiry.timeIntervalSinceNow)s")
+		// Without the flag the fixed window is untouched — the one thing that must not change.
+		var plainAnswer: ReceiptAnswer?
+		Task { plainAnswer = await FakeAppleStore(flags: TestModeFlagParser.parse(["-receiptValid"]), productIds: []).checkReceipt() }
+		assert(waitUntil({ plainAnswer != nil }), "the plain receipt must answer too")
+		assert(abs((plainAnswer?.expiresAt?.timeIntervalSinceNow ?? 0) - 30 * 24 * 3600) < 5, "without the flag the window must stay the fixed 30 days, got \(String(describing: plainAnswer?.expiresAt))")
+		// And ignored outside .valid: an expired receipt keeps its own fixed window regardless.
+		var expiredAnswer: ReceiptAnswer?
+		Task { expiredAnswer = await FakeAppleStore(flags: TestModeFlagParser.parse(["-receiptExpired", "-receiptExpiresIn", "5"]), productIds: []).checkReceipt() }
+		assert(waitUntil({ expiredAnswer != nil }), "the expired receipt must answer too")
+		assert(abs((expiredAnswer?.expiresAt?.timeIntervalSinceNow ?? 0) - (-24 * 3600)) < 5, "the flag must be ignored outside .valid, got \(String(describing: expiredAnswer?.expiresAt))")
+		// The full chain, no sleep: the cache this receipt would leave behind holds through
+		// PremiumResolver rule 2 right up to its own date, then — `now` handed in past it — falls to
+		// rule 3, exactly the revocable state SPL02 needed and the fixed windows could never reach.
+		let cachedFromTuned = PremiumState(isPremium: true, source: .apple, isVerified: false, expiresAt: tunedExpiry)
+		let stillLive = PremiumResolver.resolve(adapty: nil, apple: nil, cached: cachedFromTuned, now: tunedExpiry - 1)
+		assert(stillLive.isPremium, "one second before its own date the cache must still hold, got \(stillLive)")
+		let afterExpiry = PremiumResolver.resolve(adapty: nil, apple: ReceiptAnswer(isActive: false, expiresAt: tunedExpiry - hour), cached: cachedFromTuned, now: tunedExpiry)
+		assert(afterExpiry.isPremium == false, "once the cache's own date has passed, a fresh expired receipt must close access, got \(afterExpiry)")
+		row()
+
+		print("TestMode: \(passed)/35 OK")
 	}
 }
