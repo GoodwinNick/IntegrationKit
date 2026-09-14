@@ -24,15 +24,20 @@ final class AnalyticsSink {
 
 	/// `nil` when the file cannot be opened. There is no default path and no fallback (TM-07 row 1):
 	/// a run without a path writes nothing rather than leaving files nobody reads.
+	///
+	/// TM-07 row 9: opened with `O_APPEND` rather than opened-and-seeked-once. The app writes to this
+	/// same file with its own handle, and a cached end-of-file offset from `init` goes stale the
+	/// moment that happens — the next write here would land on top of it. `O_APPEND` makes the kernel
+	/// seek to the file's real end before every write, no matter who else touched it in between.
 	init?(path: String) {
 		let manager = FileManager.default
 		if !manager.fileExists(atPath: path) {
 			guard manager.createFile(atPath: path, contents: nil) else { return nil }
 		}
-		guard let handle = FileHandle(forWritingAtPath: path) else { return nil }
-		handle.seekToEndOfFile()
+		let descriptor = open(path, O_WRONLY | O_APPEND)
+		guard descriptor != -1 else { return nil }
 		self.path = path
-		self.handle = handle
+		self.handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
 	}
 
 	deinit {

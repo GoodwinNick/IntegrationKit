@@ -542,6 +542,26 @@ enum TestModeCheck {
 		assert(stillEmpty.count == 4, "TM-07 row 1: a run without a sink path must add no files, found \(stillEmpty)")
 		row()
 
-		print("TestMode: \(passed)/32 OK")
+		// 33. EVT01 / TM-07 row 9: the app writes to the same file with its own handle, between two of
+		//     the sink's own writes. The sink must still append to the file's real end — a cached
+		//     offset from `init` would let this external write get overwritten and its event vanish.
+		let externalPath = temporary + "/external.log"
+		guard let externalSink = AnalyticsSink(path: externalPath) else {
+			assertionFailure("EVT01: the external-write sink must open")
+			return
+		}
+		if let appHandle = FileHandle(forWritingAtPath: externalPath) {
+			appHandle.seekToEndOfFile()
+			appHandle.write(Data("main_open|{}\n".utf8))
+			try? appHandle.close()
+		}
+		externalSink.record("kit_event", properties: [:])
+		let externalLines = lines(of: externalPath)
+		assert(externalLines.count == 2, "EVT01: a write from outside the sink must not be overwritten, got \(externalLines)")
+		assert(externalLines.first == "main_open|{}", "EVT01: the external line must survive first, got \(externalLines)")
+		assert(externalLines.last == "kit_event|{}", "EVT01: the sink's own line must append after it, got \(externalLines)")
+		row()
+
+		print("TestMode: \(passed)/33 OK")
 	}
 }
