@@ -133,6 +133,12 @@ final class FakeRestorer: UIUserActivityRestoring {}
 enum AppsFlyerServiceCheck {
 	static var failures: [String] = []
 
+	/// AF-04: `AppsFlyerService` writes this UserDefaults flag exactly once per install
+	/// (`AppsFlyerService.swift:477`). Cleared at the start of every row that touches first-open,
+	/// or one row's gate leaks into the next and goes green for the wrong reason — same pattern as
+	/// `AmplitudeAnalyticsCheck.firstOpenTrackedKey`.
+	static let deepLinkFirstOpenKey = "IntegrationKit.appsflyer.deepLinkFirstOpenTracked"
+
 	/// Records a failure instead of trapping — one failing row must not stop every row after it
 	/// from running.
 	static func check(_ condition: @autoclosure () -> Bool, _ message: @autoclosure () -> String) {
@@ -450,30 +456,46 @@ enum AppsFlyerServiceCheck {
 				+ "\(t14Adapty.profileValues.count)"
 		)
 
-		// ── AF-04 row 2 — "found" with no content is a contradiction, not a deep link ────────
-		// Executes `AppsFlyerService.swift:181-188`. Green: `:181` returns before `:189`.
+		// ── AF-04 row 2 — "found" with no content logs too now, on first open only ───────────
+		// Executes `AppsFlyerService.swift:495-505`. Until 2026-09-14 this branch only counted the
+		// drop; now it also logs, through the same `applyDeepLink` path as a real link, with the
+		// fixed marker `found_unknown` — Asana 1218449223758505.
 		AppsFlyerLib.reset()
+		UserDefaults.standard.removeObject(forKey: deepLinkFirstOpenKey)
 		let t16Analytics = FakeAnalytics()
 		let t16Adapty = FakeAdapty()
 		let t16Service = AppsFlyerService(analytics: t16Analytics, adapty: t16Adapty)
 		t16Service.didResolveDeepLink(DeepLinkResult(status: .found, deepLink: nil))
 		check(
-			t16Analytics.events.count == 0
-				&& t16Analytics.userProperties.count == 0
-				&& t16Adapty.profileValues.count == 0,
-			"T16 AF-04 row 2: status .found with no deepLink must log 0 events, 0 analytics "
-				+ "profiles and 0 Adapty profiles, got \(t16Analytics.events.count), "
-				+ "\(t16Analytics.userProperties.count), \(t16Adapty.profileValues.count)"
+			t16Analytics.events.count == 1
+				&& t16Analytics.events.first?.properties?["deep_link_value"] as? String == "found_unknown"
+				&& t16Analytics.userProperties.count == 1
+				&& t16Adapty.profileValues.count == 1,
+			"T16 AF-04 row 2: status .found with no deepLink on first open must log 1 event with "
+				+ "deep_link_value found_unknown, 1 analytics profile and 1 Adapty profile, got "
+				+ "\(t16Analytics.events.count) event(s), deep_link_value "
+				+ "\(String(describing: t16Analytics.events.first?.properties?["deep_link_value"])), "
+				+ "\(t16Analytics.userProperties.count) propertie(s), \(t16Adapty.profileValues.count) Adapty write(s)"
 		)
-		// The other half of the row — the contradiction must leave a trace visible outside Xcode.
-		// Not `configurationIssues`: nothing here is misconfigured, the SDK simply contradicted
-		// itself once, and a list meant for "no retry will fix this" would fill up with weather.
-		// A counter on the service is what the schema asks for, and it is the app's to read —
-		// `:185` counts it, and `IntegrationKit.droppedDeepLinks` hands it out. Green.
+		// The other half of the row — the contradiction must leave a trace visible outside Xcode
+		// even on an app that never reads deep links. Not `configurationIssues`: nothing here is
+		// misconfigured, the SDK simply contradicted itself once, and a list meant for "no retry
+		// will fix this" would fill up with weather. The counter is the app's to read — `:500`
+		// counts it, and `IntegrationKit.droppedDeepLinks` hands it out — and unlike the logging
+		// above, it counts every occurrence, not just the first. Green.
 		check(
 			t16Service.droppedDeepLinks == 1,
 			"T27 AF-04 row 2: a \"found\" with no content must be counted as a dropped deep link, "
 				+ "got \(t16Service.droppedDeepLinks)"
+		)
+		// Second call on the same install — the first-open gate is already closed, so this one
+		// stays as quiet as every branch always was, while the counter keeps counting.
+		t16Service.didResolveDeepLink(DeepLinkResult(status: .found, deepLink: nil))
+		check(
+			t16Analytics.events.count == 1 && t16Service.droppedDeepLinks == 2,
+			"T41 AF-04 row 2: a second \"found\" with no content on the same install must add 0 "
+				+ "more events but still count the drop, got \(t16Analytics.events.count) event(s) "
+				+ "total, \(t16Service.droppedDeepLinks) dropped"
 		)
 
 		// ── AF-04 row 3 — the deep-link event has a fixed eleven-field shape ─────────────────
@@ -497,22 +519,38 @@ enum AppsFlyerServiceCheck {
 				+ "af_sub5 \(String(describing: t17Event?.properties?["af_sub5"]))"
 		)
 
-		// ── AF-04 row 4 — the quiet delegate branches are contract, and must stay quiet ──────
-		// Executes `AppsFlyerService.swift:190-191` (T18) and `:192-193` (T19). The row's third
-		// branch — `.found` with no content, `:181-188` — is covered once, by T16 above.
+		// ── AF-04 row 4 — .notFound/.failure log once now too, on first open only ────────────
+		// Executes `AppsFlyerService.swift:508-511` (.notFound) and `:512-515` (.failure). Until
+		// 2026-09-14 both branches stayed quiet unconditionally; now each logs through
+		// `applyDeepLink` with a fixed marker (`unknown` / `error`) on first open, and stays quiet
+		// on every later call — Asana 1218449223758505. The row's third branch — `.found` with no
+		// content — is covered by T16/T41 above.
 		AppsFlyerLib.reset()
+		UserDefaults.standard.removeObject(forKey: deepLinkFirstOpenKey)
 		let t18Analytics = FakeAnalytics()
 		let t18Adapty = FakeAdapty()
 		let t18Service = AppsFlyerService(analytics: t18Analytics, adapty: t18Adapty)
 		t18Service.didResolveDeepLink(DeepLinkResult(status: .notFound))
 		check(
-			t18Analytics.events.count == 0
-				&& t18Analytics.userProperties.count == 0
-				&& t18Adapty.profileValues.count == 0,
-			"T18 AF-04 row 4: status .notFound must log 0 events, 0 analytics profiles and 0 "
-				+ "Adapty profiles, got \(t18Analytics.events.count), "
-				+ "\(t18Analytics.userProperties.count), \(t18Adapty.profileValues.count)"
+			t18Analytics.events.count == 1
+				&& t18Analytics.events.first?.properties?["deep_link_value"] as? String == "unknown"
+				&& t18Analytics.userProperties.count == 1
+				&& t18Adapty.profileValues.count == 1,
+			"T18 AF-04 row 4: status .notFound on first open must log 1 event with deep_link_value "
+				+ "unknown, 1 analytics profile and 1 Adapty profile, got "
+				+ "\(t18Analytics.events.count) event(s), deep_link_value "
+				+ "\(String(describing: t18Analytics.events.first?.properties?["deep_link_value"])), "
+				+ "\(t18Analytics.userProperties.count) propertie(s), \(t18Adapty.profileValues.count) Adapty write(s)"
 		)
+		t18Service.didResolveDeepLink(DeepLinkResult(status: .notFound))
+		check(
+			t18Analytics.events.count == 1,
+			"T18b AF-04 row 4: a second .notFound on the same install must add 0 more events, got "
+				+ "\(t18Analytics.events.count) total"
+		)
+
+		AppsFlyerLib.reset()
+		UserDefaults.standard.removeObject(forKey: deepLinkFirstOpenKey)
 		let t19Analytics = FakeAnalytics()
 		let t19Adapty = FakeAdapty()
 		let t19Service = AppsFlyerService(analytics: t19Analytics, adapty: t19Adapty)
@@ -520,12 +558,37 @@ enum AppsFlyerServiceCheck {
 			DeepLinkResult(status: .failure, error: NSError(domain: "AppsFlyer", code: -1009))
 		)
 		check(
-			t19Analytics.events.count == 0
-				&& t19Analytics.userProperties.count == 0
-				&& t19Adapty.profileValues.count == 0,
-			"T19 AF-04 row 4: status .failure must log 0 events, 0 analytics profiles and 0 "
-				+ "Adapty profiles, got \(t19Analytics.events.count), "
-				+ "\(t19Analytics.userProperties.count), \(t19Adapty.profileValues.count)"
+			t19Analytics.events.count == 1
+				&& t19Analytics.events.first?.properties?["deep_link_value"] as? String == "error"
+				&& t19Analytics.userProperties.count == 1
+				&& t19Adapty.profileValues.count == 1,
+			"T19 AF-04 row 4: status .failure on first open must log 1 event with deep_link_value "
+				+ "error, 1 analytics profile and 1 Adapty profile, got "
+				+ "\(t19Analytics.events.count) event(s), deep_link_value "
+				+ "\(String(describing: t19Analytics.events.first?.properties?["deep_link_value"])), "
+				+ "\(t19Analytics.userProperties.count) propertie(s), \(t19Adapty.profileValues.count) Adapty write(s)"
+		)
+		t19Service.didResolveDeepLink(
+			DeepLinkResult(status: .failure, error: NSError(domain: "AppsFlyer", code: -1009))
+		)
+		check(
+			t19Analytics.events.count == 1,
+			"T19b AF-04 row 4: a second .failure on the same install must add 0 more events, got "
+				+ "\(t19Analytics.events.count) total"
+		)
+
+		// A real .found link on the very first open must close the gate too, or the ordinary next
+		// open — typically .notFound — would read as "first" again and log a spurious "unknown".
+		AppsFlyerLib.reset()
+		UserDefaults.standard.removeObject(forKey: deepLinkFirstOpenKey)
+		let t42Analytics = FakeAnalytics()
+		let t42Service = AppsFlyerService(analytics: t42Analytics, adapty: FakeAdapty())
+		t42Service.didResolveDeepLink(DeepLinkResult(status: .found, deepLink: AppsFlyerDeepLink(deeplinkValue: "promo")))
+		t42Service.didResolveDeepLink(DeepLinkResult(status: .notFound))
+		check(
+			t42Analytics.events.count == 1,
+			"T42 AF-04: a real .found link on first open must close the gate for the .notFound "
+				+ "that follows it, got \(t42Analytics.events.count) event(s) total"
 		)
 
 		// ── AF-04 row 5 — the second deep link wins, on purpose ──────────────────────────────
@@ -910,9 +973,9 @@ enum AppsFlyerServiceCheck {
 		defaults.removeObject(forKey: "AppsFlyerReInstallCounter")
 
 		if failures.isEmpty {
-			print("AppsFlyerService (AF-01…AF-06): 46/46 OK")
+			print("AppsFlyerService (AF-01…AF-06): 50/50 OK")
 		} else {
-			print("\(failures.count) of 46 asserts FAILED:")
+			print("\(failures.count) of 50 asserts FAILED:")
 			for failure in failures {
 				print("  - \(failure)")
 			}
