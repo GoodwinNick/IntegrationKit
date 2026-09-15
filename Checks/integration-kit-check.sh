@@ -83,13 +83,8 @@ swiftc -emit-module -emit-library -static \
 	Checks/Stubs/FirebaseRemoteConfig/RemoteConfigSettings.swift \
 	Checks/Stubs/FirebaseRemoteConfig/RemoteConfigValue.swift \
 	Checks/Stubs/FirebaseRemoteConfig/RemoteConfig.swift
-swiftc -emit-module -emit-library -static \
-	-module-name SwiftyStoreKit \
-	-emit-module-path "$work/SwiftyStoreKit.swiftmodule" \
-	-o "$work/libSwiftyStoreKit.a" \
-	Checks/Stubs/SwiftyStoreKit.swift
 swiftc -o "$work/check" -I "$work" -L "$work" \
-	-lUIKit -lAppsFlyerLib -lAdapty -lAmplitudeSwift -lFirebaseCore -lFirebaseCrashlytics -lFirebaseRemoteConfig -lSwiftyStoreKit \
+	-lUIKit -lAppsFlyerLib -lAdapty -lAmplitudeSwift -lFirebaseCore -lFirebaseCrashlytics -lFirebaseRemoteConfig \
 	Checks/Cases/IntegrationKitCheck.swift \
 	Sources/IntegrationKit/*.swift \
 	Sources/IntegrationKit/*/*.swift \
