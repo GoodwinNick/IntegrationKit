@@ -115,7 +115,12 @@ final class StoreKitService: AppleSubscribing {
 		guard !ids.isEmpty else { return [:] }
 		do {
 			let products = try await Product.products(for: ids)
-			return Dictionary(products.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+			let byId = Dictionary(products.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+			if byId.count < ids.count {
+				let missing = ids.subtracting(byId.keys)
+				debugLog("[IntegrationKit] Product.products(for:) dropped unknown ids: \(missing.sorted())")
+			}
+			return byId
 		} catch {
 			debugLog("[IntegrationKit] Product.products(for:) failed: \(error)")
 			return [:]
