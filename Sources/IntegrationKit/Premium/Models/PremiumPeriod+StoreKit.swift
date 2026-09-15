@@ -7,9 +7,9 @@ import Foundation
 import StoreKit
 
 extension PremiumPeriod {
-	/// `SKProduct.PeriodUnit` has no `unknown` case of its own — a unit Apple adds later lands in
-	/// `@unknown default` and is reported as `.unknown` rather than silently read as days.
-	init(period: SKProductSubscriptionPeriod) {
+	/// A unit Apple adds later falls through `default` and is reported as `.unknown` rather than
+	/// silently read as days.
+	init(period: Product.SubscriptionPeriod) {
 		let unit: Unit
 		switch period.unit {
 			case .day:
@@ -20,9 +20,9 @@ extension PremiumPeriod {
 				unit = .month
 			case .year:
 				unit = .year
-			@unknown default:
+			default:
 				unit = .unknown
 		}
-		self.init(unit: unit, numberOfUnits: period.numberOfUnits)
+		self.init(unit: unit, numberOfUnits: period.value)
 	}
 }

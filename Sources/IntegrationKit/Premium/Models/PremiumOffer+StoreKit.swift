@@ -5,28 +5,27 @@
 
 import Foundation
 import StoreKit
-import SwiftyStoreKit
 
 extension PremiumOffer {
-	/// Maps `SKProductDiscount` — the store's own introductory offer, which is what decides
-	/// whether the paywall may say "free trial" for this particular user.
-	init(discount: SKProductDiscount) {
+	/// Maps `Product.SubscriptionOffer` — the store's own introductory offer, which is what decides
+	/// whether the paywall may say "free trial" for this particular product.
+	init(offer: Product.SubscriptionOffer) {
 		let paymentMode: PaymentMode
-		switch discount.paymentMode {
+		switch offer.paymentMode {
 			case .payAsYouGo:
 				paymentMode = .payAsYouGo
 			case .payUpFront:
 				paymentMode = .payUpFront
 			case .freeTrial:
 				paymentMode = .freeTrial
-			@unknown default:
+			default:
 				paymentMode = .unknown
 		}
 		self.init(
-			price: discount.price as Decimal,
-			localizedPrice: discount.localizedPrice,
-			period: PremiumPeriod(period: discount.subscriptionPeriod),
-			numberOfPeriods: discount.numberOfPeriods,
+			price: offer.price,
+			localizedPrice: offer.displayPrice,
+			period: PremiumPeriod(period: offer.period),
+			numberOfPeriods: offer.periodCount,
 			paymentMode: paymentMode
 		)
 	}

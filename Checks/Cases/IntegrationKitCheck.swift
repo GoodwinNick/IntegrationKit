@@ -67,7 +67,6 @@ enum IntegrationKitCheck {
 			adaptyKey: "public_live_0000000000000000000000000000000000",
 			placements: [],
 			sessionsCounter: 1,
-			sharedSecret: "",
 			productIds: [],
 			isDebug: false,
 			isTestsRunning: false,

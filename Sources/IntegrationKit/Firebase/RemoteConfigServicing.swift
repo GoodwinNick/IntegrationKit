@@ -10,7 +10,7 @@ import Foundation
 /// the composition root registers the defaults and starts the fetch.
 ///
 /// Keys and defaults belong to the app, not to the package, so nothing here names one. The app
-/// passes its defaults to ``IntegrationKit/configure(deviceId:amplitudeKey:adaptyKey:placements:sessionsCounter:sharedSecret:productIds:isDebug:isTestsRunning:levels:firstOpenEvent:appsFlyerDevKey:appsFlyerAppId:sourceTimeout:attTimeout:adaptyAttributionEnabled:remoteConfigDefaults:remoteConfigTimeout:)``
+/// passes its defaults to ``IntegrationKit/configure(deviceId:amplitudeKey:adaptyKey:placements:sessionsCounter:productIds:isDebug:isTestsRunning:levels:firstOpenEvent:appsFlyerDevKey:appsFlyerAppId:sourceTimeout:attTimeout:adaptyAttributionEnabled:remoteConfigDefaults:remoteConfigTimeout:)``
 /// and reads them back by the same key.
 ///
 /// Every read is non-blocking and answers immediately: the registered default until the fetch

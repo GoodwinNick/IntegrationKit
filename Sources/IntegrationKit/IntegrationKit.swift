@@ -15,7 +15,7 @@ import Foundation
 import UIKit
 
 /// Everything the app is given, in one value: the four protocols, the `AppDelegate` forwards and
-/// the package's own diagnostics. Build it once with ``configure(deviceId:amplitudeKey:adaptyKey:placements:sessionsCounter:sharedSecret:productIds:isDebug:isTestsRunning:levels:firstOpenEvent:appsFlyerDevKey:appsFlyerAppId:sourceTimeout:attTimeout:adaptyAttributionEnabled:remoteConfigDefaults:remoteConfigTimeout:)``
+/// the package's own diagnostics. Build it once with ``configure(deviceId:amplitudeKey:adaptyKey:placements:sessionsCounter:productIds:isDebug:isTestsRunning:levels:firstOpenEvent:appsFlyerDevKey:appsFlyerAppId:sourceTimeout:attTimeout:adaptyAttributionEnabled:remoteConfigDefaults:remoteConfigTimeout:)``
 /// and keep it for as long as the app runs.
 public struct IntegrationKit {
 	private static let tag = "IntegrationKit"
@@ -67,9 +67,9 @@ public struct IntegrationKit {
 	/// `deviceId` is the app's own stable id, shared by Amplitude, Adapty and AppsFlyer so all
 	/// three describe the same user.
 	///
-	/// `sharedSecret` is the App Store Connect shared secret used to validate the receipt, and
-	/// `productIds` are the subscriptions to look for inside it. An empty secret simply turns
-	/// receipt validation off — Adapty then decides premium alone.
+	/// `productIds` are the subscriptions StoreKit is asked about — for `currentEntitlements` and
+	/// for pricing. Native StoreKit 2 validates locally; there is no shared secret to configure and
+	/// no server round trip to turn off.
 	///
 	/// `sourceTimeout` is how long a premium refresh waits for one source — Adapty or the Apple
 	/// receipt — before deciding without it. Five seconds is a number from practice, not one Adapty
@@ -128,7 +128,6 @@ public struct IntegrationKit {
 		adaptyKey: String,
 		placements: [String],
 		sessionsCounter: Int,
-		sharedSecret: String,
 		productIds: Set<String>,
 		isDebug: Bool,
 		isTestsRunning: Bool,
@@ -148,7 +147,7 @@ public struct IntegrationKit {
 		// is there. The tag is left off on purpose: these lines belong to the graph, not to a service,
 		// so they come out as plain `[IntegrationKit]`.
 		debugLog("configure: deviceId \(deviceId), isDebug \(isDebug), isTestsRunning \(isTestsRunning)")
-		debugLog("configure: keys — amplitude \(amplitudeKey.isEmpty ? "empty" : "set"), adapty \(adaptyKey.isEmpty ? "empty" : "set"), appsFlyer \(appsFlyerDevKey.isEmpty ? "empty" : "set"), sharedSecret \(sharedSecret.isEmpty ? "empty — receipt validation off" : "set")")
+		debugLog("configure: keys — amplitude \(amplitudeKey.isEmpty ? "empty" : "set"), adapty \(adaptyKey.isEmpty ? "empty" : "set"), appsFlyer \(appsFlyerDevKey.isEmpty ? "empty" : "set")")
 		debugLog("configure: levels \(levels.sorted()), placements \(placements), productIds \(productIds.sorted()), sessionsCounter \(sessionsCounter)")
 		debugLog("configure: sourceTimeout \(sourceTimeout)s, attTimeout \(attTimeout)s, remoteConfigTimeout \(remoteConfigTimeout)s, remoteConfigDefaults \(remoteConfigDefaults.keys.sorted()), adaptyAttributionEnabled \(adaptyAttributionEnabled), appsFlyerResetsInstallInSandbox \(appsFlyerResetsInstallInSandbox), firstOpenEvent \(firstOpenEvent ?? "none")")
 		if let built {
@@ -207,8 +206,13 @@ public struct IntegrationKit {
 		// source, the facade and AppsFlyer need the app-facing surface. The fake implements the same
 		// two, which is what keeps the arbiter above it the production one (TM-03).
 		let adapty: any AdaptyServicing & AdaptyPremiumProviding
+		// Kept apart from `adapty` above the same way `storeKit` used to be kept apart from `apple`
+		// below: `onUnfinishedTransaction` (PM-08) is not part of either protocol, so wiring it needs
+		// the concrete type. `nil` in a test run — no payment queue exists to deliver anything.
+		let adaptyService: AdaptyService?
 		if let testMode {
 			adapty = testMode.adapty
+			adaptyService = nil
 			debugLog("adapty: fake source — the arbiter above it stays the production one")
 		} else {
 			let service = AdaptyService()
@@ -227,6 +231,7 @@ public struct IntegrationKit {
 				adaptyAttributionEnabled: adaptyAttributionEnabled
 			)
 			adapty = service
+			adaptyService = service
 			debugLog("adapty: real service configured, attribution service \(adaptyAttributionEnabled ? "on" : "off")")
 		}
 		var appsFlyer: AppsFlyerService?
@@ -259,16 +264,12 @@ public struct IntegrationKit {
 		// TM-04/TM-05: a test run does not touch StoreKit at all — no payment queue, no receipt
 		// validation, no system dialog that could stop a run dead (TM-04 row 5).
 		let apple: AppleSubscribing
-		let storeKit: StoreKitService?
 		if let testMode {
 			apple = testMode.apple
-			storeKit = nil
 			debugLog("storeKit: not built — a test run touches no payment queue and validates no receipt")
 		} else {
-			let service = StoreKitService(sharedSecret: sharedSecret, productIds: productIds)
-			apple = service
-			storeKit = service
-			debugLog("storeKit: real service, \(productIds.count) product id(s) to look for in the receipt")
+			apple = StoreKitService(productIds: productIds)
+			debugLog("storeKit: real service, \(productIds.count) product id(s) to look for among current entitlements")
 		}
 		// `productIds` has to reach here too, not just StoreKit: it is the fallback list `products`
 		// prices directly when Adapty's own listing for a placement comes back empty, and an empty
@@ -290,11 +291,11 @@ public struct IntegrationKit {
 		premium.start()
 		debugLog("premium: started — cache published, sources asked")
 		// The same argument, one level down: a purchase interrupted mid-flight is delivered by
-		// the payment queue, not by any call above, and it stays stuck in that queue until it is
-		// finished. Re-asking afterwards is what turns it into premium in this launch instead of
+		// Adapty's own live queue listener (PM-08), not by any call above — the kit does not run one
+		// of its own. Re-asking afterwards is what turns it into premium in this launch instead of
 		// the next one.
-		storeKit?.completeTransactions { [weak premium] in
-			debugLog("payment queue delivered an interrupted purchase — re-asking the barrier")
+		adaptyService?.unfinishedTransactionObserver = { [weak premium] in
+			debugLog("Adapty delivered an unfinished transaction — re-asking the barrier")
 			premium?.purchaseDelivered()
 		}
 		if testMode?.flags.pendingTransaction == true {
@@ -336,7 +337,7 @@ public struct IntegrationKit {
 
 	/// Makes the next launch look like a first install to AppsFlyer — debug builds only.
 	///
-	/// Call it before ``configure(deviceId:amplitudeKey:adaptyKey:placements:sessionsCounter:sharedSecret:productIds:isDebug:isTestsRunning:levels:firstOpenEvent:appsFlyerDevKey:appsFlyerAppId:sourceTimeout:attTimeout:adaptyAttributionEnabled:remoteConfigDefaults:remoteConfigTimeout:launchOptions:)``.
+	/// Call it before ``configure(deviceId:amplitudeKey:adaptyKey:placements:sessionsCounter:productIds:isDebug:isTestsRunning:levels:firstOpenEvent:appsFlyerDevKey:appsFlyerAppId:sourceTimeout:attTimeout:adaptyAttributionEnabled:remoteConfigDefaults:remoteConfigTimeout:launchOptions:)``.
 	/// Afterwards is too late: the SDK reads the state this clears while it is being stood up.
 	///
 	/// What it is for: an install attributes once per device. The second one and every one after it

@@ -124,6 +124,12 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	/// Fires whenever Adapty pushes a fresh profile. `isVerified` is false while the profile can
 	/// only have come from the SDK's own storage — see `didLoadNetworkProfile`.
 	var premiumObserver: ((AdaptyProfile, Bool) -> Void)?
+	/// PM-08: fires whenever Adapty's own live `Transaction.updates` listener sees a verified
+	/// transaction — an interrupted purchase, an Ask to Buy approval, a purchase made elsewhere.
+	/// The composition root wires this straight to `PremiumService.purchaseDelivered()`. Named apart
+	/// from the `onUnfinishedTransaction(_:)` delegate method below on purpose — the two sharing a
+	/// name would make `self.onUnfinishedTransaction` ambiguous to read even where it still compiles.
+	var unfinishedTransactionObserver: (() -> Void)?
 
 	/// Deadlines are injectable so a check can drive a three-minute wait in a third of a second.
 	init(deadlines: AdaptyDeadlines = .default) {
@@ -1072,6 +1078,16 @@ extension AdaptyService: AdaptyDelegate {
 		let isVerified = didLoadNetworkProfile
 		didLoadNetworkProfile = true
 		premiumObserver?(profile, isVerified)
+	}
+
+	/// PM-08: the only signal the kit gets that the payment queue delivered something — an
+	/// interrupted purchase, a purchase made on another device, or an Ask to Buy approval (treated
+	/// like any other verified transaction, decision 2026-09-15). Fires only from Adapty's live
+	/// listener, never from its silent sweep of `Transaction.unfinished`. The kit does not call
+	/// `finish()` here or anywhere else — Adapty is the only finisher.
+	func onUnfinishedTransaction(_ adaptyUnfinishedTransaction: AdaptyUnfinishedTransaction) {
+		debugLog(tag: Self.tag, "onUnfinishedTransaction — re-asking the barrier")
+		unfinishedTransactionObserver?()
 	}
 }
 

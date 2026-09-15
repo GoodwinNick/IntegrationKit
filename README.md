@@ -1,11 +1,11 @@
 # IntegrationKit
 
-A Swift Package that wraps five third-party SDKs behind one small public surface:
-**Firebase** (Core + Crashlytics + Remote Config), **Amplitude**, **Adapty** (premium/paywalls),
-**AppsFlyer** (attribution, deep links) and **SwiftyStoreKit** (receipt, restore,
-prices). The package owns the wiring and the premium arbitration between Adapty
-and Apple's own receipt; the app supplies keys, event names, placements, its App
-Store shared secret and its product ids — no StoreKit code of its own.
+A Swift Package that wraps four third-party SDKs behind one small public surface:
+**Firebase** (Core + Crashlytics + Remote Config), **Amplitude**, **Adapty** (premium/paywalls)
+and **AppsFlyer** (attribution, deep links) — plus native **StoreKit 2** (receipt, restore,
+prices), no third-party wrapper. The package owns the wiring and the premium arbitration
+between Adapty and Apple's own receipt; the app supplies keys, event names, placements
+and its product ids — no StoreKit code of its own.
 
 Only four protocols and a handful of models are public — everything else (Adapty,
 AppsFlyer, and the concrete services behind them) is an internal implementation
@@ -48,7 +48,6 @@ let kit = IntegrationKit.configure(
 	adaptyKey: adaptyApiKey,
 	placements: ["main", "onboarding"],
 	sessionsCounter: sessionsCounter,
-	sharedSecret: appStoreSharedSecret,
 	productIds: ["year.sub", "week.sub"],
 	isDebug: isDebug,
 	isTestsRunning: isTestsRunning,
@@ -187,10 +186,11 @@ meaning of every `configure` parameter and the paywall-to-purchase flow.
   back by the same key. The package defines none.
 - `GoogleService-Info.plist`, the Crashlytics dSYM Run Script, ATT usage string
   and Associated Domains — everything Xcode-project-side.
-- The App Store shared secret and the product ids to look for in the receipt —
-  passed to `configure`, never hardcoded in the package. StoreKit itself is the
-  package's job now: receipt validation, restore, the fallback purchase and the
-  prices shown on the paywall all live inside it.
+- The product ids to look for among current entitlements — passed to
+  `configure`, never hardcoded in the package. StoreKit itself is the
+  package's job: on native StoreKit 2, receipt validation, restore, the
+  fallback purchase and the prices shown on the paywall all live inside it,
+  with no shared secret and no server round trip to configure.
 - `isDebug` and `isTestsRunning` — the app's own `#if DEBUG` and its own reading
   of `-uitest` / `XCTestConfigurationFilePath`. The package never derives either.
 - Showing the ATT prompt and reporting its answer through
@@ -217,7 +217,7 @@ Sources/IntegrationKit/
 ├── Amplitude/    analytics facade, IDFA plugin, AnalyticsTracking
 ├── Adapty/       activation, paywalls, purchases (internal)
 ├── AppsFlyer/    ATT, deep links, attribution (internal)
-├── StoreKit/     receipt, restore, purchase, prices via SwiftyStoreKit (internal)
+├── StoreKit/     receipt, restore, purchase, prices via native StoreKit 2 (internal)
 ├── Premium/      Adapty/Apple arbitration behind PremiumServicing
 └── Support/      composition-root helpers (obfuscated secrets, timeouts, debug log)
 ```

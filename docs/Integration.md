@@ -194,7 +194,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 			adaptyKey: ObfuscatedSecret.reveal(encrypted: SDKKeys.adaptyEncrypted, secret: SDKKeys.secret),
 			placements: ["main", "onboarding"],
 			sessionsCounter: AppDefaults.sessionsCounter,
-			sharedSecret: ObfuscatedSecret.reveal(encrypted: SDKKeys.sharedSecretEncrypted, secret: SDKKeys.secret),
 			productIds: ["year.sub", "week.sub"],
 			isDebug: isDebug,
 			isTestsRunning: isTestsRunning,
@@ -353,7 +352,6 @@ public static func configure(
 	adaptyKey: String,
 	placements: [String],
 	sessionsCounter: Int,
-	sharedSecret: String,
 	productIds: Set<String>,
 	isDebug: Bool,
 	isTestsRunning: Bool,
@@ -374,8 +372,7 @@ public static func configure(
 | `adaptyKey` | Adapty public SDK key (`public_live_...`) | Adapty dashboard, per app | Required — no default, but `""` is legal and makes the whole Adapty layer **inert** for the run (see below). Premium can then only come from the App Store receipt. |
 | `placements` | Adapty placement ids to preload paywalls/products for | Adapty dashboard, per app | An empty array means no placement is warmed up — `hasPaywall`/`products` for any placement return empty until Adapty is asked directly through a refresh. |
 | `sessionsCounter` | The app's own session counter, incremented once per launch before this call | App-owned persistent counter | Required — no default. Written into the Adapty profile as-is; passing a stale or constant value just means that field in the profile stops being meaningful. |
-| `sharedSecret` | App Store Connect shared secret, used to validate the receipt against Apple's production endpoint | App Store Connect → Subscriptions → App-Specific Shared Secret | Required — no default, but `""` is legal and means the receipt is never checked (`checkReceipt` answers "not checked"). Premium then relies on Adapty alone. |
-| `productIds` | The subscription product ids to look for in the receipt, and the ids whose prices are read from the store | App Store Connect, same ids as in the Adapty dashboard | Required — no default. An empty set means the receipt is read but nothing is ever found in it, so Apple can never confirm premium. |
+| `productIds` | The subscription product ids to look for among current entitlements, and the ids whose prices are read from the store | App Store Connect, same ids as in the Adapty dashboard | Required — no default. An empty set means nothing is ever found among current entitlements, so Apple can never confirm premium. |
 | `isDebug` | The app's own `#if DEBUG`, and the only thing that decides crash collection. Here it also turns AppsFlyer's own console logging on and off; pass the same value to `FirebaseIntegration.configure(isDebug:)` | An `#if DEBUG` in the app, beside its other developer flags | Required — no default, deliberately: a default is the package guessing the build type. `true` switches Crashlytics collection off and AppsFlyer's SDK logging on; `false` does the opposite. It does **not** touch Amplitude, Adapty or StoreKit. |
 | `isTestsRunning` | Whether this launch is a test run. `true` leaves Amplitude, Adapty and AppsFlyer down for the whole run, each recording its own reason in `configurationIssues` | The app: `ProcessInfo.processInfo.arguments.contains("-uitest")` or `ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil` | Required — no default. `true` means no Amplitude events, no Adapty activation (so no live paywalls and no live purchases through it), and no AppsFlyer sessions, install data or deep links. Firebase and StoreKit are **not** affected: crash collection follows `isDebug` alone, and the receipt is still read. |
 | `levels` | The set of Adapty access level ids that count as "premium" | Adapty dashboard — access level ids configured for the paywall | Defaults to `["premium"]`. Wrong values here mean a real Adapty premium purchase never flips `isPremium` to true. |
@@ -1106,49 +1103,42 @@ queue.
 ## The StoreKit side
 
 There is nothing to implement. StoreKit lives inside the package
-(`Sources/IntegrationKit/StoreKit/`, built on `SwiftyStoreKit`), and the app's
-whole contribution is two `configure` arguments: `sharedSecret` and
-`productIds`. `AppleSubscribing`, which earlier releases asked the app to
-implement, is internal now.
+(`Sources/IntegrationKit/StoreKit/`), on native StoreKit 2 since 0.7.0, and
+the app's whole contribution is one `configure` argument: `productIds`.
+`AppleSubscribing`, which earlier releases asked the app to implement, is
+internal now.
 
 What the package does with them:
 
-- **Receipt validation** — `AppleReceiptValidator(service: .production)` with
-  your shared secret, then an auto-renewable check for each of `productIds`.
-  Three answers, and the difference matters: `true` (an active subscription is
-  in the receipt), `false` (the receipt was read and carries none), `nil` (it
-  could not be checked at all). `false` is not by itself a revocation — it is
-  only consulted once the cached state is gone or expired, and it is ignored
-  while a local purchase is outstanding. See
-  [What decides `isPremium`](#what-decides-ispremium-and-what-can-take-it-away).
-  A **sandbox receipt answers `nil` immediately** — the production endpoint can
-  only ever reply 21007 to one, so TestFlight and simulator builds simply lean
-  on Adapty. An empty `sharedSecret` answers `nil` the same way.
-- **Restore** — `restorePurchases(atomically: true)`, unfinished transactions
-  finished. Anything restored is `.restored`, even if some other purchase in
-  the same batch failed.
-- **The fallback purchase** — `purchaseProduct(atomically: true)`, run by
+- **Receipt validation** — `Transaction.currentEntitlements`, filtered to
+  `productIds`. This reads the device's own transaction cache: it does not
+  throw and it works offline, so `nil` from `checkReceipt()` means a genuine
+  surprise (Apple removing the sequence's guarantees), never "offline" or
+  "sandbox" the way a network receipt validator could answer. There is no
+  shared secret to configure and no server round trip to make — validation is
+  local and cryptographic, on Apple's own side.
+- **Restore** — `AppStore.sync()`, StoreKit 2's replacement for
+  `SKReceiptRefreshRequest`. Anything found among current entitlements
+  afterwards is `.restored`.
+- **The fallback purchase** — `product.purchase()`, run by
   `PremiumServicing.purchase(_:placement:completion:)` itself when Adapty's own
   request asks for a StoreKit retry. The app never sees the retry, only the
-  final `PurchaseOutcome`.
-- **Interrupted transactions** — `completeTransactions(atomically: true)` runs
-  once at `configure` time and finishes whatever was left stuck in the payment
-  queue (app killed mid-payment, ask-to-buy approved later). If something was
-  actually delivered, the premium state is re-asked in the same launch.
-- **Prices** — `retrieveProductsInfo` for the ids Adapty listed on the
-  placement; see the note under `products(placement:)` below.
-
-**Every one of those five calls is entered on the main thread since 0.5.0, and
-that is not a detail the app can arrange for itself.** SwiftyStoreKit is
-single-threaded by design: its products controller keeps in-flight requests in
-a plain `Dictionary` with no lock, and clears entries from it in a callback it
-deliberately hands back on main. Our side used to arrive from `async` methods
-with no isolation — a cooperative-pool thread — so the two halves wrote to the
-same dictionary at once and corrupted its storage. The crash lands later and
-somewhere else, as `unrecognized selector` sent to a garbage tagged pointer, in
-whichever call next hashes a key. Calling from the main thread in the app never
-fixed it, because the package wraps these calls in its own `Task` before
-reaching the SDK. A caller already on main is not deferred a turn.
+  final `PurchaseOutcome`. An unverified transaction — StoreKit's own signature
+  check failing on a transaction just paid for — resolves to `.failed`, the
+  same stance Adapty takes for a transaction its own listener cannot verify:
+  not granted.
+- **Interrupted transactions** — the kit runs no transaction-queue-parsing loop
+  of its own and never calls `Transaction.finish()` anywhere. Adapty (full
+  mode) is the only finisher: its own live `Transaction.updates` listener
+  finishes what it sees and calls `AdaptyDelegate.onUnfinishedTransaction`,
+  which the composition root wires straight to re-asking the premium barrier;
+  its sweep of `Transaction.unfinished` (triggered by a profile sync, restore
+  or activation) finishes the rest without a delegate callback. A second
+  finisher racing Adapty's is exactly the crash this design avoids.
+- **Prices** — `Product.products(for:)` for the ids Adapty listed on the
+  placement; see the note under `products(placement:)` above. A missing key
+  means the store said nothing about that id (not approved yet, wrong bundle,
+  offline) — never a fabricated zero price.
 
 ## Deep links
 
@@ -1375,8 +1365,7 @@ dashboard entry.
 - [ ] `isTestsRunning` is computed from `-uitest` / `XCTestConfigurationFilePath`
       and is `false` on a real launch — check `kit.configurationIssues` for the
       three "test run" lines
-- [ ] `sharedSecret` is this app's real App Store Connect shared secret, and
-      `productIds` lists every subscription id the paywall can sell
+- [ ] `productIds` lists every subscription id the paywall can sell
 - [ ] `handleContinue`/`handleOpen` forwarded through `kit`, not any SDK
       directly
 - [ ] `deviceId` is one stable id, the same value across app launches

@@ -5,29 +5,23 @@
 
 import Foundation
 import StoreKit
-import SwiftyStoreKit
 
 extension PremiumProduct {
-	/// Wraps an `SKProduct`.
+	/// Wraps a `StoreKit.Product`.
 	///
-	/// The two paths do NOT differ in price accuracy, whatever this comment used to claim: Adapty
-	/// has no price of its own on 2.10.x — `AdaptyPaywallProduct` holds an `SKProduct` and proxies
-	/// `price`, `currencyCode`, `subscriptionPeriod` and `localizedPrice` straight to it, so for one
-	/// product id both initializers produce the same number. What they differ in is availability:
-	/// the Adapty path needs a loaded paywall, this one needs nothing but the id. That is the whole
-	/// reason both exist (AD-03, note above the risk table).
-	///
-	/// `localizedPrice` is SwiftyStoreKit's formatter over `price` and `priceLocale`, and stays
-	/// optional — a locale with no currency formatter gives no price, which is not an empty price.
-	init(product: SKProduct) {
+	/// PM-07: unlike Adapty's own product copy, this direct query never checks
+	/// `isEligibleForIntroOffer` — `introductoryOffer` comes back whenever App Store Connect has
+	/// one configured, whether or not this particular user is still eligible for it. See
+	/// storekit-intro-offer-eligibility.
+	init(product: Product) {
 		self.init(
-			id: product.productIdentifier,
-			localizedTitle: product.localizedTitle,
-			localizedPrice: product.localizedPrice,
-			price: product.price as Decimal,
-			currencyCode: product.priceLocale.currencyCode,
-			subscriptionPeriod: product.subscriptionPeriod.map(PremiumPeriod.init(period:)),
-			introductoryOffer: product.introductoryPrice.map(PremiumOffer.init(discount:))
+			id: product.id,
+			localizedTitle: product.displayName,
+			localizedPrice: product.displayPrice,
+			price: product.price,
+			currencyCode: product.priceFormatStyle.currencyCode,
+			subscriptionPeriod: product.subscription.map { PremiumPeriod(period: $0.subscriptionPeriod) },
+			introductoryOffer: product.subscription?.introductoryOffer.map(PremiumOffer.init(offer:))
 		)
 	}
 }
