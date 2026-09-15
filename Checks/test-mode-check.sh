@@ -44,6 +44,7 @@ swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty \
 	Sources/IntegrationKit/Premium/Models/PremiumNotification.swift \
 	Sources/IntegrationKit/Premium/Helpers/PremiumResolver.swift \
 	Sources/IntegrationKit/Premium/Helpers/UserDefaultsPremiumStore.swift \
+	Sources/IntegrationKit/Premium/Helpers/PriceCache.swift \
 	Sources/IntegrationKit/TestMode/TestModeFlags.swift \
 	Sources/IntegrationKit/TestMode/TestModeFlagParser.swift \
 	Sources/IntegrationKit/TestMode/AnalyticsSink.swift \

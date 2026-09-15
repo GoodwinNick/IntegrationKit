@@ -7,7 +7,7 @@ import Foundation
 
 /// A purchasable product, as the facade hands it out — wraps an Adapty product so the app
 /// never needs to import Adapty or StoreKit just to show a price.
-public struct PremiumProduct: Equatable, Sendable {
+public struct PremiumProduct: Equatable, Sendable, Codable {
 	public let id: String
 	public let localizedTitle: String
 	/// The store's own formatted price. `nil` means the store gave none — a missing value, not an

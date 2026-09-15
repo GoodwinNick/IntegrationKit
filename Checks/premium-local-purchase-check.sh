@@ -43,5 +43,6 @@ swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty \
 	Sources/IntegrationKit/Premium/Models/RestoreOutcome.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumNotification.swift \
 	Sources/IntegrationKit/Premium/Helpers/PremiumResolver.swift \
-	Sources/IntegrationKit/Premium/Helpers/UserDefaultsPremiumStore.swift
+	Sources/IntegrationKit/Premium/Helpers/UserDefaultsPremiumStore.swift \
+	Sources/IntegrationKit/Premium/Helpers/PriceCache.swift
 exec "$work/check"

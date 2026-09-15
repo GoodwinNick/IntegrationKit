@@ -18,6 +18,8 @@ final class PremiumService: PremiumServicing {
 	/// The subscription ids to look for in the Apple receipt, and the fallback list `products`
 	/// prices directly when Adapty's own listing for the placement comes back empty.
 	private let productIds: Set<String>
+	/// PM-07: what the store answered last session, for a launch where it hasn't answered yet.
+	private let priceCache: PriceCache
 	// Guards the cached state AND its flag mirror together — see `apply`.
 	// Holding it across the mirror write is safe: the store's setter posts `.premiumDidChange`
 	// on `DispatchQueue.main.async`, so no observer ever runs inside this critical section.
@@ -68,7 +70,8 @@ final class PremiumService: PremiumServicing {
 		levels: Set<String> = ["premium"],
 		sourceTimeout: TimeInterval = 5,
 		waitingTimeout: TimeInterval = 2,
-		productIds: Set<String> = []
+		productIds: Set<String> = [],
+		priceCache: PriceCache = PriceCache()
 	) {
 		self.store = store
 		self.adapty = adapty
@@ -77,6 +80,7 @@ final class PremiumService: PremiumServicing {
 		self.sourceTimeout = sourceTimeout
 		self.waitingTimeout = min(waitingTimeout, sourceTimeout)
 		self.productIds = productIds
+		self.priceCache = priceCache
 		// PM-02 row 9: an app built without Adapty has nobody to wait for. Its question is closed
 		// before it is ever asked, so returning to the foreground costs it nothing.
 		isQuestionOpen = adapty != nil
@@ -116,6 +120,18 @@ final class PremiumService: PremiumServicing {
 		// PM-02: the impatient deadline. The splash is waiting behind this one, and a source that
 		// does not make it leaves the question open rather than unanswered for good.
 		refresh(timeout: waitingTimeout)
+
+		// PM-07: proactively warms the price cache right away, without waiting for a screen to
+		// call `products(placement:)` — so the first paywall this session can read a fresher
+		// answer than whatever `products(placement:)` itself would still be waiting on.
+		let apple = self.apple
+		let productIds = self.productIds
+		let priceCache = self.priceCache
+		Task {
+			let fresh = await apple?.products(ids: productIds) ?? [:]
+			guard !fresh.isEmpty else { return }
+			_ = await priceCache.merge(fresh: fresh)
+		}
 	}
 
 	/// PM-02: one barrier instead of two in-flight flags. Both sources are asked at once and the
@@ -393,6 +409,7 @@ final class PremiumService: PremiumServicing {
 		}
 		let apple = self.apple
 		let productIds = self.productIds
+		let priceCache = self.priceCache
 		Task {
 			let listed: [PremiumProduct]
 			switch await adapty.products(placement: placement) {
@@ -408,16 +425,23 @@ final class PremiumService: PremiumServicing {
 			if listed.isEmpty {
 				// The placement did not load — an unloaded paywall must not leave a screen with no
 				// prices at all. Fall back to the ids handed to `init` and price them from the store
-				// directly; an id the store also stayed silent about is simply not in the result.
-				let priced = await apple?.products(ids: productIds) ?? [:]
-				DispatchQueue.main.async { completion(Array(priced.values)) }
+				// directly; an id the store also stayed silent about falls back to the price cache,
+				// and one the cache never saw either is simply not in the result.
+				let fresh = await apple?.products(ids: productIds) ?? [:]
+				let merged = await priceCache.merge(fresh: fresh)
+				let fromCache = await priceCache.cached(ids: productIds.subtracting(merged.keys))
+				DispatchQueue.main.async { completion(Array(merged.values) + Array(fromCache.values)) }
 				return
 			}
-			let priced = await apple?.products(ids: Set(listed.map(\.id))) ?? [:]
-			// A product the store stayed silent about (not approved yet, offline) keeps Adapty's
-			// copy: a slightly staler price beats a paywall with a hole in it.
-			let merged = listed.map { priced[$0.id] ?? $0 }
-			DispatchQueue.main.async { completion(merged) }
+			let ids = Set(listed.map(\.id))
+			let fresh = await apple?.products(ids: ids) ?? [:]
+			let merged = await priceCache.merge(fresh: fresh)
+			let fromCache = await priceCache.cached(ids: ids.subtracting(merged.keys))
+			// PM-07: fresh StoreKit beats the price cache beats Adapty's own copy — the store's
+			// last-known answer is more accurate than Adapty's, and Adapty is the fallback of last
+			// resort, for an id neither this session nor any previous one ever priced.
+			let result = listed.map { merged[$0.id] ?? fromCache[$0.id] ?? $0 }
+			DispatchQueue.main.async { completion(result) }
 		}
 	}
 }

@@ -92,13 +92,17 @@ enum TestModeCheck {
 		let flags = TestModeFlagParser.parse(arguments)
 		let store = CountingStore(cached: cached, premium: premium)
 		let adapty = FakeAdaptySource(flags: flags, levels: levels, productIds: productIds, sink: sink)
+		// A fresh suite per call, exactly like `CountingStore` above — `UserDefaults.standard`
+		// would let one row's cached price leak into the next row's assertions.
+		let priceCache = PriceCache(defaults: UserDefaults(suiteName: UUID().uuidString)!)
 		let service = PremiumService(
 			store: store,
 			adapty: adapty,
 			apple: FakeAppleStore(flags: flags, productIds: productIds),
 			levels: levels,
 			sourceTimeout: 5,
-			productIds: productIds
+			productIds: productIds,
+			priceCache: priceCache
 		)
 		return (service, store, flags, adapty)
 	}

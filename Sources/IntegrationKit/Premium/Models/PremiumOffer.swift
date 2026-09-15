@@ -7,8 +7,8 @@ import Foundation
 
 /// An introductory offer on a product — free trial, pay-up-front, or pay-as-you-go discount.
 /// Shaped after `AdaptyProductDiscount`, trimmed to what a paywall actually shows.
-public struct PremiumOffer: Equatable, Sendable {
-	public enum PaymentMode: String, Equatable, Sendable {
+public struct PremiumOffer: Equatable, Sendable, Codable {
+	public enum PaymentMode: String, Equatable, Sendable, Codable {
 		case payAsYouGo
 		case payUpFront
 		case freeTrial
