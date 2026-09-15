@@ -25,9 +25,9 @@ final class StoreKitService: AppleSubscribing {
 	// MARK: - AppleSubscribing
 
 	/// `Transaction.currentEntitlements` reads the device's own transaction cache — it does not
-	/// throw and works offline, so unlike the SwiftyStoreKit-era receipt check this answers `nil`
-	/// only for a genuine surprise (Apple removing the sequence's guarantees), never for "offline"
-	/// or "sandbox" the way a network receipt validator could.
+	/// throw and works offline, so unlike a network receipt validator this answers `nil` only for a
+	/// genuine surprise (Apple removing the sequence's guarantees), never for "offline" or
+	/// "sandbox".
 	///
 	/// PM-08 row 5: a purchase the queue just delivered is NOT answered from here — this reads only
 	/// what StoreKit currently entitles. That mark lives one layer up, in

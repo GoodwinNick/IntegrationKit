@@ -25,12 +25,12 @@ public struct IntegrationKit {
 	///
 	/// A second `configure` used to build a whole second graph. Nothing refused it: every guard that
 	/// looks like it would — `isConfigured`, `didStart`, `didAddIDFAPlugin` — is an instance flag,
-	/// and this method makes fresh instances each time. The expensive half was silent, because
-	/// SwiftyStoreKit keeps the *first* `completeTransactions` and ignores every later one: the kit
-	/// the app went on to hold had no delivery path for an interrupted purchase, so a user who paid
-	/// simply never got it. The cheaper half was a second `didBecomeActive` observer refreshing
-	/// paywalls twice for the rest of the process, and a second Adapty profile fetch and Apple
-	/// receipt validation per call.
+	/// and this method makes fresh instances each time. The graph is not free even so: its
+	/// `AdaptyService` calls `Adapty.activate` again, which the SDK itself refuses and reports
+	/// through `ConfigurationIssues` (`activateOnceError`) — loud, but it only skips that call's own
+	/// delegate re-registration and identity write, not the rest of the graph. The rest still runs a
+	/// second `didBecomeActive` observer refreshing paywalls twice for the process, and a second
+	/// Adapty profile fetch and StoreKit entitlements check per call.
 	///
 	/// The other way is dropping the returned value. `AppsFlyerLib` holds both of its delegates
 	/// weakly and the foreground observer does not own the service either, so the struct was the
