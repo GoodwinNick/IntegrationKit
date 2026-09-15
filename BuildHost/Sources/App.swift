@@ -45,7 +45,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 			adaptyKey: "public_live_fake_adapty_key",
 			placements: ["main", "onboarding"],
 			sessionsCounter: 1,
-			sharedSecret: "00000000000000000000000000000000",
 			productIds: ["year.sub", "week.sub"],
 			isDebug: isDebug,
 			isTestsRunning: isTestsRunning,

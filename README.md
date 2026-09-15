@@ -235,12 +235,12 @@ xcodegen that links the package and proves the public API is enough:
 cd BuildHost && xcb app-sim
 ```
 
-`Checks/` has twelve self-checks. Eleven compile the real source files with
+`Checks/` has fifteen self-checks. Fourteen compile the real source files with
 `swiftc` against stub SDK modules — no Xcode, no XCTest, no network, no real
-SDK linked; `integration-kit-check.sh` is the one of those eleven that also
-*runs* the composition root, the way an app does. The twelfth,
+SDK linked; `integration-kit-check.sh` is the one of those fourteen that also
+*runs* the composition root, the way an app does. The fifteenth,
 `buildhost-check.sh`, runs the `BuildHost` build above, because the other
-eleven never link a real SDK:
+fourteen never link a real SDK:
 
 ```bash
 for s in Checks/*.sh; do "./$s"; done

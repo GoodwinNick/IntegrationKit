@@ -67,6 +67,20 @@ guide is the same as it was.
 The rest is source-compatible: no protocol the app implements changed, and no
 public model lost a case.
 
+### Upgrading from 0.6.x
+
+One thing changes at the call site.
+
+| What | Then (0.6.x) | Now (0.7.0) |
+|---|---|---|
+| `IntegrationKit.configure(..., sharedSecret:, ...)` | An App Store Connect shared secret, used to validate the receipt over the network | **Parameter removed, no default.** StoreKit 2 validates `Transaction.currentEntitlements` locally and cryptographically — there is no shared secret to configure and no server round trip to turn off. Delete the argument at the call site or the build fails. |
+
+The engine underneath changed too — SwiftyStoreKit is gone, native StoreKit 2
+runs the receipt check, restore and fallback purchase; see
+[The StoreKit side](#the-storekit-side) for what that means for behaviour.
+Nothing else at the call site moved: `productIds`, `purchase`, `restore` and
+every other `PremiumServicing` member are unchanged.
+
 ### 2. Add `GoogleService-Info.plist`
 
 Your own Firebase project's config file (Firebase console), dropped into the
