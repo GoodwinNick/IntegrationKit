@@ -20,10 +20,14 @@ let package = Package(
 		// stop resolving altogether. Apps pin; libraries range. The three SDKs below are the
 		// exception, and each says why in its own comment — their APIs have broken inside a minor.
 		// The cost of this choice is real and belongs to whoever reads a dashboard: the observability
-		// facts in the schemas were verified against Firebase 12.0.0 and Amplitude 1.18.8, so a
+		// facts in the schemas were verified against Firebase 12.19.2 and Amplitude 1.18.8, so a
 		// resolver that picks a fresher minor is a resolver picking untested behaviour. That risk
 		// lands on Crashlytics collection and on Amplitude batching — never on money.
-		.package(url: "https://github.com/firebase/firebase-ios-sdk.git", from: "12.0.0"),
+		// Floor raised from 12.0.0 to 12.19.2: 12.19.0 and 12.19.1 crash in SPM builds without the
+		// -ObjC linker flag (`-[APMMeasurement fetchSBT]: unrecognized selector`, firebase-ios-sdk
+		// issue #16634) — fixed upstream in 12.19.2. The floor excludes the broken minors only; the
+		// range still runs open to the next major, same as before.
+		.package(url: "https://github.com/firebase/firebase-ios-sdk.git", from: "12.19.2"),
 		.package(url: "https://github.com/amplitude/Amplitude-Swift.git", from: "1.18.7"),
 		// Adapty змінює API всередині мінорних версій (2.11 переробила remoteConfig, 4.1 —
 		// getPaywall на getFlow), тому діапазон вужчий за решту.
