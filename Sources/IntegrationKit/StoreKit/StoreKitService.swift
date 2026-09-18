@@ -16,6 +16,9 @@ import Foundation
 import StoreKit
 
 final class StoreKitService: AppleSubscribing {
+	/// Log tag of every line this layer prints.
+	private static let tag = "StoreKitService"
+
 	private let productIds: Set<String>
 
 	init(productIds: Set<String>) {
@@ -57,7 +60,7 @@ final class StoreKitService: AppleSubscribing {
 		do {
 			try await AppStore.sync()
 		} catch {
-			debugLog("[IntegrationKit] AppStore.sync failed: \(error)")
+			debugLog(tag: Self.tag, level: .error, "AppStore.sync failed: \(error)")
 			return .failed
 		}
 		for await result in Transaction.currentEntitlements {
@@ -75,7 +78,7 @@ final class StoreKitService: AppleSubscribing {
 	func purchase(productId: String) async -> PurchaseOutcome {
 		guard AppStore.canMakePayments else { return .unavailable }
 		guard let product = await storeProducts(ids: [productId])[productId] else {
-			debugLog("[IntegrationKit] purchase: '\(productId)' not found in the store")
+			debugLog(tag: Self.tag, level: .error, "purchase: '\(productId)' not found in the store")
 			return .unavailable
 		}
 		do {
@@ -86,7 +89,7 @@ final class StoreKitService: AppleSubscribing {
 					// StoreKit's own signature check failed on a transaction we just paid for — the
 					// same stance Adapty takes for a transaction its listener cannot verify: not
 					// granted. `AppStore.sync()` (restore) is the user's way to retry the check.
-					debugLog("[IntegrationKit] purchase: unverified transaction for '\(productId)': \(error)")
+					debugLog(tag: Self.tag, level: .error, "purchase: unverified transaction for '\(productId)': \(error)")
 					return .failed
 				case .userCancelled:
 					return .cancelled
@@ -97,7 +100,7 @@ final class StoreKitService: AppleSubscribing {
 					return .failed
 			}
 		} catch {
-			debugLog("[IntegrationKit] purchase failed: \(error)")
+			debugLog(tag: Self.tag, level: .error, "purchase failed: \(error)")
 			return .failed
 		}
 	}
@@ -118,14 +121,14 @@ final class StoreKitService: AppleSubscribing {
 			let byId = Dictionary(products.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 			if byId.count < ids.count {
 				let missing = ids.subtracting(byId.keys)
-				debugLog("[IntegrationKit] Product.products(for:) dropped unknown ids: \(missing.sorted())")
+				debugLog(tag: Self.tag, level: .error, "Product.products(for:) dropped unknown ids: \(missing.sorted())")
 			}
 			for product in products {
-				debugLog("[IntegrationKit] \(Self.describe(product))")
+				debugLog(tag: Self.tag, Self.describe(product))
 			}
 			return byId
 		} catch {
-			debugLog("[IntegrationKit] Product.products(for:) failed: \(error)")
+			debugLog(tag: Self.tag, level: .error, "Product.products(for:) failed: \(error)")
 			return [:]
 		}
 	}
@@ -142,7 +145,7 @@ final class StoreKitService: AppleSubscribing {
 		let period = product.subscription.map { "\($0.subscriptionPeriod.value) \($0.subscriptionPeriod.unit)" } ?? "none"
 		let offer: String
 		if let subscription = product.subscription, let intro = subscription.introductoryOffer {
-			offer = "\(intro.paymentMode) \(intro.periodCount)×\(intro.period.value) \(intro.period.unit) at \(intro.displayPrice)"
+			offer = "\(intro.paymentMode.rawValue) \(intro.periodCount)×\(intro.period.value) \(intro.period.unit) at \(intro.displayPrice)"
 		} else {
 			offer = "none"
 		}
