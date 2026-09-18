@@ -24,6 +24,7 @@ compiler proves the public API is enough on its own.
 - [The StoreKit side](#the-storekit-side)
 - [Deep links](#deep-links)
 - [Building and checks](#building-and-checks)
+- [DEBUG logs](#debug-logs)
 - [Troubleshooting](#troubleshooting)
 - [Readiness checklist](#readiness-checklist)
 
@@ -1263,6 +1264,73 @@ it, so an assert can be red for a while by design — a specification waiting to
 be met rather than a regression. All twelve scripts are green as of this
 commit; a red assert names its row, and that row's "Стан у коді" column says
 where it stands.
+
+## DEBUG logs
+
+Every layer in the package prints through one mechanism —
+`debugLog(tag:level:_:)` in `Sources/IntegrationKit/Support/DebugLog.swift` —
+and every line is **silent in a Release build**: the gate is `#if DEBUG`
+inside `debugLog` itself, not at each call site, so no line added to any
+service needs a switch of its own and none of them reaches a shipping
+build's console. Each line carries a `[IntegrationKit][ServiceName]` prefix
+so it can be traced to one layer without reading the message, and an
+`[error]` marker for the failure lines.
+
+**What gets printed, service by service:**
+
+- **Adapty** — every configuration step, every flow load, and (since 0.7.1)
+  the **paywall's remote config itself** — the JSON a screen actually reads,
+  not just "loaded" — every `getRemoteValue`/`remoteValue` call with the
+  value it resolved to, and every product list load with the product ids,
+  not just a count.
+- **Premium (the arbiter)** — every purchase and restore outcome, and
+  (since 0.7.1) the **resolved verdict** on every `apply` — `isPremium`,
+  `source`, `isVerified`, `expiresAt` — including the line printed when an
+  answer is dropped for arriving after a fresher one already landed
+  (PM-06 row 2).
+- **PriceCache** (since 0.7.1) — how many prices came in fresh on a merge
+  and how many carried an old introductory offer forward, and how many of
+  the ids a screen asked for only the cache remembered.
+- **AppsFlyer, Amplitude, Remote Config (Firebase)** — configuration, every
+  event and user property, every conversion-data and deep-link callback.
+
+**What never gets printed:** API keys, dev keys, tokens, receipts — every
+credential is logged as `"set"`/`"empty"` only, never its value. A remote
+config's JSON is printed in full because it is paywall content, not a
+secret, capped at roughly 2 KB per line so one oversized dashboard blob
+cannot push everything above it out of the console — a config longer than
+that ends in `…truncated`.
+
+**Reading it from a test, without a running app:** `debugLogSink` in
+`DebugLog.swift` is the same hook `Checks/` uses to assert on a specific
+trace instead of parsing `print` output — set it to a closure and every line
+described above also reaches it, in a Release build too.
+
+**Real output**, captured from two of the package's own `Checks/` scripts
+(nothing here is hand-written):
+
+Paywall config and `remoteValue`, from `Checks/adapty-service-check.sh`
+(`AdaptyServiceCheck.swift`, AD-07):
+
+```
+[IntegrationKit][AdaptyService] remote config 'main' locale 'de': {"title":"Hallo"}
+[IntegrationKit][AdaptyService] remote config 'main' locale 'en': {"title":"Hello"}
+[IntegrationKit][AdaptyService] flow loaded for 'main'
+[IntegrationKit][AdaptyService] products loaded for 'main': 1 — ["year.sub"]
+[IntegrationKit][AdaptyService] remoteValue 'main'.'title' → Hello (String)
+```
+
+The premium verdict and the price cache, from `Checks/test-mode-check.sh`
+(`FakeAdaptySource` / `FakeAppleStore`, PM-06):
+
+```
+[IntegrationKit][PremiumService] start: seeded cache isPremium false, source none — asking sources now
+[IntegrationKit][PremiumService] apply: isPremium false, source none, verified false, expires never (gen 1)
+[IntegrationKit][PriceCache] merge: 1 fresh price(s), 0 carried an old introductory offer
+[IntegrationKit][PremiumService] apply: isPremium true, source apple, verified false, expires 2026-10-18 12:32:26 +0000 (gen 2)
+[IntegrationKit][PremiumService] purchase 'sub.month' on 'main' → purchased, didPay true
+[IntegrationKit][PremiumService] apply: generation 2 dropped — generation 3 already applied
+```
 
 ## Troubleshooting
 

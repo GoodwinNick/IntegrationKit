@@ -39,6 +39,10 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	private static let initialBackoff: TimeInterval = 0.5
 	private static let maxBackoff: TimeInterval = 30
 
+	/// AD-07: how much of a remote config's JSON reaches the log — a paywall config can run long,
+	/// and a console that never stops scrolling is as useless as one that says nothing.
+	private static let remoteConfigLogLimit = 2_000
+
 	/// How long this layer waits for the SDK before deciding without it — see `AdaptyDeadlines`.
 	private let deadlines: AdaptyDeadlines
 
@@ -623,12 +627,34 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 				order.append(locale)
 			}
 			byLocale[locale] = dictionary
+			// The paywall config as the dashboard actually sent it — the whole reason a screen
+			// behaves differently after a dashboard edit is in here, not in anything this layer
+			// computes on top of it.
+			debugLog(tag: Self.tag, "remote config '\(placement)' locale '\(locale)': \(Self.describeJSON(dictionary))")
 		}
 		remoteConfigs[placement] = byLocale
 		remoteConfigLocales[placement] = order
 		if byLocale.isEmpty {
 			debugLog(tag: Self.tag, "flow '\(placement)' carries no remote config")
 		}
+	}
+
+	/// A `[String: Any]` remote config, rendered as JSON and capped at `remoteConfigLogLimit` — full
+	/// enough to read a paywall's whole configuration, short enough that one oversized dashboard blob
+	/// does not push everything above it out of the console.
+	private static func describeJSON(_ dictionary: [String: Any]) -> String {
+		guard JSONSerialization.isValidJSONObject(dictionary),
+		      let data = try? JSONSerialization.data(withJSONObject: dictionary, options: [.sortedKeys]),
+		      let text = String(data: data, encoding: .utf8)
+		else {
+			return truncated(String(describing: dictionary), limit: remoteConfigLogLimit)
+		}
+		return truncated(text, limit: remoteConfigLogLimit)
+	}
+
+	private static func truncated(_ text: String, limit: Int) -> String {
+		guard text.utf8.count > limit else { return text }
+		return String(decoding: text.utf8.prefix(limit), as: UTF8.self) + "…truncated"
 	}
 
 	private func fetchProductsForFlow(placement: String) {
@@ -640,6 +666,7 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 					self.productBackoff[placement] = nil
 					self.failedProductPlacements.remove(placement)
 					self.cachedProducts[placement] = products
+					debugLog(tag: Self.tag, "products loaded for '\(placement)': \(products.count) — \(products.map(\.vendorProductId))")
 				case .failure(let error):
 					// Silence here is what left a purchase screen empty with no reason anywhere
 					// (AD-02 row 2, AD-03 row 2). Code 1000 covers two causes the SDK itself cannot
@@ -725,9 +752,18 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	// MARK: - AD-07: remote values and impressions.
 
 	func getRemoteValue<Type>(placement: String, key: String, locale: String) -> RemoteValue<Type> {
-		guard flows[placement] != nil else { return .notReady }
-		guard let config = remoteConfig(placement: placement, locale: locale) else { return .noConfig }
-		guard let raw = config[key] else { return .notSet }
+		guard flows[placement] != nil else {
+			debugLog(tag: Self.tag, "remoteValue '\(placement)'.'\(key)' → notReady (no flow loaded yet)")
+			return .notReady
+		}
+		guard let config = remoteConfig(placement: placement, locale: locale) else {
+			debugLog(tag: Self.tag, "remoteValue '\(placement)'.'\(key)' → noConfig (no remote config for locale '\(locale)')")
+			return .noConfig
+		}
+		guard let raw = config[key] else {
+			debugLog(tag: Self.tag, "remoteValue '\(placement)'.'\(key)' → notSet (key missing from the config)")
+			return .notSet
+		}
 		guard let value = raw as? Type else {
 			// The value is there and is of another type — a dashboard mistake, not a missing key. It
 			// is the one branch of the five nobody would ever find on their own (AD-07 row 1).
@@ -737,6 +773,7 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 			)
 			return .wrongType
 		}
+		debugLog(tag: Self.tag, "remoteValue '\(placement)'.'\(key)' → \(Self.truncated(String(describing: value), limit: 500)) (\(Type.self))")
 		return .value(value)
 	}
 
@@ -979,6 +1016,7 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	/// for a paywall opened right after launch.
 	func products(placement: String) async -> AdaptyProductsAnswer {
 		if let cached = cachedProducts[placement], !cached.isEmpty {
+			debugLog(tag: Self.tag, "products for '\(placement)': \(cached.count) from cache — \(cached.map(\.vendorProductId))")
 			return .products(cached.map(PremiumProduct.init(product:)))
 		}
 		// AD-03 row 1: "the paywall has not arrived" and "listing its products failed" are different
@@ -1005,6 +1043,7 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		// The same cache `fetchProductsForFlow` writes; Adapty is activated with
 		// `callbackDispatchQueue: .main`, so both writers land on the main queue.
 		cachedProducts[placement] = products
+		debugLog(tag: Self.tag, "products for '\(placement)': \(products.count) fetched — \(products.map(\.vendorProductId))")
 		return .products(products.map(PremiumProduct.init(product:)))
 	}
 

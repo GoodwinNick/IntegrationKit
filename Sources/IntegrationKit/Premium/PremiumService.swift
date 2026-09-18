@@ -10,6 +10,9 @@ import Adapty
 import Foundation
 
 final class PremiumService: PremiumServicing {
+	/// Log tag of every line this layer prints.
+	private static let tag = "PremiumService"
+
 	private let store: PremiumStateStoring
 	private let adapty: AdaptyPremiumProviding?
 	private let apple: AppleSubscribing?
@@ -110,7 +113,9 @@ final class PremiumService: PremiumServicing {
 				isVerified: false
 			)
 		}
+		let seeded = store.cached
 		lock.unlock()
+		debugLog(tag: Self.tag, "start: seeded cache isPremium \(seeded?.isPremium ?? false), source \(seeded?.source.rawValue ?? "none") — asking sources now")
 		apply(adapty: nil, apple: nil, generation: nextGeneration())
 
 		adapty?.premiumObserver = { [weak self] profile, isVerified in
@@ -227,6 +232,7 @@ final class PremiumService: PremiumServicing {
 		// overtaken by an ordinary refresh would lose that mark, and the counter meant to stop a
 		// flicker would cost someone the access they paid for.
 		guard localPurchase || generation > appliedGeneration else {
+			debugLog(tag: Self.tag, "apply: generation \(generation) dropped — generation \(appliedGeneration) already applied")
 			lock.unlock()
 			return
 		}
@@ -251,6 +257,10 @@ final class PremiumService: PremiumServicing {
 		// disagree, which is exactly what happens if the mirror is written after unlock.
 		// The mirror is assigned every time — its own setter notifies on change only.
 		store.premium = state.isPremium
+		debugLog(
+			tag: Self.tag,
+			"apply: isPremium \(state.isPremium), source \(state.source.rawValue), verified \(state.isVerified), expires \(state.expiresAt.map(String.init(describing:)) ?? "never") (gen \(generation))"
+		)
 		lock.unlock()
 	}
 
@@ -297,6 +307,7 @@ final class PremiumService: PremiumServicing {
 			// No timeout around this one on purpose: StoreKit may be showing an account prompt,
 			// and there is no continuation to leak — the deadline guard belongs to the sources.
 			let outcome = await apple.restore()
+			debugLog(tag: Self.tag, "restore → \(outcome)")
 			await self?.resolveBoth(localPurchase: outcome == .restored, timeout: deadline)
 			DispatchQueue.main.async { completion(outcome) }
 		}
@@ -371,6 +382,7 @@ final class PremiumService: PremiumServicing {
 				// `didPay` as the mark above on purpose: one condition, not two that drift apart.
 				adapty.setProfileValue(value: placement, key: "purchasePlace")
 			}
+			debugLog(tag: Self.tag, "purchase '\(productId)' on '\(placement)' → \(outcome), didPay \(didPay)")
 			await self?.resolveBoth(localPurchase: didPay, timeout: deadline)
 			self?.endPurchase()
 			DispatchQueue.main.async { completion(outcome) }
@@ -416,10 +428,10 @@ final class PremiumService: PremiumServicing {
 				case .products(let products):
 					listed = products
 				case .notReady:
-					debugLog(tag: "PremiumService", "'\(placement)' has no paywall yet — pricing the configured ids from the store")
+					debugLog(tag: Self.tag, "'\(placement)' has no paywall yet — pricing the configured ids from the store")
 					listed = []
 				case .failed:
-					debugLog(tag: "PremiumService", level: .error, "Adapty could not list the products of '\(placement)' — pricing the configured ids from the store")
+					debugLog(tag: Self.tag, level: .error, "Adapty could not list the products of '\(placement)' — pricing the configured ids from the store")
 					listed = []
 			}
 			if listed.isEmpty {

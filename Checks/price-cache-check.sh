@@ -8,5 +8,7 @@ swiftc -o "$out" \
 	Sources/IntegrationKit/Premium/Models/PremiumProduct.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumOffer.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumPeriod.swift \
-	Sources/IntegrationKit/Premium/Helpers/PriceCache.swift
+	Sources/IntegrationKit/Premium/Helpers/PriceCache.swift \
+	Sources/IntegrationKit/Support/LogLevel.swift \
+	Sources/IntegrationKit/Support/DebugLog.swift
 exec "$out"

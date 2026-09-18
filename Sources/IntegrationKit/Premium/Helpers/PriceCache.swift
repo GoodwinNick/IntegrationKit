@@ -14,6 +14,8 @@ import Foundation
 /// shape as `UserDefaultsPremiumStore`. An `actor` because `merge` reads then writes the same
 /// dictionary, and two placements resolving at once must not race each other's cache entry.
 actor PriceCache {
+	private static let tag = "PriceCache"
+
 	private let defaults: UserDefaults
 	private let key: String
 	private var products: [String: PremiumProduct]
@@ -29,11 +31,13 @@ actor PriceCache {
 	/// introductory offer keeps its cached value when StoreKit answers `nil` this time. Writes
 	/// the merge back to disk and returns it, keyed the same as `fresh`.
 	func merge(fresh: [String: PremiumProduct]) -> [String: PremiumProduct] {
+		var carriedCount = 0
 		for (id, product) in fresh {
 			guard product.introductoryOffer == nil, let carried = products[id]?.introductoryOffer else {
 				products[id] = product
 				continue
 			}
+			carriedCount += 1
 			products[id] = PremiumProduct(
 				id: product.id,
 				localizedTitle: product.localizedTitle,
@@ -46,11 +50,16 @@ actor PriceCache {
 		}
 		let data = try? JSONEncoder().encode(products)
 		defaults.set(data, forKey: key)
+		debugLog(tag: Self.tag, "merge: \(fresh.count) fresh price(s), \(carriedCount) carried an old introductory offer")
 		return fresh.keys.reduce(into: [:]) { $0[$1] = products[$1] }
 	}
 
 	/// The previous session's answer, for ids StoreKit stayed silent about this time.
 	func cached(ids: Set<String>) -> [String: PremiumProduct] {
-		products.filter { ids.contains($0.key) }
+		let hit = products.filter { ids.contains($0.key) }
+		if !ids.isEmpty {
+			debugLog(tag: Self.tag, "cached: \(hit.count) of \(ids.count) id(s) served from a previous session — missing \(Array(ids.subtracting(hit.keys)).sorted())")
+		}
+		return hit
 	}
 }

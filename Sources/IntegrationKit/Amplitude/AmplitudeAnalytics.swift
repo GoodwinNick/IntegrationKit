@@ -41,6 +41,9 @@ final class AmplitudeAnalytics: AnalyticsTracking {
 	/// checks' own call sites stay short — the composition root always passes the app's answer, and
 	/// the app always computes it.
 	func configure(apiKey: String, deviceId: String, firstOpenEvent: String? = nil, isTestsRunning: Bool = false) {
+		// The key itself never reaches the log — it is a credential, and "set"/"empty" is the only
+		// thing about it any branch below actually reads.
+		debugLog(tag: Self.tag, "configure: apiKey \(apiKey.isEmpty ? "empty" : "set"), deviceId \(deviceId), firstOpenEvent \(firstOpenEvent ?? "none"), isTestsRunning \(isTestsRunning)")
 		// AN-01 rows 3 and 8: the second of the two ways this layer is legally off. Ahead of every
 		// other line on purpose — the first-open gate below writes `UserDefaults`, and a test run
 		// that spent it would take this device out of the install funnel for good. The reason is
