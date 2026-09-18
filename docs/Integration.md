@@ -1281,13 +1281,24 @@ so it can be traced to one layer without reading the message, and an
 - **Adapty** — every configuration step, every flow load, and (since 0.7.1)
   the **paywall's remote config itself** — the JSON a screen actually reads,
   not just "loaded" — every `getRemoteValue`/`remoteValue` call with the
-  value it resolved to, and every product list load with the product ids,
-  not just a count.
+  value it resolved to, and every product list load (both the flow's own
+  load and a placement's `products(placement:)`) with the **full field set**
+  per product — price, currency, subscription period, and the offer Adapty
+  resolved (type, period, price) — not just the id.
+- **StoreKit** — the same full field set for every raw `Product.products(for:)`
+  answer, before anything in the package merges or caches it: price,
+  currency, **region** (the pricing storefront the product was quoted in,
+  not the device's own locale), the StoreKit product type
+  (auto-renewable, non-renewable, …), the subscription period, and the
+  introductory offer.
 - **Premium (the arbiter)** — every purchase and restore outcome, and
   (since 0.7.1) the **resolved verdict** on every `apply` — `isPremium`,
   `source`, `isVerified`, `expiresAt` — including the line printed when an
   answer is dropped for arriving after a fresher one already landed
-  (PM-06 row 2).
+  (PM-06 row 2). `products(placement:completion:)` also prints one line per
+  product in the list it is about to hand back — price, period, the
+  introductory offer, and **which of the three sources answered for it**
+  (StoreKit, Adapty, or the price cache) — PM-07's merge made readable.
 - **PriceCache** (since 0.7.1) — how many prices came in fresh on a merge
   and how many carried an old introductory offer forward, and how many of
   the ids a screen asked for only the cache remembered.
@@ -1306,8 +1317,10 @@ that ends in `…truncated`.
 trace instead of parsing `print` output — set it to a closure and every line
 described above also reaches it, in a Release build too.
 
-**Real output**, captured from two of the package's own `Checks/` scripts
-(nothing here is hand-written):
+**Real output**, captured from the package's own `Checks/` scripts, plus
+(for the StoreKit line only — `Product` has no public initializer, so no
+harness can fabricate one; see [The StoreKit side](#the-storekit-side)) a
+real device fetch:
 
 Paywall config and `remoteValue`, from `Checks/adapty-service-check.sh`
 (`AdaptyServiceCheck.swift`, AD-07):
@@ -1318,6 +1331,15 @@ Paywall config and `remoteValue`, from `Checks/adapty-service-check.sh`
 [IntegrationKit][AdaptyService] flow loaded for 'main'
 [IntegrationKit][AdaptyService] products loaded for 'main': 1 — ["year.sub"]
 [IntegrationKit][AdaptyService] remoteValue 'main'.'title' → Hello (String)
+```
+
+Every product line now carries the full field set, not just the id — one
+entry per product, across the three layers that touch a price:
+
+```
+[IntegrationKit][AdaptyService] products loaded for 'main': 1 — ["year.sub: $39.99 (39.99 USD), period 1 year, offer freeTrial 1×1 week at $0.00"]
+[IntegrationKit][StoreKitService] mindvox_week_free_trial: $4.99 (4.99 USD), region US, type Auto-Renewable Subscription, period 7 Day, introOffer FreeTrial 1×3 Day at $0.00
+[IntegrationKit][PremiumService] year.sub: $39.99 (39.99 USD), period 1 year, intro freeTrial 1×1 week at $0.00, source StoreKit
 ```
 
 The premium verdict and the price cache, from `Checks/test-mode-check.sh`
