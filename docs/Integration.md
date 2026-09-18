@@ -1290,7 +1290,15 @@ so it can be traced to one layer without reading the message, and an
   currency, **region** (the pricing storefront the product was quoted in,
   not the device's own locale), the StoreKit product type
   (auto-renewable, non-renewable, …), the subscription period, and the
-  introductory offer.
+  introductory offer. Also: the device's `Storefront` (`countryCode`, `id`)
+  and `Locale.current` once when the StoreKit layer comes up, and again on
+  every `Storefront.updates` change — traced back to a pricing bug where a
+  sandbox account StoreKit could not see priced from the wrong storefront,
+  and a re-login moved the storefront mid-session without a new price
+  request to reveal it. Diagnostic only, so unlike everything else on this
+  list it is compiled out of a Release build entirely (`#if DEBUG` around
+  the listener itself, not just the print) rather than left as an idle
+  listener with nothing to print.
 - **Premium (the arbiter)** — every purchase and restore outcome, and
   (since 0.7.1) the **resolved verdict** on every `apply` — `isPremium`,
   `source`, `isVerified`, `expiresAt` — including the line printed when an

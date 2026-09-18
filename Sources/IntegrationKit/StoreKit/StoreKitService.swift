@@ -23,7 +23,32 @@ final class StoreKitService: AppleSubscribing {
 
 	init(productIds: Set<String>) {
 		self.productIds = productIds
+		#if DEBUG
+			// Diagnostic only — no functional use beyond the log line, so it does not exist at all
+			// outside DEBUG rather than spinning an idle listener in a shipping build. Traced back to a
+			// live pricing bug: a sandbox account StoreKit could not see answered `Product.products(for:)`
+			// with US prices while `StoreKitInternalError.noAccount` sat in the console — and after a
+			// re-login the store had already moved to UA pricing while `Storefront.current`, read right
+			// before the price request, still reported the old one. One line at init is not enough;
+			// `Storefront.updates` is the only way to see it change mid-session.
+			Task {
+				await Self.logStorefront(prefix: "at init")
+				for await storefront in Storefront.updates {
+					debugLog(tag: Self.tag, "storefront changed: countryCode \(storefront.countryCode), id \(storefront.id), locale \(Locale.current.identifier)")
+				}
+			}
+		#endif
 	}
+
+	#if DEBUG
+		private static func logStorefront(prefix: String) async {
+			let storefront = await Storefront.current
+			debugLog(
+				tag: Self.tag,
+				"storefront \(prefix): countryCode \(storefront?.countryCode ?? "nil"), id \(storefront?.id ?? "nil"), locale \(Locale.current.identifier)"
+			)
+		}
+	#endif
 
 	// MARK: - AppleSubscribing
 
