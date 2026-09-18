@@ -120,10 +120,32 @@ final class StoreKitService: AppleSubscribing {
 				let missing = ids.subtracting(byId.keys)
 				debugLog("[IntegrationKit] Product.products(for:) dropped unknown ids: \(missing.sorted())")
 			}
+			for product in products {
+				debugLog("[IntegrationKit] \(Self.describe(product))")
+			}
 			return byId
 		} catch {
 			debugLog("[IntegrationKit] Product.products(for:) failed: \(error)")
 			return [:]
 		}
+	}
+
+	/// One line per raw StoreKit answer — the store's own price, region and offer, before anything
+	/// in the package merges or caches it. `regionCode`/`currencyCode` come from the pricing locale,
+	/// the same one Adapty's own SDK reads its `regionCode` off (`AdaptyProduct.swift`), not from
+	/// `Locale.current` — a device roaming on another storefront prices from where the App Store
+	/// account is, not from the device's own region setting. `Locale.regionCode` rather than the
+	/// newer `Locale.region` — the package's floor is iOS 15.6, and `region` needs iOS 16.
+	private static func describe(_ product: Product) -> String {
+		let region = product.priceFormatStyle.locale.regionCode ?? "?"
+		let currency = product.priceFormatStyle.currencyCode
+		let period = product.subscription.map { "\($0.subscriptionPeriod.value) \($0.subscriptionPeriod.unit)" } ?? "none"
+		let offer: String
+		if let subscription = product.subscription, let intro = subscription.introductoryOffer {
+			offer = "\(intro.paymentMode) \(intro.periodCount)×\(intro.period.value) \(intro.period.unit) at \(intro.displayPrice)"
+		} else {
+			offer = "none"
+		}
+		return "\(product.id): \(product.displayPrice) (\(product.price) \(currency)), region \(region), type \(product.type.rawValue), period \(period), introOffer \(offer)"
 	}
 }

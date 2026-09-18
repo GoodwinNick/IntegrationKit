@@ -397,6 +397,20 @@ final class PremiumService: PremiumServicing {
 		lock.unlock()
 	}
 
+	/// One line per product in the list a paywall is about to draw — what it will actually show and
+	/// which of the three sources answered for it, PM-07's merge made concrete. Region/storefront is
+	/// not in `PremiumProduct` on purpose: it is `StoreKit.Product`'s own pricing-locale field
+	/// (`StoreKitService.describe(_:)` logs it at the raw fetch), and this facade type stays free of
+	/// a StoreKit import so it keeps compiling against every `Checks/` script that never links the
+	/// real SDK.
+	private static func describe(_ product: PremiumProduct, source: String) -> String {
+		let period = product.subscriptionPeriod.map { "\($0.numberOfUnits) \($0.unit.rawValue)" } ?? "none"
+		let offer = product.introductoryOffer.map {
+			"\($0.paymentMode.rawValue) \($0.numberOfPeriods)×\($0.period.numberOfUnits) \($0.period.unit.rawValue) at \($0.localizedPrice ?? $0.price.description)"
+		} ?? "none"
+		return "\(product.id): \(product.localizedPrice ?? "nil") (\(product.price) \(product.currencyCode ?? "?")), period \(period), intro \(offer), source \(source)"
+	}
+
 	// MARK: - PremiumServicing: prices.
 	// Two sources, one list: Adapty says WHICH products are on the placement (it owns the paywall),
 	// StoreKit says what they cost (it owns the storefront). Adapty's price is what its dashboard
@@ -442,6 +456,12 @@ final class PremiumService: PremiumServicing {
 				let fresh = await apple?.products(ids: productIds) ?? [:]
 				let merged = await priceCache.merge(fresh: fresh)
 				let fromCache = await priceCache.cached(ids: productIds.subtracting(merged.keys))
+				for product in merged.values {
+					debugLog(tag: Self.tag, Self.describe(product, source: "StoreKit"))
+				}
+				for product in fromCache.values {
+					debugLog(tag: Self.tag, Self.describe(product, source: "PriceCache"))
+				}
 				DispatchQueue.main.async { completion(Array(merged.values) + Array(fromCache.values)) }
 				return
 			}
@@ -453,6 +473,10 @@ final class PremiumService: PremiumServicing {
 			// last-known answer is more accurate than Adapty's, and Adapty is the fallback of last
 			// resort, for an id neither this session nor any previous one ever priced.
 			let result = listed.map { merged[$0.id] ?? fromCache[$0.id] ?? $0 }
+			for product in result {
+				let source = merged[product.id] != nil ? "StoreKit" : (fromCache[product.id] != nil ? "PriceCache" : "Adapty")
+				debugLog(tag: Self.tag, Self.describe(product, source: source))
+			}
 			DispatchQueue.main.async { completion(result) }
 		}
 	}

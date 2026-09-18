@@ -657,6 +657,18 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		return String(decoding: text.utf8.prefix(limit), as: UTF8.self) + "…truncated"
 	}
 
+	/// One line per raw Adapty product — every field `PremiumProduct+Adapty.swift` reads, before
+	/// StoreKit's own price ever gets a chance to override it. Sticks to the fields
+	/// `Checks/Stubs/Adapty/AdaptyPaywallProduct.swift` also carries, so this compiles the same
+	/// against the stub and the real SDK.
+	private static func describe(_ product: AdaptyPaywallProduct) -> String {
+		let period = product.subscriptionPeriod.map { "\($0.numberOfUnits) \($0.unit)" } ?? "none"
+		let offer = product.subscriptionOffer.map {
+			"\($0.paymentMode) \($0.numberOfPeriods)×\($0.subscriptionPeriod.numberOfUnits) \($0.subscriptionPeriod.unit) at \($0.localizedPrice ?? $0.price.description)"
+		} ?? "none"
+		return "\(product.vendorProductId): \(product.localizedPrice ?? "nil") (\(product.price) \(product.currencyCode ?? "?")), period \(period), offer \(offer)"
+	}
+
 	private func fetchProductsForFlow(placement: String) {
 		guard let flow = flows[placement] else { return }
 		Adapty.getPaywallProducts(flow: flow) { [weak self] result in
@@ -666,7 +678,7 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 					self.productBackoff[placement] = nil
 					self.failedProductPlacements.remove(placement)
 					self.cachedProducts[placement] = products
-					debugLog(tag: Self.tag, "products loaded for '\(placement)': \(products.count) — \(products.map(\.vendorProductId))")
+					debugLog(tag: Self.tag, "products loaded for '\(placement)': \(products.count) — \(products.map(Self.describe))")
 				case .failure(let error):
 					// Silence here is what left a purchase screen empty with no reason anywhere
 					// (AD-02 row 2, AD-03 row 2). Code 1000 covers two causes the SDK itself cannot
@@ -1016,7 +1028,7 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	/// for a paywall opened right after launch.
 	func products(placement: String) async -> AdaptyProductsAnswer {
 		if let cached = cachedProducts[placement], !cached.isEmpty {
-			debugLog(tag: Self.tag, "products for '\(placement)': \(cached.count) from cache — \(cached.map(\.vendorProductId))")
+			debugLog(tag: Self.tag, "products for '\(placement)': \(cached.count) from cache — \(cached.map(Self.describe))")
 			return .products(cached.map(PremiumProduct.init(product:)))
 		}
 		// AD-03 row 1: "the paywall has not arrived" and "listing its products failed" are different
@@ -1043,7 +1055,7 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		// The same cache `fetchProductsForFlow` writes; Adapty is activated with
 		// `callbackDispatchQueue: .main`, so both writers land on the main queue.
 		cachedProducts[placement] = products
-		debugLog(tag: Self.tag, "products for '\(placement)': \(products.count) fetched — \(products.map(\.vendorProductId))")
+		debugLog(tag: Self.tag, "products for '\(placement)': \(products.count) fetched — \(products.map(Self.describe))")
 		return .products(products.map(PremiumProduct.init(product:)))
 	}
 
