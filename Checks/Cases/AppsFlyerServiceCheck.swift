@@ -24,6 +24,12 @@
 //  repeat used to duplicate the event, the profile properties and the Adapty write. All three were
 //  written red first, against the schema the wrapper did not satisfy yet.
 //
+//  T46…T48 arrived the same day (Asana 1218784069310121), two rounds later: row 8's guard marked a
+//  delivery saved right after calling Adapty even when that call only joined AdaptyService's own
+//  queue until activation (row 9), and gating purely on `isActive` then never saved at all for an
+//  app that does not configure Adapty (row 10) — turning a one-time dedup into a permanent
+//  duplicate. `FakeAdapty` grew `isActive`/`isPermanentlyInactive` for these three branches.
+//
 //  All forty-two are green. Twenty of them were written red first, against
 //  schemas the wrapper did not satisfy yet, and each one names the behaviour the code had to grow
 //  rather than the shape it happened to have:
@@ -96,6 +102,11 @@ final class FakeAdapty: AdaptyServicing {
 	/// Kept beside `attributionData` rather than inside it: AF-03 row 2 has to tell "handed over
 	/// as nil" from "never handed over", and a tuple field read through `.last?` cannot say that.
 	private(set) var attributionNetworkUserIds: [String?] = []
+	/// AF-03 rows 9-10. Defaults to the happy path — Adapty already active — so every row written
+	/// before these two existed keeps meaning what it always meant. Settable so T46-T48 can drive
+	/// the other two branches.
+	var isActive = true
+	var isPermanentlyInactive = false
 
 	func configure(
 		apiKey: String,
@@ -491,6 +502,63 @@ enum AppsFlyerServiceCheck {
 				+ "time, got \(t45Analytics.events.count) event(s), \(t45Adapty.attributionData.count) "
 				+ "Adapty write(s), last campaign "
 				+ "\(String(describing: t45Analytics.events.last?.properties?["campaign"]))"
+		)
+
+		// ── AF-03 rows 9-10 — the delivered marker is only as honest as Adapty's own state ────
+		// Row 9 (Asana 1218780529173434, closed 2026-09-23): the first cut of row 8's guard saved
+		// the marker right after calling `adapty.updateAppsFlyerAttribution`, even when that call
+		// only joined AdaptyService's own queue until activation — a process death before the queue
+		// drained would lose the attribution for good. Row 10 (Asana 1218784069310121, same day):
+		// gating purely on `isActive` then never saved for an app that does not use Adapty at all,
+		// turning row 8's one-time dedup into a permanent duplicate on every foreground return. T46
+		// pins the active case, T47 the narrow "configured, not active yet" window that must still
+		// retry, T48 the permanently-off case that must not wait forever.
+		AppsFlyerLib.reset()
+		UserDefaults.standard.removeObject(forKey: lastDeliveredAttributionKey)
+		let t46Analytics = FakeAnalytics()
+		let t46Adapty = FakeAdapty()
+		t46Adapty.isActive = true
+		let t46Service = AppsFlyerService(analytics: t46Analytics, adapty: t46Adapty)
+		t46Service.onConversionDataSuccess(["af_status": "Organic", "campaign": "spring"])
+		t46Service.onConversionDataSuccess(["af_status": "Organic", "campaign": "spring"])
+		check(
+			t46Analytics.events.count == 1 && t46Adapty.attributionData.count == 1,
+			"T46 AF-03 row 9: with Adapty active, a repeated identical callback must be saved and "
+				+ "not resent, got \(t46Analytics.events.count) event(s), "
+				+ "\(t46Adapty.attributionData.count) Adapty write(s)"
+		)
+
+		AppsFlyerLib.reset()
+		UserDefaults.standard.removeObject(forKey: lastDeliveredAttributionKey)
+		let t47Analytics = FakeAnalytics()
+		let t47Adapty = FakeAdapty()
+		t47Adapty.isActive = false
+		t47Adapty.isPermanentlyInactive = false
+		let t47Service = AppsFlyerService(analytics: t47Analytics, adapty: t47Adapty)
+		t47Service.onConversionDataSuccess(["af_status": "Organic", "campaign": "spring"])
+		t47Service.onConversionDataSuccess(["af_status": "Organic", "campaign": "spring"])
+		check(
+			t47Analytics.events.count == 2 && t47Adapty.attributionData.count == 2,
+			"T47 AF-03 row 9: configured but not active yet, the delivery must NOT be marked saved — "
+				+ "a repeat must resend so the write queued in AdaptyService gets a real second try, "
+				+ "got \(t47Analytics.events.count) event(s), \(t47Adapty.attributionData.count) "
+				+ "Adapty write(s)"
+		)
+
+		AppsFlyerLib.reset()
+		UserDefaults.standard.removeObject(forKey: lastDeliveredAttributionKey)
+		let t48Analytics = FakeAnalytics()
+		let t48Adapty = FakeAdapty()
+		t48Adapty.isActive = false
+		t48Adapty.isPermanentlyInactive = true
+		let t48Service = AppsFlyerService(analytics: t48Analytics, adapty: t48Adapty)
+		t48Service.onConversionDataSuccess(["af_status": "Organic", "campaign": "spring"])
+		t48Service.onConversionDataSuccess(["af_status": "Organic", "campaign": "spring"])
+		check(
+			t48Analytics.events.count == 1 && t48Adapty.attributionData.count == 1,
+			"T48 AF-03 row 10: an app with no Adapty configured must still save on the first delivery "
+				+ "and not repeat forever, got \(t48Analytics.events.count) event(s), "
+				+ "\(t48Adapty.attributionData.count) Adapty write(s)"
 		)
 
 		// AF-03 row 4 (a rejected attribution write must be retried) is covered elsewhere, on
@@ -1044,9 +1112,9 @@ enum AppsFlyerServiceCheck {
 		defaults.removeObject(forKey: "AppsFlyerReInstallCounter")
 
 		if failures.isEmpty {
-			print("AppsFlyerService (AF-01…AF-06): 53/53 OK")
+			print("AppsFlyerService (AF-01…AF-06): 56/56 OK")
 		} else {
-			print("\(failures.count) of 53 asserts FAILED:")
+			print("\(failures.count) of 56 asserts FAILED:")
 			for failure in failures {
 				print("  - \(failure)")
 			}

@@ -94,6 +94,10 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	/// `AdaptyConfiguration.Builder` asserts on the key's shape and takes a DEBUG build down with it
 	/// (AD-01 rows 1 and 7, AD-06 row 5).
 	private(set) var isActive = false
+	/// AF-03 row 10. `true` once `configure` has decided this layer will NEVER activate this run —
+	/// a test run, an empty key, or one that is not shaped like one. `isActive` alone cannot tell
+	/// that apart from "not active yet, but will be": both read `false` in that window too.
+	private(set) var isPermanentlyInactive = false
 	/// `Adapty.activate` came back. Distinct from `isActive`, and the distinction is AD-06 row 9: on
 	/// 2.10.x a call made in the window between the two failed immediately with `.notActivated`, and
 	/// that error is what put the write on the retry queue. On 4.1.3 `Adapty.activatedSDK` AWAITS an
@@ -105,9 +109,12 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	/// close access for a user whose subscription is alive (AD-05 row 2).
 	private var didLoadNetworkProfile = false
 	/// Attribution payloads that have not landed yet, and the AppsFlyer ids that go with them —
-	/// two queues, because on 4.1.3 they are two SDK calls that fail apart (AD-06 row 10). Install
-	/// data arrives once per install: a write that happens before activation is lost forever, and a
-	/// half-written one leaves the dashboard with campaign data it cannot attach to a user.
+	/// two queues, because on 4.1.3 they are two SDK calls that fail apart (AD-06 row 10). The SDK
+	/// redelivers install data on every foreground return, not once per install (AF-03 row 8) — a
+	/// write queued here does not survive this process ending, but `AppsFlyerService` only marks a
+	/// delivery as sent once `isActive` (or `isPermanentlyInactive`) says so, so a queued-not-sent
+	/// write gets a real second attempt from the next redelivery instead of a silent loss (AF-03
+	/// rows 9 and 10).
 	///
 	/// The repeat is safe by construction — the provider is always `.appsflyer` and the id is always
 	/// the same one — so a second write can only confirm what is already there (AD-06 row 1).
@@ -161,6 +168,7 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		// First of all the guards, because everything below it talks to a live SDK with a live key
 		// — which is what a UI-test run used to do, into the real Adapty project.
 		guard !isTestsRunning else {
+			isPermanentlyInactive = true
 			recordInactive(operation: "configure", reason: Self.testRunIssue)
 			return
 		}
@@ -172,6 +180,7 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 			// dev key silences AppsFlyer — and it is what keeps the builder's own
 			// `assert(apiKey.count >= 41 && apiKey.starts(with: "public_live"))` from taking a DEBUG
 			// build down on the same stack frame.
+			isPermanentlyInactive = true
 			recordInactive(operation: "configure")
 			return
 		}
@@ -180,6 +189,7 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 		// something that is not ours — and it would take the DEBUG build down here, before any
 		// network call. Invariant 2 of the schema is that nothing in this layer ever traps.
 		guard apiKey.count >= 41, apiKey.hasPrefix("public_live") else {
+			isPermanentlyInactive = true
 			ConfigurationIssues.shared.record(
 				"The Adapty API key is not shaped like one (\(apiKey.count) characters, expected 41+ beginning with 'public_live') — the layer stays inactive",
 				tag: Self.tag
@@ -352,10 +362,11 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 
 	func updateAppsFlyerAttribution(_ data: [AnyHashable: Any], networkUserId: String?) {
 		guard isActive else {
-			// Queued rather than dropped: install data arrives once per install, and conversion data
-			// racing ahead of activation is the normal order of events, not an edge case. With an
-			// empty key activation never happens, so the queue is never flushed and the SDK is never
-			// touched — which is what AD-06 row 5 requires.
+			// Queued rather than dropped: conversion data racing ahead of activation is the normal
+			// order of events, not an edge case — and the SDK redelivers it on every foreground
+			// return anyway (AF-03 row 8), not once per install. With an empty key activation never
+			// happens, so the queue is never flushed and the SDK is never touched — which is what
+			// AD-06 row 5 requires.
 			recordInactive(operation: "updateAppsFlyerAttribution")
 			pendingAttributionPayloads.append(data)
 			if let id = Self.usableIdentifier(networkUserId) {

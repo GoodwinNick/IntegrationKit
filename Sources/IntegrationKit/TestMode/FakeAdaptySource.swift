@@ -49,6 +49,10 @@ final class FakeAdaptySource: AdaptyPremiumProviding, AdaptyServicing {
 	/// run must always have prices (TM-05 row 7).
 	var isActive: Bool { true }
 
+	/// AF-03 row 10, `AdaptyServicing` half: moot here since `isActive` is always `true` in a test
+	/// run, but the protocol requires an answer.
+	var isPermanentlyInactive: Bool { false }
+
 	/// Installed by `PremiumService.start()`, exactly as the real service's is. Scheduling the
 	/// deferred transitions from here rather than from the composition root is what keeps them on the
 	/// same channel as a real profile push (TM-03 row 2) — this source hands its answer to whoever

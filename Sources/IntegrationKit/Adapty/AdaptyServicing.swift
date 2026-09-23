@@ -7,6 +7,25 @@ import AppTrackingTransparency
 import Foundation
 
 protocol AdaptyServicing: AnyObject {
+	/// Whether `configure` stood the layer up with a valid key — the same signal
+	/// `AdaptyPremiumProviding.isActive` documents. `false` for the whole run once `configure`
+	/// decided the key does not work; `true` from the moment `configure` accepted it, whether or
+	/// not `Adapty.activate`'s own network round trip has finished.
+	///
+	/// `AppsFlyerService` reads it to know whether `updateAppsFlyerAttribution` below sent
+	/// straight through or only queued until activation (AD-06 row 1) — AF-03 row 9.
+	var isActive: Bool { get }
+
+	/// Whether `configure` already decided this layer will NEVER activate this run — a test run,
+	/// an empty key, or one that is not shaped like one. Distinct from `isActive`: both are
+	/// `false` in the narrow window where a valid key was just accepted and `isActive` has not
+	/// flipped `true` yet, and this is what tells that window apart from "never will".
+	///
+	/// `AppsFlyerService` reads it for the same guard as `isActive` — AF-03 row 10: a write that
+	/// will sit in `updateAppsFlyerAttribution`'s queue forever, because activation will never
+	/// happen, is not a write worth waiting on.
+	var isPermanentlyInactive: Bool { get }
+
 	/// An empty `apiKey` is a legal configuration and leaves the layer inactive for the whole run —
 	/// the same way an empty key silences Amplitude and an empty dev key silences AppsFlyer. Every
 	/// operation below then becomes a no-op that records one line in `ConfigurationIssues`, and the

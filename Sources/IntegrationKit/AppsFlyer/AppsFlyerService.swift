@@ -461,8 +461,16 @@ extension AppsFlyerService: AppsFlyerLibDelegate {
 		adapty.updateAppsFlyerAttribution(cleanedData, networkUserId: appsFlyerUID.isEmpty ? nil : appsFlyerUID)
 		debugLog(tag: Self.tag, "attribution handed to Adapty")
 
-		// AF-03 row 8: written after the three addressees above, not before — an interrupted or
-		// failed delivery must not close the door on retrying with the same dictionary.
+		// AF-03 rows 9-10: written after the three addressees above, not before — an interrupted or
+		// failed delivery must not close the door on retrying with the same dictionary. And written
+		// only when the call above either reached Adapty directly (`isActive`) or never will
+		// (`isPermanentlyInactive`) — not when it only joined AdaptyService's own queue until
+		// activation, or a process death before that queue drains would lose the attribution for
+		// good instead of letting the next redelivery retry it.
+		guard adapty.isActive || adapty.isPermanentlyInactive else {
+			debugLog(tag: Self.tag, "Adapty is configured but not active yet — the delivered dictionary is not saved, so a repeat delivery can retry it")
+			return
+		}
 		UserDefaults.standard.set(comparableData, forKey: Self.lastDeliveredAttributionKey)
 	}
 
