@@ -19,6 +19,11 @@
 //  which order (AF-01 row 6), the "unknown" default for an attribution field the SDK did not send
 //  (AF-03 row 6), and the URL forward reaching the SDK unchanged (AF-05 row 4).
 //
+//  T43…T45 arrived 2026-09-23 (Asana 1218780529173434), when AF-03 row 8 was added: the SDK
+//  re-delivers onConversionDataSuccess on every foreground return, not once per install, and every
+//  repeat used to duplicate the event, the profile properties and the Adapty write. All three were
+//  written red first, against the schema the wrapper did not satisfy yet.
+//
 //  All forty-two are green. Twenty of them were written red first, against
 //  schemas the wrapper did not satisfy yet, and each one names the behaviour the code had to grow
 //  rather than the shape it happened to have:
@@ -138,6 +143,12 @@ enum AppsFlyerServiceCheck {
 	/// or one row's gate leaks into the next and goes green for the wrong reason — same pattern as
 	/// `AmplitudeAnalyticsCheck.firstOpenTrackedKey`.
 	static let deepLinkFirstOpenKey = "IntegrationKit.appsflyer.deepLinkFirstOpenTracked"
+
+	/// AF-03 row 8: the guard's own persisted dictionary (`AppsFlyerService.swift`). Cleared before
+	/// every row below that calls `onConversionDataSuccess`, for the same reason as
+	/// `deepLinkFirstOpenKey` above — real `UserDefaults.standard` is shared by the whole process,
+	/// so an uncleared key would carry state from one row's payload into the next row's assert.
+	static let lastDeliveredAttributionKey = "IntegrationKit.appsflyer.lastDeliveredAttribution"
 
 	/// Records a failure instead of trapping — one failing row must not stop every row after it
 	/// from running.
@@ -362,6 +373,7 @@ enum AppsFlyerServiceCheck {
 		// schema asks for — that the dictionary reaching analytics is the cleaned one and not the
 		// raw one. Green.
 		AppsFlyerLib.reset()
+		UserDefaults.standard.removeObject(forKey: lastDeliveredAttributionKey)
 		let t10Analytics = FakeAnalytics()
 		let t10Service = AppsFlyerService(analytics: t10Analytics, adapty: FakeAdapty())
 		let t10Raw: [AnyHashable: Any] = [
@@ -389,6 +401,7 @@ enum AppsFlyerServiceCheck {
 		// Executes `AppsFlyerService.swift:147-148`. Green: `:148` turns an empty answer into `nil`
 		// before it travels, so it can no longer reach Adapty as a valid identifier.
 		AppsFlyerLib.reset()
+		UserDefaults.standard.removeObject(forKey: lastDeliveredAttributionKey)
 		AppsFlyerLib.appsFlyerUID = ""
 		let t11Adapty = FakeAdapty()
 		let t11Service = AppsFlyerService(analytics: FakeAnalytics(), adapty: t11Adapty)
@@ -409,6 +422,7 @@ enum AppsFlyerServiceCheck {
 		// The exact rendering "42" is the implementation's choice — what the row forbids is the
 		// two answers disagreeing, and naming a value is the only way to assert that precisely.
 		AppsFlyerLib.reset()
+		UserDefaults.standard.removeObject(forKey: lastDeliveredAttributionKey)
 		let t12Analytics = FakeAnalytics()
 		let t12Service = AppsFlyerService(analytics: t12Analytics, adapty: FakeAdapty())
 		t12Service.onConversionDataSuccess(["af_status": 42, "media_source": "fb", "campaign": "spring"])
@@ -422,6 +436,61 @@ enum AppsFlyerServiceCheck {
 			"T13 AF-03 row 3: the profile property must describe af_status the same way the event "
 				+ "does — \"42\" — got "
 				+ "\(String(describing: t12Analytics.userProperties.first?["status"]))"
+		)
+
+		// ── AF-03 row 8 — a repeated conversion callback must not resend ─────────────────────
+		// The SDK re-delivers the same install data on every foreground return (AF-02 row 1), not
+		// once per install — the schema assumed the latter until 2026-09-23 (Asana 1218780529173434),
+		// a log from AIGirlsProApp showed otherwise, and every repeat used to trigger the event, the
+		// profile properties and the Adapty write again. T43 pins the duplicate; T44 pins the exact
+		// field the SDK varies between deliveries — `is_first_launch` flips 1 → 0 — which alone must
+		// not count as a change; T45 pins the opposite, that a real attribution change still goes out.
+		AppsFlyerLib.reset()
+		UserDefaults.standard.removeObject(forKey: lastDeliveredAttributionKey)
+		let t43Analytics = FakeAnalytics()
+		let t43Adapty = FakeAdapty()
+		let t43Service = AppsFlyerService(analytics: t43Analytics, adapty: t43Adapty)
+		t43Service.onConversionDataSuccess(["af_status": "Organic", "campaign": "spring", "is_first_launch": 1])
+		t43Service.onConversionDataSuccess(["af_status": "Organic", "campaign": "spring", "is_first_launch": 1])
+		check(
+			t43Analytics.events.count == 1
+				&& t43Analytics.userProperties.count == 1
+				&& t43Adapty.attributionData.count == 1,
+			"T43 AF-03 row 8: an identical conversion callback repeated must reach analytics/Adapty "
+				+ "once, not twice, got \(t43Analytics.events.count) event(s), "
+				+ "\(t43Analytics.userProperties.count) profile write(s), "
+				+ "\(t43Adapty.attributionData.count) Adapty write(s)"
+		)
+
+		AppsFlyerLib.reset()
+		UserDefaults.standard.removeObject(forKey: lastDeliveredAttributionKey)
+		let t44Analytics = FakeAnalytics()
+		let t44Adapty = FakeAdapty()
+		let t44Service = AppsFlyerService(analytics: t44Analytics, adapty: t44Adapty)
+		t44Service.onConversionDataSuccess(["af_status": "Organic", "campaign": "spring", "is_first_launch": 1])
+		t44Service.onConversionDataSuccess(["af_status": "Organic", "campaign": "spring", "is_first_launch": 0])
+		check(
+			t44Analytics.events.count == 1 && t44Adapty.attributionData.count == 1,
+			"T44 AF-03 row 8: is_first_launch flipping 1 to 0 with everything else unchanged must not "
+				+ "count as a new delivery, got \(t44Analytics.events.count) event(s), "
+				+ "\(t44Adapty.attributionData.count) Adapty write(s)"
+		)
+
+		AppsFlyerLib.reset()
+		UserDefaults.standard.removeObject(forKey: lastDeliveredAttributionKey)
+		let t45Analytics = FakeAnalytics()
+		let t45Adapty = FakeAdapty()
+		let t45Service = AppsFlyerService(analytics: t45Analytics, adapty: t45Adapty)
+		t45Service.onConversionDataSuccess(["af_status": "Organic", "campaign": "spring", "is_first_launch": 1])
+		t45Service.onConversionDataSuccess(["af_status": "Non-organic", "campaign": "brand", "is_first_launch": 0])
+		check(
+			t45Analytics.events.count == 2
+				&& t45Adapty.attributionData.count == 2
+				&& t45Analytics.events.last?.properties?["campaign"] as? String == "brand",
+			"T45 AF-03 row 8: a real attribution change must still reach analytics/Adapty a second "
+				+ "time, got \(t45Analytics.events.count) event(s), \(t45Adapty.attributionData.count) "
+				+ "Adapty write(s), last campaign "
+				+ "\(String(describing: t45Analytics.events.last?.properties?["campaign"]))"
 		)
 
 		// AF-03 row 4 (a rejected attribution write must be retried) is covered elsewhere, on
@@ -743,6 +812,7 @@ enum AppsFlyerServiceCheck {
 		// `status` or `campaign_name` is accepted. What the assert still buys is that the set is
 		// exactly these three — a renamed or an extra property fails it either way.
 		AppsFlyerLib.reset()
+		UserDefaults.standard.removeObject(forKey: lastDeliveredAttributionKey)
 		let propertyNameAnalytics = FakeAnalytics()
 		let propertyNameService = AppsFlyerService(analytics: propertyNameAnalytics, adapty: FakeAdapty())
 		propertyNameService.onConversionDataSuccess([
@@ -825,6 +895,7 @@ enum AppsFlyerServiceCheck {
 		// SDK did not say" look identical once they are in Amplitude. T24 pins the three names,
 		// never their values, so nothing until now would have noticed the default disappearing.
 		AppsFlyerLib.reset()
+		UserDefaults.standard.removeObject(forKey: lastDeliveredAttributionKey)
 		let sparseAnalytics = FakeAnalytics()
 		let sparseService = AppsFlyerService(analytics: sparseAnalytics, adapty: FakeAdapty())
 		sparseService.onConversionDataSuccess(["campaign": "spring"])
@@ -973,9 +1044,9 @@ enum AppsFlyerServiceCheck {
 		defaults.removeObject(forKey: "AppsFlyerReInstallCounter")
 
 		if failures.isEmpty {
-			print("AppsFlyerService (AF-01…AF-06): 50/50 OK")
+			print("AppsFlyerService (AF-01…AF-06): 53/53 OK")
 		} else {
-			print("\(failures.count) of 50 asserts FAILED:")
+			print("\(failures.count) of 53 asserts FAILED:")
 			for failure in failures {
 				print("  - \(failure)")
 			}

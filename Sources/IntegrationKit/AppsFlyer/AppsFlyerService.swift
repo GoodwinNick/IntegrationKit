@@ -411,10 +411,31 @@ final class AppsFlyerService: NSObject, AppsFlyerServicing {
 
 extension AppsFlyerService: AppsFlyerLibDelegate {
 
+	/// AF-03 row 8. `is_first_launch` is the one field the SDK varies between repeat deliveries of
+	/// the same install (1 → 0) — kept in the comparison, the guard below would never fire.
+	private static let lastDeliveredAttributionKey = "IntegrationKit.appsflyer.lastDeliveredAttribution"
+
+	private func attributionForComparison(_ cleanedData: [String: Any]) -> [String: Any] {
+		var comparable = cleanedData
+		comparable.removeValue(forKey: "is_first_launch")
+		return comparable
+	}
+
 	func onConversionDataSuccess(_ installData: [AnyHashable: Any]) {
 		debugLog(tag: Self.tag, "conversion data received: \(installData)")
 		let cleanedData = AppsFlyerAttributionMapping.cleanedAttributionData(from: installData)
 		debugLog(tag: Self.tag, "conversion data cleaned: \(installData.count) field(s) in, \(cleanedData.count) out — NSNull and non-scalar values dropped")
+
+		// AF-03 row 8: the SDK re-delivers this callback on every foreground return (AF-02 row 1),
+		// not once per install, and every repeat used to carry the same three side effects below.
+		// Compared against the last dictionary this method actually forwarded, not the last one it
+		// merely saw — a failed or interrupted delivery below must not count as "already sent".
+		let comparableData = attributionForComparison(cleanedData)
+		let lastDelivered = UserDefaults.standard.dictionary(forKey: Self.lastDeliveredAttributionKey)
+		if let lastDelivered, (lastDelivered as NSDictionary).isEqual(comparableData as NSDictionary) {
+			debugLog(tag: Self.tag, "conversion data unchanged since the last delivery (is_first_launch aside) — event, profile properties and Adapty skipped")
+			return
+		}
 
 		// AF-03 row 3: both addressees speak from the same cleaned dictionary. Reading the raw one
 		// here used to let the event say `af_status = 42` while the profile said "unknown" — the
@@ -439,12 +460,17 @@ extension AppsFlyerService: AppsFlyerLibDelegate {
 		debugLog(tag: Self.tag, appsFlyerUID.isEmpty ? "AppsFlyer UID is empty — Adapty gets nil, not an empty string" : "AppsFlyer UID \(appsFlyerUID) goes to Adapty as the network user id")
 		adapty.updateAppsFlyerAttribution(cleanedData, networkUserId: appsFlyerUID.isEmpty ? nil : appsFlyerUID)
 		debugLog(tag: Self.tag, "attribution handed to Adapty")
+
+		// AF-03 row 8: written after the three addressees above, not before — an interrupted or
+		// failed delivery must not close the door on retrying with the same dictionary.
+		UserDefaults.standard.set(comparableData, forKey: Self.lastDeliveredAttributionKey)
 	}
 
 	func onConversionDataFail(_ error: Error) {
 		// AF-06 row 1: `localizedDescription` is exactly what cannot tell a dropped connection from
-		// a wrong dev key, and telling them apart is the whole reason to look. The install data
-		// arrives once per install, so a failure here is not something a later launch repairs.
+		// a wrong dev key, and telling them apart is the whole reason to look. The SDK re-delivers
+		// conversion data on every foreground return, not once per install (AF-03 row 8) — a later
+		// session may call this again, but nothing here assumes it will or retries on its own.
 		let nsError = error as NSError
 		// Read out of `userInfo` rather than through `localizedDescription`: for a domain Foundation
 		// does not know — AppsFlyer's own — the property builds "The operation couldn't be completed.
@@ -452,7 +478,7 @@ extension AppsFlyerService: AppsFlyerLibDelegate {
 		// the localisation machinery to say it. What the SDK actually wrote is worth keeping; what
 		// Foundation invents in its place is not.
 		let detail = (nsError.userInfo[NSLocalizedDescriptionKey] as? String).map { " — \($0)" } ?? ""
-		debugLog(tag: Self.tag, level: .error, "conversion data failed: \(nsError.domain) \(nsError.code)\(detail) — install data arrives once per install, no later launch repairs this")
+		debugLog(tag: Self.tag, level: .error, "conversion data failed: \(nsError.domain) \(nsError.code)\(detail) — the SDK may retry on the next foreground return, this layer does not retry it itself")
 		ConfigurationIssues.shared.record(
 			"AppsFlyer could not deliver install attribution: \(nsError.domain) \(nsError.code)\(detail)",
 			tag: Self.tag
