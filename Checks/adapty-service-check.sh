@@ -55,5 +55,6 @@ swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty \
 	Sources/IntegrationKit/Premium/Models/PremiumPeriod.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumPeriod+Adapty.swift \
 	Sources/IntegrationKit/Premium/Models/PremiumOffer.swift \
-	Sources/IntegrationKit/Premium/Models/PremiumOffer+Adapty.swift
+	Sources/IntegrationKit/Premium/Models/PremiumOffer+Adapty.swift \
+	Sources/IntegrationKit/Premium/Helpers/StorePrice.swift
 exec "$work/check"
