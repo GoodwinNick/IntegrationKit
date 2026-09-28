@@ -18,10 +18,10 @@ extension PremiumProduct {
 			id: product.id,
 			localizedTitle: product.displayName,
 			localizedPrice: product.displayPrice,
-			price: product.price,
+			price: StorePrice.corrected(raw: product.price, displayPrice: product.displayPrice, formatStyle: product.priceFormatStyle),
 			currencyCode: product.priceFormatStyle.currencyCode,
 			subscriptionPeriod: product.subscription.map { PremiumPeriod(period: $0.subscriptionPeriod) },
-			introductoryOffer: product.subscription?.introductoryOffer.map(PremiumOffer.init(offer:))
+			introductoryOffer: product.subscription?.introductoryOffer.map { PremiumOffer(offer: $0, formatStyle: product.priceFormatStyle) }
 		)
 	}
 }

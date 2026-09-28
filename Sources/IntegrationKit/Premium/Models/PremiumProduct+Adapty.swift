@@ -5,6 +5,7 @@
 
 import Adapty
 import Foundation
+import StoreKit
 
 extension PremiumProduct {
 	/// Wraps an `AdaptyPaywallProduct` (Adapty 4.1.3) so the app never imports Adapty or StoreKit to
@@ -19,14 +20,19 @@ extension PremiumProduct {
 	/// nothing forces this check to exist. Skipping it would show "3 days free" on a paywall to a user
 	/// who is not eligible for a trial and would be charged the full price on tap.
 	init(product: AdaptyPaywallProduct) {
+		// PM-07 row 17: `product.price`/`product.currencyCode` are just `skProduct.price`/
+		// `skProduct.priceFormatStyle.currencyCode` (`AdaptyProduct.swift:35-41`) — reusing the real
+		// StoreKit product's own `priceFormatStyle` recovers the true price the same way the direct
+		// StoreKit path does.
+		let formatStyle = product.skProduct.priceFormatStyle
 		let introductoryOffer = product.subscriptionOffer.flatMap { offer in
-			offer.offerType == .introductory ? PremiumOffer(offer: offer) : nil
+			offer.offerType == .introductory ? PremiumOffer(offer: offer, formatStyle: formatStyle) : nil
 		}
 		self.init(
 			id: product.vendorProductId,
 			localizedTitle: product.localizedTitle,
 			localizedPrice: product.localizedPrice,
-			price: product.price,
+			price: StorePrice.corrected(raw: product.price, displayPrice: product.localizedPrice, formatStyle: formatStyle),
 			currencyCode: product.currencyCode,
 			subscriptionPeriod: product.subscriptionPeriod.map(PremiumPeriod.init(period:)),
 			introductoryOffer: introductoryOffer

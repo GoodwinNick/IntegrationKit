@@ -14,7 +14,11 @@ extension PremiumOffer {
 	/// The offer's KIND is not checked here: `PremiumProduct+Adapty.swift` decides which offers reach
 	/// this initialiser at all, because `PremiumOffer` describes one shape of discount and knows
 	/// nothing about which of Apple's three kinds produced it (AD-03).
-	init(offer: AdaptySubscriptionOffer) {
+	///
+	/// `formatStyle` is the parent product's `skProduct.priceFormatStyle` — an offer has no formatter
+	/// of its own, but App Store Connect guarantees it shares its product's currency and locale
+	/// (PM-07 row 17).
+	init(offer: AdaptySubscriptionOffer, formatStyle: Decimal.FormatStyle.Currency) {
 		let paymentMode: PaymentMode
 		switch offer.paymentMode {
 			case .payAsYouGo:
@@ -27,7 +31,7 @@ extension PremiumOffer {
 				paymentMode = .unknown
 		}
 		self.init(
-			price: offer.price,
+			price: StorePrice.corrected(raw: offer.price, displayPrice: offer.localizedPrice, formatStyle: formatStyle),
 			localizedPrice: offer.localizedPrice,
 			period: PremiumPeriod(period: offer.subscriptionPeriod),
 			numberOfPeriods: offer.numberOfPeriods,
