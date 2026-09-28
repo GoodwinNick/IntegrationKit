@@ -15,10 +15,11 @@ extension PremiumOffer {
 	/// this initialiser at all, because `PremiumOffer` describes one shape of discount and knows
 	/// nothing about which of Apple's three kinds produced it (AD-03).
 	///
-	/// `formatStyle` is the parent product's `skProduct.priceFormatStyle` — an offer has no formatter
-	/// of its own, but App Store Connect guarantees it shares its product's currency and locale
-	/// (PM-07 row 17).
-	init(offer: AdaptySubscriptionOffer, formatStyle: Decimal.FormatStyle.Currency) {
+	/// `formatStyle` is the parent product's reconstructed currency formatter (PM-07 row 17,
+	/// `PremiumProduct+Adapty.swift`) — an offer has no formatter of its own, but App Store Connect
+	/// guarantees it shares its product's currency and locale. `nil` when the product had no
+	/// `currencyCode` to build one from.
+	init(offer: AdaptySubscriptionOffer, formatStyle: Decimal.FormatStyle.Currency?) {
 		let paymentMode: PaymentMode
 		switch offer.paymentMode {
 			case .payAsYouGo:
