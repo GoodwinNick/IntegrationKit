@@ -1,8 +1,9 @@
 #!/bin/sh
 # BuildHost link check — the one check that compiles the package the way an app does.
-# The other ten build a hand-picked slice of `Sources/` against hand-written stubs in
-# `Checks/Stubs/`, so all ten stay green while `IntegrationKit.swift` — the public
-# composition root nobody else compiles — is broken. BuildHost is a small Xcode project
+# The other sixteen build a hand-picked slice of `Sources/` against hand-written stubs in
+# `Checks/Stubs/` (`integration-kit-check.sh` compiles the root too, but against stubs, so the
+# real SDKs' own API is still unproven there), so they stay green while a real SDK's API has
+# moved under the package. BuildHost is a small Xcode project
 # that links the whole package against the real SDKs; if the public API stops compiling,
 # this is what says so.
 #

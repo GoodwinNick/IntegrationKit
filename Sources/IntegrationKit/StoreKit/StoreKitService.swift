@@ -12,6 +12,7 @@
 //  finisher racing the first is exactly the crash this package is built to avoid.
 //
 
+import FirebaseAnalytics
 import Foundation
 import StoreKit
 
@@ -20,9 +21,13 @@ final class StoreKitService: AppleSubscribing {
 	private static let tag = "StoreKitService"
 
 	private let productIds: Set<String>
+	/// Where a verified purchase is reported (FA-04). The composition root passes the mirror it shares
+	/// with `AmplitudeAnalytics` and `AdaptyService`.
+	private let firebase: FirebaseAnalyticsMirror
 
-	init(productIds: Set<String>) {
+	init(productIds: Set<String>, firebase: FirebaseAnalyticsMirror = FirebaseAnalyticsMirror()) {
 		self.productIds = productIds
+		self.firebase = firebase
 		#if DEBUG
 			// Diagnostic only — no functional use beyond the log line, so it does not exist at all
 			// outside DEBUG rather than spinning an idle listener in a shipping build. Traced back to a
@@ -108,7 +113,11 @@ final class StoreKitService: AppleSubscribing {
 		}
 		do {
 			switch try await product.purchase() {
-				case .success(.verified):
+				case .success(.verified(let transaction)):
+					// FA-04: the same report as Adapty's `.success`, for the purchase Adapty could not
+					// serve. Before `PremiumService` drives Adapty's sweep, which is what finishes it —
+					// Firebase's own advice is to log before the transaction is closed.
+					firebase.logTransaction(transaction, send: Analytics.logTransaction)
 					return .purchased
 				case .success(.unverified(_, let error)):
 					// StoreKit's own signature check failed on a transaction we just paid for — the

@@ -189,6 +189,14 @@ public struct IntegrationKit {
 			debugLog("remote config: real, \(remoteConfigDefaults.count) default(s), fetch waits up to \(remoteConfigTimeout)s")
 		}
 
+		// FA-01: Firebase Analytics is NOT silenced the way the SDKs below are — in a test run the mirror
+		// stays, with collection switched OFF. The flag is stored by the SDK between launches, so a test
+		// run that skipped the call would leave collection on for the next one. It is written first,
+		// before any event, user id or property can reach Firebase. One mirror for the whole graph: the
+		// same instance carries the analytics events, both purchase paths and the instance id.
+		let firebase = FirebaseAnalyticsMirror()
+		firebase.configure(isTestsRunning: isTestsRunning)
+
 		// TM-07: Amplitude is not built at all in a test run — the sink replaces the sending, not the
 		// SDK, so there is nothing left that could reach the live dashboard.
 		let analytics: AnalyticsTracking
@@ -196,7 +204,7 @@ public struct IntegrationKit {
 			analytics = testMode.analytics
 			debugLog("analytics: sink only — Amplitude is not built at all in a test run")
 		} else {
-			let amplitude = AmplitudeAnalytics(isDebug: isDebug)
+			let amplitude = AmplitudeAnalytics(isDebug: isDebug, firebase: firebase)
 			amplitude.configure(apiKey: amplitudeKey, deviceId: deviceId, firstOpenEvent: firstOpenEvent, isTestsRunning: isTestsRunning)
 			analytics = amplitude
 			debugLog("analytics: Amplitude configured")
@@ -215,7 +223,7 @@ public struct IntegrationKit {
 			adaptyService = nil
 			debugLog("adapty: fake source — the arbiter above it stays the production one")
 		} else {
-			let service = AdaptyService()
+			let service = AdaptyService(firebase: firebase)
 			service.configure(
 				apiKey: adaptyKey,
 				customerUserId: deviceId,
@@ -233,6 +241,10 @@ public struct IntegrationKit {
 			adapty = service
 			adaptyService = service
 			debugLog("adapty: real service configured, attribution service \(adaptyAttributionEnabled ? "on" : "off")")
+			// FA-05: Firebase's id for this install goes to Adapty by itself. A write that arrives
+			// before activation waits for it (AD-06), so this is safe in the first frames of a launch;
+			// `nil` — the id is not ready yet — is retried on every foreground return below.
+			firebase.syncAppInstanceId { service.setFirebaseAppInstanceId($0) }
 		}
 		var appsFlyer: AppsFlyerService?
 		if !appsFlyerDevKey.isEmpty {
@@ -268,7 +280,7 @@ public struct IntegrationKit {
 			apple = testMode.apple
 			debugLog("storeKit: not built — a test run touches no payment queue and validates no receipt")
 		} else {
-			apple = StoreKitService(productIds: productIds)
+			apple = StoreKitService(productIds: productIds, firebase: firebase)
 			debugLog("storeKit: real service, \(productIds.count) product id(s) to look for among current entitlements")
 		}
 		// `productIds` has to reach here too, not just StoreKit: it is the fallback list `products`
@@ -318,6 +330,12 @@ public struct IntegrationKit {
 			debugLog("foreground: re-asking for the paywalls that are still missing, and for premium if the question is still open")
 			adapty.refreshPaywalls()
 			premium?.refreshIfUnanswered()
+			// FA-05: the id that was not ready at launch, or one Firebase reset since. The mirror
+			// delivers an unchanged id once per process, so this costs one read. Not in a test run:
+			// there is no real Adapty to give it to.
+			if testMode == nil {
+				firebase.syncAppInstanceId { adapty.setFirebaseAppInstanceId($0) }
+			}
 		}
 		debugLog("foreground observer installed")
 
@@ -463,8 +481,10 @@ public struct IntegrationKit {
 	}
 
 	/// Links Firebase's id for this install to the Adapty profile, so a purchase in one dashboard can
-	/// be found in the other. Pass `Analytics.appInstanceID()` — the package does not read it itself,
-	/// because reaching into another SDK for its own identifier is the app's call, not a library's.
+	/// be found in the other. Since 0.8.0 the package reads `Analytics.appInstanceID()` itself — at
+	/// launch and on every return to the foreground, until Firebase has one — and writes it, so an app
+	/// no longer has to call this. It stays for an app that wants to hand over an id of its own; the
+	/// package's write and this one are the same write to the same key, and the later one wins.
 	///
 	/// Call it whenever the id is in hand, including before the layer has finished starting: a write
 	/// that arrives early waits for activation instead of being dropped. An empty string is refused

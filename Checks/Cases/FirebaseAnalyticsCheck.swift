@@ -41,6 +41,7 @@ import Foundation
 enum FirebaseAnalyticsCheck {
 	static var failures: [String] = []
 	static var log: [String] = []
+	static let logLock = NSLock()
 	static var assertCount = 0
 
 	static let infoPrefix = "[IntegrationKit][FirebaseAnalytics] "
@@ -99,7 +100,13 @@ enum FirebaseAnalyticsCheck {
 	}
 
 	static func main() {
-		debugLogSink = { log.append($0) }
+		// Locked: FA-02 r11 logs from fifty threads at once, and an unsynchronised array append there is
+		// a crash of the harness, not a finding about the mirror.
+		debugLogSink = { line in
+			logLock.lock()
+			log.append(line)
+			logLock.unlock()
+		}
 
 		let sections: [(String, () -> Void)] = [
 			("FA-01 collection and readiness", fa01),

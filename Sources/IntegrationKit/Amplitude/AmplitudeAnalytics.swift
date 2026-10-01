@@ -26,9 +26,17 @@ final class AmplitudeAnalytics: AnalyticsTracking {
 	/// object — and taken from the app, because a package's own `#if DEBUG` answers about the
 	/// package's build, not the app's. Defaults only so the checks' own call sites stay short.
 	private let isDebug: Bool
+	/// Where every event, property and user id goes next, in the same call (FA-02, FA-03). The seam is
+	/// here and not in the callers because this class is the only thing the app's analytics calls reach
+	/// — the facade, `AdaptyService` and `AppsFlyerService` all write through it — so one hand-over
+	/// here covers every one of them, and an app that writes `Analytics.logEvent` beside it gets no
+	/// duplicate. Defaults only so the checks' own call sites stay short; the composition root passes
+	/// the one mirror it shares with the services that report purchases.
+	private let firebase: FirebaseAnalyticsMirror
 
-	init(isDebug: Bool = false) {
+	init(isDebug: Bool = false, firebase: FirebaseAnalyticsMirror = FirebaseAnalyticsMirror()) {
 		self.isDebug = isDebug
+		self.firebase = firebase
 	}
 
 	/// Brings the layer up. Deliberately absent from `AnalyticsTracking`: only the composition root
@@ -58,15 +66,18 @@ final class AmplitudeAnalytics: AnalyticsTracking {
 		// AN-01 row 3: an empty key is a supported way to switch analytics off, but a silent one is
 		// indistinguishable from a broken integration a week later, when the dashboard is empty and
 		// nobody remembers which build this was.
-		guard !apiKey.isEmpty else {
+		if apiKey.isEmpty {
 			ConfigurationIssues.shared.record(
 				"Amplitude got an empty API key — no events are sent for this run",
 				tag: Self.tag
 			)
-			return
+		} else {
+			amplitude = Amplitude(configuration: Configuration(apiKey: apiKey))
 		}
-		amplitude = Amplitude(configuration: Configuration(apiKey: apiKey))
-		// User id goes in before the first event, so even the first event carries it.
+		// User id goes in before the first event, so even the first event carries it. AN-01 row 12: the
+		// start pair — id and `environment` — is written even when Amplitude is off, because Firebase
+		// is a second destination with its own life (FA-03 row 7); every `amplitude?` below is a no-op
+		// without a key, and the Firebase half is not.
 		setUserId(deviceId)
 		// AN-01 row 11: on every launch, and re-read on every launch. This used to live inside the
 		// first-open gate, where it inherited that gate's lifetime: an app that names its first-open
@@ -75,6 +86,10 @@ final class AmplitudeAnalytics: AnalyticsTracking {
 		// after the receipt arrived. The property describes the launch, not the install, so it goes
 		// where the launch is.
 		amplitude?.identify(userProperties: ["environment": environment])
+		firebase.setUserProperties(["environment": environment])
+		// Everything below is Amplitude's alone: the plugin and the first-open gate. With no key the
+		// gate stays unspent, as before.
+		guard amplitude != nil else { return }
 		// AN-04 row 2: added unconditionally, because the plugin re-reads the ATT status on every
 		// event anyway. An authorization that arrived before this call would otherwise be lost with
 		// nothing to replay it — and the user only gives that answer once.
@@ -88,6 +103,7 @@ final class AmplitudeAnalytics: AnalyticsTracking {
 		// value has nothing to hold up.
 		debugLog(tag: Self.tag, "UserId: \(userId)")
 		amplitude?.setUserId(userId: userId)
+		firebase.setUserId(userId)
 	}
 
 	var deviceId: String? {
@@ -102,6 +118,8 @@ final class AmplitudeAnalytics: AnalyticsTracking {
 	func logEvent(_ event: String, properties: [String: Any]? = nil) {
 		debugLog(tag: Self.tag, "LOG EVENT \(event).   Properties: \(String(describing: properties ?? [:]))")
 		amplitude?.track(eventType: event, eventProperties: properties)
+		// Amplitude got the original; Firebase gets a sanitised copy (FA-02 row 2, AN-02 row 6).
+		firebase.logEvent(event, properties: properties)
 	}
 
 	func setUserProperties(_ properties: [String: Any]) {
@@ -112,6 +130,7 @@ final class AmplitudeAnalytics: AnalyticsTracking {
 			debugLog(tag: Self.tag, "UserProperty: \(key) | value: \(value)")
 		}
 		amplitude?.identify(userProperties: properties)
+		firebase.setUserProperties(properties)
 	}
 
 	/// The status itself is not read here: the plugin asks `ATTrackingManager` on every event, so a

@@ -17,6 +17,7 @@
 //
 
 import AppTrackingTransparency
+import FirebaseAnalytics
 import Foundation
 import Adapty
 
@@ -142,9 +143,14 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 	/// name would make `self.onUnfinishedTransaction` ambiguous to read even where it still compiles.
 	var unfinishedTransactionObserver: (() -> Void)?
 
+	/// Where a verified purchase is reported (FA-04). Defaults only so the checks' own call sites stay
+	/// short; the composition root passes the one mirror it shares with `AmplitudeAnalytics`.
+	private let firebase: FirebaseAnalyticsMirror
+
 	/// Deadlines are injectable so a check can drive a three-minute wait in a third of a second.
-	init(deadlines: AdaptyDeadlines = .default) {
+	init(deadlines: AdaptyDeadlines = .default, firebase: FirebaseAnalyticsMirror = FirebaseAnalyticsMirror()) {
 		self.deadlines = deadlines
+		self.firebase = firebase
 	}
 
 	// MARK: - AD-01: configuration and activation.
@@ -891,12 +897,18 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 			completion?(.unavailable)
 			return
 		}
-		Adapty.makePurchase(product: product) { result in
+		// FA-04: the SDK may answer one purchase twice (AD-04 row 8 — `buy` drops the second verdict),
+		// and a payment logged twice doubles the revenue on exactly the purchases where it misbehaves.
+		// The guard is per call, so it sits here and not in the mirror.
+		let answerLock = NSLock()
+		var didAnswer = false
+		Adapty.makePurchase(product: product) { [weak self] result in
 			switch result {
 				case .success(let purchase):
-					// The three outcomes of one completed call. Read through the accessors on purpose:
-					// the success case carries a `VerificationResult<Transaction>` this package has no
-					// use for, and destructuring it would tie us to a payload we never read.
+					// The three outcomes of one completed call. Read through the accessors on purpose,
+					// except for the one thing FA-04 needs from the success case: the transaction, and
+					// only through `signedTransaction` — the plain `transaction` accessor hands over an
+					// UNVERIFIED payload as readily as a verified one.
 					if purchase.isPurchaseCancelled {
 						debugLog(tag: Self.tag, "purchase of \(id) was cancelled by the user")
 						completion?(.cancelled)
@@ -908,6 +920,13 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 						completion?(.pending)
 					} else {
 						debugLog(tag: Self.tag, "purchase of \(id) succeeded")
+						answerLock.lock()
+						let isFirstAnswer = !didAnswer
+						didAnswer = true
+						answerLock.unlock()
+						if isFirstAnswer {
+							self?.reportToFirebase(purchase, productId: id)
+						}
 						completion?(.success)
 					}
 				case let .failure(error):
@@ -930,6 +949,21 @@ final class AdaptyService: AdaptyServicing, AdaptyPremiumProviding {
 					}
 					completion?(verdict)
 			}
+		}
+	}
+
+	/// FA-04 rows 3 and 4. `.success` arrives for a purchase whose backend validation failed too (the
+	/// SDK recalculates access locally and leaves the transaction unfinished) — money was taken in
+	/// both cases, so both are logged. A transaction whose signature did not verify is the one thing
+	/// that is not: the user still gets the purchase, Firebase gets nothing, and the error line says why.
+	private func reportToFirebase(_ purchase: AdaptyPurchaseResult, productId: String) {
+		switch purchase.signedTransaction {
+			case .verified(let transaction)?:
+				firebase.logTransaction(transaction, send: Analytics.logTransaction)
+			case .unverified?:
+				debugLog(tag: Self.tag, level: .error, "purchase of \(productId) carries an unverified transaction — not sent to Firebase")
+			case nil:
+				break
 		}
 	}
 
