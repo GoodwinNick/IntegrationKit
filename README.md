@@ -1,7 +1,7 @@
 # IntegrationKit
 
 A Swift Package that wraps four third-party SDKs behind one small public surface:
-**Firebase** (Core + Crashlytics + Remote Config), **Amplitude**, **Adapty** (premium/paywalls)
+**Firebase** (Core + Analytics + Crashlytics + Remote Config), **Amplitude**, **Adapty** (premium/paywalls)
 and **AppsFlyer** (attribution, deep links) — plus native **StoreKit 2** (receipt, restore,
 prices), no third-party wrapper. The package owns the wiring and the premium arbitration
 between Adapty and Apple's own receipt; the app supplies keys, event names, placements
@@ -25,6 +25,12 @@ This file is the short version.
 
 Staying on an older Xcode means staying on IntegrationKit 0.2.2, which pins
 Adapty 2.10.x.
+
+**Since 0.8.0: add `-ObjC` to the app target's Other Linker Flags.** The package
+links the full `FirebaseAnalytics` product, and Firebase's own guide says
+Analytics requires that flag (a maintainer says SPM generally manages without
+it; the two statements are not reconciled, and a missing flag crashed 12.19.0
+and 12.19.1 at launch). A linker flag is the app's to set.
 
 ## Installation
 
@@ -100,9 +106,10 @@ of launch. `isDebug` decides Crashlytics collection (on exactly when it is
 `false`, so a debug build can still be made to report a live crash) and
 AppsFlyer's console logging. `isTestsRunning` leaves Amplitude, Adapty and
 AppsFlyer down for the whole run, so a test run cannot poison the analytics or
-spend the attribution budget it is measured by; Firebase and StoreKit are not
-touched by it, because a run meant to catch crashes must not lose them. They
-are separate keys on purpose: one silences, the other reports.
+spend the attribution budget it is measured by, and Firebase Analytics gets
+nothing and has its collection switched off; Firebase crash collection and
+StoreKit are not touched by it, because a run meant to catch crashes must not
+lose them. They are separate keys on purpose: one silences, the other reports.
 
 An empty key switches its SDK off for the whole run rather than half-starting
 it — `adaptyKey: ""` leaves the Adapty layer inert and records why,
@@ -128,8 +135,13 @@ lands. The package names no key of its own, and a key with no default reads as
 the type's zero, which no caller can tell apart from a fetched value: register
 a default for every key you read.
 Besides `logEvent`, `kit.analytics` carries `setUserId(_:)` (re-point analytics
-at another id after a login), `setUserProperties(_:)` (Amplitude user properties)
-and `deviceId` (Amplitude's own id, `nil` until the layer is up). Deep links go
+at another id after a login), `setUserProperties(_:)` (Amplitude and Firebase user
+properties) and `deviceId` (Amplitude's own id, `nil` until the layer is up). Since
+0.8.0 every event, property and user id sent through `kit.analytics` goes to
+Firebase Analytics too, under the same names — what Firebase would drop (a reserved
+or invalid name, a value past its limits) is not sent and is named in the DEBUG log,
+and an app's own `Analytics.logEvent` calls should move to `kit.analytics.logEvent`.
+A successful purchase is logged to Firebase with `Analytics.logTransaction`. Deep links go
 through `kit.handleContinue(...)` / `kit.handleOpen(...)`, and the ATT answer
 through `kit.updateTrackingAuthorization(_:)` — **which is not optional any
 more.** Since AppsFlyer 7.0 the SDK no longer waits for ATT on its own, so the
@@ -145,7 +157,7 @@ directly, and beside them sits the one call that no longer reaches anything:
 // is readable afterwards.
 kit.setUserProperty(value: "returning_user", key: "cohort")   // both
 kit.setProfileValue(value: "returning_user", key: "cohort")   // Adapty only
-kit.analytics.setUserProperties(["logoCountGenerated": 2])    // Amplitude only
+kit.analytics.setUserProperties(["logoCountGenerated": 2])    // Amplitude and Firebase
 
 // `lastUsedDay`, `launchSession`, `deep_link_value` and `purchasePlace` the
 // package writes into the Adapty profile itself — do not write those from the
@@ -158,9 +170,10 @@ kit.analytics.setUserProperties(["logoCountGenerated": 2])    // Amplitude only
 let adaptyId = await kit.adaptyProfileId()
 
 // Links Firebase's id for this install to the Adapty profile, so a purchase in
-// one dashboard can be found in the other. The package does not read it itself:
-// reaching into another SDK for its identifier is the app's call. Safe to call
-// before the layer has finished starting — an early write waits for activation.
+// one dashboard can be found in the other. Since 0.8.0 the package reads
+// `Analytics.appInstanceID()` itself and writes it, so this call is no longer
+// needed — keep it only to hand over an id of your own. Safe to call before the
+// layer has finished starting — an early write waits for activation.
 if let appInstanceId = Analytics.appInstanceID() {
 	kit.setFirebaseAppInstanceId(appInstanceId)
 }
@@ -184,8 +197,8 @@ meaning of every `configure` parameter and the paywall-to-purchase flow.
   does not define an event enum.
 - Remote Config keys and their defaults — passed as `remoteConfigDefaults`, read
   back by the same key. The package defines none.
-- `GoogleService-Info.plist`, the Crashlytics dSYM Run Script, ATT usage string
-  and Associated Domains — everything Xcode-project-side.
+- `GoogleService-Info.plist`, the Crashlytics dSYM Run Script, ATT usage string,
+  the `-ObjC` linker flag and Associated Domains — everything Xcode-project-side.
 - The product ids to look for among current entitlements — passed to
   `configure`, never hardcoded in the package. StoreKit itself is the
   package's job: on native StoreKit 2, receipt validation, restore, the
@@ -212,8 +225,8 @@ meaning of every `configure` parameter and the paywall-to-purchase flow.
 
 ```
 Sources/IntegrationKit/
-├── Firebase/     Core + Crashlytics + Remote Config, FirebaseIntegration,
-│                 CrashReporting, RemoteConfigServicing
+├── Firebase/     Core + Analytics + Crashlytics + Remote Config, FirebaseIntegration,
+│                 FirebaseAnalyticsMirror (internal), CrashReporting, RemoteConfigServicing
 ├── Amplitude/    analytics facade, IDFA plugin, AnalyticsTracking
 ├── Adapty/       activation, paywalls, purchases (internal)
 ├── AppsFlyer/    ATT, deep links, attribution (internal)
@@ -235,12 +248,12 @@ xcodegen that links the package and proves the public API is enough:
 cd BuildHost && xcb app-sim
 ```
 
-`Checks/` has fifteen self-checks. Fourteen compile the real source files with
+`Checks/` has seventeen self-checks. Sixteen compile the real source files with
 `swiftc` against stub SDK modules — no Xcode, no XCTest, no network, no real
-SDK linked; `integration-kit-check.sh` is the one of those fourteen that also
-*runs* the composition root, the way an app does. The fifteenth,
-`buildhost-check.sh`, runs the `BuildHost` build above, because the other
-fourteen never link a real SDK:
+SDK linked; `integration-kit-check.sh` is the one of those sixteen that also
+*runs* the composition root, the way an app does (twice: a normal launch and a
+test run). The seventeenth, `buildhost-check.sh`, runs the `BuildHost` build
+above, because the other sixteen never link a real SDK:
 
 ```bash
 for s in Checks/*.sh; do "./$s"; done

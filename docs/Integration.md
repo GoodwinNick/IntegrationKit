@@ -18,6 +18,7 @@ compiler proves the public API is enough on its own.
 - [`IntegrationKit.configure`](#integrationkitconfigure)
 - [Remote config](#remote-config)
 - [Analytics](#analytics)
+  - [Firebase Analytics](#firebase-analytics)
 - [Crash reporting](#crash-reporting)
 - [Premium](#premium)
   - [Promoted purchases](#promoted-purchases)
@@ -68,6 +69,23 @@ guide is the same as it was.
 The rest is source-compatible: no protocol the app implements changed, and no
 public model lost a case.
 
+### Upgrading from 0.7.x
+
+Nothing breaks at the call site. Three things change in behaviour, and one needs
+a build setting.
+
+| What | Then (0.7.x) | Now (0.8.0) |
+|---|---|---|
+| Firebase Analytics | Not linked; an app that wanted it added `FirebaseAnalytics` itself and called `Analytics.logEvent` | The package links the full `FirebaseAnalytics` product and mirrors every event, user property and user id to it, and logs every successful purchase with `Analytics.logTransaction`. Replace the app's own `Analytics.logEvent` calls with `kit.analytics.logEvent` — see [Firebase Analytics](#firebase-analytics). |
+| `setFirebaseAppInstanceId` | The app read `Analytics.appInstanceID()` and passed it in | The package does it. The call can be deleted; keeping it is harmless. |
+| `isTestsRunning: true` | Firebase untouched | Firebase Analytics receives nothing and has collection switched off. Crash collection is unchanged. |
+| Linker flags | — | Add `-ObjC` to Other Linker Flags. |
+
+The `FirebaseAnalytics` product pulls in IDFA support and Google's on-device
+conversion measurement, and this changes what the app tells App Store Connect
+about the data it collects — that is an app-side declaration the package cannot
+make and this guide has not verified.
+
 ### Upgrading from 0.6.x
 
 One thing changes at the call site.
@@ -98,6 +116,7 @@ keeps them as `INFOPLIST_KEY_*` build settings rather than literal
 | Key | Why | Used by |
 |---|---|---|
 | `NSUserTrackingUsageDescription` | Required for the ATT dialog — without it `ATTrackingManager.requestTrackingAuthorization` shows nothing | ATT / AppsFlyer / Amplitude IDFA |
+| `-ObjC` in Other Linker Flags (`OTHER_LDFLAGS`) | Firebase's own guide says Analytics requires it; see [Firebase Analytics](#firebase-analytics) for why the package cannot set it | Firebase Analytics |
 
 ### 4. Capabilities
 
@@ -389,7 +408,7 @@ public static func configure(
 | `sessionsCounter` | The app's own session counter, incremented once per launch before this call | App-owned persistent counter | Required — no default. Written into the Adapty profile as-is; passing a stale or constant value just means that field in the profile stops being meaningful. |
 | `productIds` | The subscription product ids to look for among current entitlements, and the ids whose prices are read from the store | App Store Connect, same ids as in the Adapty dashboard | Required — no default. An empty set means nothing is ever found among current entitlements, so Apple can never confirm premium. |
 | `isDebug` | The app's own `#if DEBUG`, and the only thing that decides crash collection. Here it also turns AppsFlyer's own console logging on and off; pass the same value to `FirebaseIntegration.configure(isDebug:)` | An `#if DEBUG` in the app, beside its other developer flags | Required — no default, deliberately: a default is the package guessing the build type. `true` switches Crashlytics collection off and AppsFlyer's SDK logging on; `false` does the opposite. It does **not** touch Amplitude, Adapty or StoreKit. |
-| `isTestsRunning` | Whether this launch is a test run. `true` leaves Amplitude, Adapty and AppsFlyer down for the whole run, each recording its own reason in `configurationIssues` | The app: `ProcessInfo.processInfo.arguments.contains("-uitest")` or `ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil` | Required — no default. `true` means no Amplitude events, no Adapty activation (so no live paywalls and no live purchases through it), and no AppsFlyer sessions, install data or deep links. Firebase and StoreKit are **not** affected: crash collection follows `isDebug` alone, and the receipt is still read. |
+| `isTestsRunning` | Whether this launch is a test run. `true` leaves Amplitude, Adapty and AppsFlyer down for the whole run, each recording its own reason in `configurationIssues` | The app: `ProcessInfo.processInfo.arguments.contains("-uitest")` or `ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil` | Required — no default. `true` means no Amplitude events, no Adapty activation (so no live paywalls and no live purchases through it), and no AppsFlyer sessions, install data or deep links. Firebase Analytics receives nothing and has its collection switched **off**; Firebase crash collection and StoreKit are **not** affected: crash collection follows `isDebug` alone, and the receipt is still read. |
 | `levels` | The set of Adapty access level ids that count as "premium" | Adapty dashboard — access level ids configured for the paywall | Defaults to `["premium"]`. Wrong values here mean a real Adapty premium purchase never flips `isPremium` to true. |
 | `firstOpenEvent` | Analytics event name logged exactly once per install | App's own event naming | `nil` (default) — no first-open event is logged at all. |
 | `appsFlyerDevKey` | AppsFlyer dev key | AppsFlyer dashboard, per app | Defaults to `""`. An empty dev key means **AppsFlyer is not created at all** — no attribution and no deep links, and one line saying so lands in `configurationIssues`. Keep forwarding `handleContinue`/`handleOpen` anyway: `handleContinue` still calls your `restorationHandler` (see [Deep links](#deep-links)), so the app must not answer UIKit itself. |
@@ -518,18 +537,26 @@ that user's purchases are never joined to their account on your own backend.
 **`setFirebaseAppInstanceId(_:)`** links Firebase's id for this install to the
 Adapty profile, so a purchase in one dashboard can be found in the other:
 
+**You no longer have to call it.** Since 0.8.0 the package depends on Firebase
+Analytics anyway and reads `Analytics.appInstanceID()` itself — at launch, and
+again on every return to the foreground until Firebase has one — and writes it
+to the profile. An app that did the same by hand can delete those lines; if it
+keeps them, the two writes are the same write to the same key and the later one
+wins, so nothing breaks. The method stays for an app that wants to hand over an
+id of its own:
+
 ```swift
 if let appInstanceId = Analytics.appInstanceID() {
 	kit.setFirebaseAppInstanceId(appInstanceId)
 }
 ```
 
-The package does not read the id itself, on purpose: reaching into another SDK
-for its own identifier is the app's call, not a library's, and an app that does
-not use Firebase Analytics should not be made to link it. Call it whenever the
-id is in hand, **including before the layer has finished starting** — a write
-that arrives early waits for activation instead of being dropped, which matters
-because `Analytics.appInstanceID()` is usually ready before Adapty is.
+Call it whenever the id is in hand, **including before the layer has finished
+starting** — a write that arrives early waits for activation instead of being
+dropped, which matters because `Analytics.appInstanceID()` is usually ready
+before Adapty is. The package's own read answers `nil` — and so sends nothing —
+when Firebase is not up, and also when the user's consent forbids analytics
+storage; both are log lines, not entries in `configurationIssues`.
 
 Pass a real id or nothing. `Analytics.appInstanceID()` answers `nil` while
 Firebase Analytics is still coming up, and unwrapping that to `""` would put a
@@ -665,7 +692,8 @@ kit.analytics.setUserProperties(["locale": "en_US"])
 The package accepts event names as plain `String` — it does not define an
 event enum. Keeping one (e.g. a `LogEventKey` enum) is the app's decision.
 
-`setUserProperties` reaches Amplitude and nothing else. To write the same pair
+`setUserProperties` reaches Amplitude and, since 0.8.0, Firebase Analytics — see
+[Firebase Analytics](#firebase-analytics). To write the same pair
 to the Adapty profile as well, use `kit.setUserProperty(value:key:)` — see
 [Where a user property lands](#where-a-user-property-lands). In a debug build
 each pair prints on its own line, which is what to search the console for when
@@ -716,7 +744,98 @@ because the flag goes away with the app. Once per install is the guarantee,
 not once per device: an install funnel counted from this event counts
 reinstalls as new installs. Pass `nil` to opt out; a `nil` name deliberately
 leaves the gate open, so a build that ships before the event has a name does
-not spend it for the whole cohort it touched.
+not spend it for the whole cohort it touched. The event reaches Firebase like
+any other, so do not name it after one of Firebase's own events — `first_open`
+is on its reserved list, and an event with that name is not sent there (see
+below). Pick a name of your own, such as `app_first_open`.
+
+### Firebase Analytics
+
+Since 0.8.0 the package depends on the full `FirebaseAnalytics` product, and
+everything the app sends to Amplitude goes to Firebase in the same call:
+`kit.analytics.logEvent`, `setUserProperties` and `setUserId`. The app writes
+nothing new and **renames nothing** — Firebase gets the same names, or nothing.
+Both halves are independent: an empty `amplitudeKey` switches Amplitude off and
+not Firebase, and a Firebase that is not up never stops Amplitude.
+
+**What it needs from the app**
+
+1. `FirebaseIntegration.configure(isDebug:)` before `IntegrationKit.configure(...)`,
+   as before. With Firebase not up nothing reaches it, and one line saying so —
+   with the call to make — lands in `configurationIssues`. A test run that never
+   brings Firebase up gets no such line.
+2. **`-ObjC` in Other Linker Flags of the app target.** Firebase's own
+   `SwiftPackageManager.md` (12.19.2) says Analytics requires it; a maintainer
+   says in firebase-ios-sdk issue #16634 that SPM generally manages without it,
+   and the two statements have not been reconciled. 12.19.0 and 12.19.1 crashed
+   at launch without the flag (`-[APMMeasurement fetchSBT]`), which is why the
+   package's floor is 12.19.2. The package cannot set a linker flag for you, so
+   the safe course is to set it and check a build without it only if you must.
+3. Nothing in `Info.plist` is required. One key is worth knowing:
+   `FIREBASE_ANALYTICS_COLLECTION_ENABLED = NO`. The package switches collection
+   on or off at `configure` (below), but Firebase starts collecting its
+   automatic events (`first_open`, `session_start`) the moment
+   `FirebaseApp.configure()` runs — a window of a few lines between that call and
+   the package's own. On a clean device a test run can record an automatic event
+   inside that window. The key closes it from the first instant; the package then
+   enables collection itself on every normal launch, so nothing is lost. Not
+   checked against a live dashboard.
+
+**What the package does by itself**
+
+| What | When | Why |
+|---|---|---|
+| `Analytics.setAnalyticsCollectionEnabled(!isTestsRunning)` | Every launch | Firebase stores the flag between launches, so a test run that only ever switched it off would leave the device off for every build installed after it. A debug build collects like a release one — without it there is no DebugView — and the `environment` property tells the two apart. |
+| Every event, user property and user id | Same call as Amplitude | One hand-over covers the facade, Adapty's and AppsFlyer's own events. An app that still calls `Analytics.logEvent` itself gets no duplicate from the package, and no help either — see the migration note below. |
+| `Analytics.logTransaction(_:)` | After a successful purchase, on both paths — Adapty's and the StoreKit fallback | Firebase does not see StoreKit 2 purchases by itself. Only a transaction whose signature verified is sent. A cancel, an Ask to Buy waiting for approval and a failure send nothing. |
+| `Analytics.appInstanceID()` into the Adapty profile | At launch and on every return to the foreground, until Firebase has one | So a purchase in Adapty can be found in Firebase. An unchanged id is sent once per process. |
+
+**A test run stays half-silent.** With `isTestsRunning: true` the package sends
+Firebase no event, no user id, no property and no purchase, and does not read
+the instance id — but it does write `setAnalyticsCollectionEnabled(false)`, for
+the reason in the table. The Firebase layer is not part of the "everything off"
+set the other SDKs are in: crash collection still follows `isDebug` alone.
+
+**What Firebase would drop is not sent, and says so.** Firebase answers an
+invalid name or an oversized value by dropping it and logging an `error` event
+into your own dashboard, so the package checks first, and a refusal is an
+`error` line in the DEBUG log naming the name and the reason. Amplitude is never
+affected — it gets the original.
+
+| Case | What the package does |
+|---|---|
+| Event name not `A-Za-z0-9_`, over 40 characters, not starting with a letter, with a `firebase_`, `google_` or `ga_` prefix, or one of Firebase's reserved names (`first_open`, `session_start`, `error`, `app_update`, and 26 more) | The event is not sent to Firebase. Amplitude gets it as usual. |
+| Parameter key invalid by the same rules (40 characters) | That parameter is not sent; the rest of the event is. |
+| String parameter over 100 characters (UTF-16 units, without splitting a character) | Cut to 100, and the line says from what to what. Firebase would drop the whole parameter instead. |
+| More than 25 parameters | All are sent and an `error` line gives the count — which ones Firebase drops is not documented, and the package does not choose for it. |
+| Value that is not String, Int or Double | `Bool` becomes `"true"`/`"false"`, anything else is `String(describing:)`; `NSNull` has no form there and is left out. |
+| User property name over 24 characters, invalid, with a reserved prefix, or `user_id` / `first_open_time` / `last_deep_link_referrer` | Not sent. |
+| User property value over 36 characters | Cut to 36. `NSNull` removes the property in Firebase. |
+| User id empty or over 256 characters | Not sent — an empty one would join every profile to nobody, a cut one would join different users into one. |
+
+Firebase takes 25 user property names in all. The package writes five of its
+own — `environment`, `status`, `media_source`, `campaign_name`, `deep_link_value`
+— and cannot count the app's, so the 25 are shared: leave room.
+
+**Migrating an app that calls `Analytics.logEvent` itself.** Replace the calls
+with `kit.analytics.logEvent(...)`: one call then reaches both SDKs, in the
+same order, with the sanitising above. Leave the old calls in and every such
+event is only in Firebase, with none of the checks — and, if the same event is
+also sent through the kit, twice.
+
+**Purchases: two revenue events, and why.** The package logs `in_app_purchase`
+(Firebase's own name for a StoreKit 2 purchase). Adapty's server-side Firebase
+integration, if you switch it on, sends `purchase` — a different name — and
+Google Analytics adds up both, so revenue on a first purchase is counted twice.
+That integration is not set up in the current apps; if you enable it, remap its
+events in the Adapty dashboard so only one of the two names carries revenue.
+Two limits of `in_app_purchase` itself: a purchase that reaches the app another
+way — an Ask to Buy approved later, an interrupted purchase Adapty picks up on
+the next launch, a restore — is not logged, because the package deliberately
+keeps no transaction listener of its own; and renewals are Firebase's own
+business. Two things are **not verified without a live DebugView**: that Firebase
+accepts a transaction Adapty has already finished (on the Adapty path it is
+finished before the package sees it), and what it sends for a free trial.
 
 ## Crash reporting
 
@@ -1246,22 +1365,27 @@ for s in Checks/*.sh; do "./$s"; done
 
 | Script | What it pins down |
 |---|---|
-| `adapty-service-check.sh` | The whole of AD-01…AD-07: activation guards, paywall de-duplication and TTL, the `PaywallState` answers, purchase verdict mapping (including that a server or network error grants nothing), the attribution pair failing by halves, the ATT resend, remote-config parsing done once, locale selection, and the promoted purchase that must not be started. |
+| `adapty-service-check.sh` | The whole of AD-01…AD-07: activation guards, paywall de-duplication and TTL, the `PaywallState` answers, purchase verdict mapping (including that a server or network error grants nothing), the attribution pair failing by halves, the ATT resend, remote-config parsing done once, locale selection, and the promoted purchase that must not be started. Since 0.8.0 also the purchase half of FA-04: a verified `.success` reaches Firebase once, an unverified one, a cancel, a pending purchase and a failure never do, and a second answer to the same purchase does not log a second payment. |
+| `firebase-analytics-check.sh` | FA-01…FA-05 and their boundary with Amplitude (0.8.0): the collection flag written in both directions, "Firebase is not up" recorded once, what the sanitiser refuses and cuts (event names, reserved names and prefixes, parameter keys, the 25-parameter and 100/36-character limits in UTF-16 units, value types, user id), the mirror in the same call as Amplitude, and the Firebase instance id delivered once. |
 | `premium-resolver-check.sh` | Arbitration order: a verified Adapty answer beats the cache both ways; a false receipt does not revoke an unverified local purchase; a stale cache plus a true receipt yields unverified state with no `expiresAt`; silence yields `.free`. |
 | `premium-barrier-check.sh` | The `refresh()` concurrency barrier, restore, the StoreKit-fallback path, and the price merge — the store's price winning where it answered, Adapty's kept where it did not. |
 | `premium-local-purchase-check.sh` | The local-purchase mark: what sets it, what may clear it, and what must never clear it. |
 | `premium-pending-check.sh` | That one hung purchase does not refuse every later purchase in the process. |
 | `premium-storekit-check.sh` | Restore, price lookup, unfinished transactions delivered by the payment queue, and that every SwiftyStoreKit entry point is reached on the main thread even when the caller is not. |
 | `crashlytics-check.sh` | Double `configure`, the network-noise filter, and the tags a non-fatal carries. |
-| `amplitude-analytics-check.sh` | First-open gating, the IDFA plugin attached exactly once, the environment property, the test-run guard, and the debug log lines for user id, device id and each user property. |
+| `amplitude-analytics-check.sh` | First-open gating, the IDFA plugin attached exactly once, the environment property, the test-run guard, and the debug log lines for user id, device id and each user property. Firebase is brought up for the whole run so the mirror stays out of the way — what it does is `firebase-analytics-check.sh`'s business. |
 | `appsflyer-service-check.sh` | Session start, attribution mapping, the ATT wait limit, deep-link values. |
 | `appsflyer-attribution-check.sh` | `cleanedAttributionData`: `NSNull`/non-scalar values and non-string keys dropped, an empty input staying empty, a `nil` deep link value becoming `"-"`, `clickEvent` fields flowing through. |
-| `integration-kit-check.sh` | The composition root, actually run: the `AppDelegate` forwards answering with no AppsFlyer layer, the empty dev key leaving a readable reason, and a second `configure` handing back the first kit instead of building a second graph. The ten above compile a chosen slice of `Sources/` and never compile `IntegrationKit.swift` at all, so a forward that drops a request on the floor is invisible to every one of them. |
-| `buildhost-check.sh` | That the package still compiles the way an app compiles it — against the real SDKs rather than the stubs in `Checks/Stubs/`, with the real Package.swift resolution behind it. The eleven above never link a real SDK, so a dependency whose API moved under a `from:` range breaks here first. Runs `xcb app-sim --path BuildHost`, regenerating the xcodegen project first, because the generated `.xcodeproj` is gitignored and `xcb` exits 0 when it finds none. |
+| `integration-kit-check.sh` | The composition root, actually run — in two processes of one binary, a normal launch and a test run (`--tests-running`): the `AppDelegate` forwards answering with no AppsFlyer layer, the empty dev key leaving a readable reason, a second `configure` handing back the first kit instead of building a second graph, and (0.8.0) Firebase hearing the collection flag, the user id, the `environment` property and the kit's own Adapty-bound instance id on a normal launch, and only `collection off` in a test run. The other scripts compile a chosen slice of `Sources/` and never compile `IntegrationKit.swift` at all, so a forward that drops a request on the floor is invisible to every one of them. |
+| `test-mode-check.sh` | TM-01…TM-07: the test mode — the fake Adapty and Apple sources, and the production arbiter that stays above them. |
+| `remote-config-service-check.sh` | RC-01…RC-03: Remote Config defaults, the fetch, the "is Firebase up" guard, and a failed fetch filed as a non-fatal. |
+| `price-cache-check.sh` | PM-07 rows 14–16: the price cache over `UserDefaults`, pure types with no SDK stub. |
+| `store-price-check.sh` | PM-07 row 17: `StorePrice`, pure `Decimal` and `Foundation`. |
+| `buildhost-check.sh` | That the package still compiles the way an app compiles it — against the real SDKs rather than the stubs in `Checks/Stubs/`, with the real Package.swift resolution behind it. The other sixteen never link a real SDK, so a dependency whose API moved under a `from:` range breaks here first. Runs `xcb app-sim --path BuildHost`, regenerating the xcodegen project first, because the generated `.xcodeproj` is gitignored and `xcb` exits 0 when it finds none. |
 
 A test written from an approved schema goes in before the code that satisfies
 it, so an assert can be red for a while by design — a specification waiting to
-be met rather than a regression. All twelve scripts are green as of this
+be met rather than a regression. All seventeen scripts are green as of this
 commit; a red assert names its row, and that row's "Стан у коді" column says
 where it stands.
 
@@ -1312,6 +1436,12 @@ so it can be traced to one layer without reading the message, and an
   the ids a screen asked for only the cache remembered.
 - **AppsFlyer, Amplitude, Remote Config (Firebase)** — configuration, every
   event and user property, every conversion-data and deep-link callback.
+- **Firebase Analytics** (since 0.8.0) — the direction of the collection flag
+  and why, one line per event, user property and user id handed to Firebase,
+  every name or key it was **not** sent under with the reason (an `error`
+  line), every value cut with both lengths (an `info` line), every read of the
+  instance id including `nil`, and every transaction sent. Search the console
+  for `[IntegrationKit][FirebaseAnalytics]`.
 
 **What never gets printed:** API keys, dev keys, tokens, receipts — every
 credential is logged as `"set"`/`"empty"` only, never its value. A remote
@@ -1384,6 +1514,15 @@ package-wide store, deduplicated by text, oldest first. Shipping it as a
 Crashlytics non-fatal at launch turns "the SDK is silent" into a searchable
 dashboard entry.
 
+- **An event is in Amplitude but not in Firebase.** Search the console for
+  `[IntegrationKit][FirebaseAnalytics][error]`: the usual cause is a name or key
+  Firebase would drop (a reserved name such as `first_open`, a `firebase_`,
+  `google_` or `ga_` prefix, a character outside `A-Za-z0-9_`, more than 40
+  characters) — the package does not send it, and the line names it. The other
+  causes, in order of likelihood: Firebase was not up (the line is in
+  `configurationIssues`), the run was a test run (nothing is sent by design),
+  and collection was switched off on the device (a test run writes `false`; the
+  next normal launch writes `true`, but only from that launch on).
 - **The app crashes with `unrecognized selector sent to instance` on a tagged
   pointer, somewhere under `SwiftyStoreKit`.** Fixed in 0.5.0 — upgrade. The
   selector and the class in the message are meaningless (`-[__NSTaggedDate
@@ -1460,7 +1599,9 @@ dashboard entry.
   scheme setting that survived a debugging session, or a computed value that
   went constant. `kit.configurationIssues` names it directly: three lines, one
   per layer, each saying the app reported a test run. Firebase stays up in that
-  state, so crashes still arrive and the app does not look dead.
+  state, so crashes still arrive and the app does not look dead — though
+  Firebase **Analytics** is silent too, with its collection switched off until
+  the next normal launch writes it back on.
 - **A report is in the dashboard but cannot be filtered by its tag.** Filter on
   the custom key `ik_tag`, not on the `info` dictionary: `info` is the report's
   `userInfo` and is only visible inside an issue that is already open.
@@ -1471,6 +1612,10 @@ dashboard entry.
 - [ ] `GoogleService-Info.plist` — this app's own, target membership checked
 - [ ] Crashlytics dSYM Run Script added, `inputPaths` point at this target
 - [ ] `NSUserTrackingUsageDescription` set in Info.plist
+- [ ] `-ObjC` in the target's Other Linker Flags (Firebase Analytics)
+- [ ] The app's own `Analytics.logEvent` calls moved to `kit.analytics.logEvent`,
+      and no event is named after one of Firebase's reserved names
+      (`first_open` included — `firstOpenEvent` too)
 - [ ] Associated Domains added, if Universal Links are needed
 - [ ] `AppDelegate` calls `FirebaseIntegration.configure(isDebug:)` before
       `IntegrationKit.configure(...)`, and both get the same `isDebug`
@@ -1505,5 +1650,5 @@ dashboard entry.
       of the process, not discarded — the `private var kit` in the AppDelegate
       example is a requirement, and the paragraph under it says what goes when
       it is dropped
-- [ ] `for s in Checks/*.sh; do "./$s"; done` — all twelve green (the twelfth
+- [ ] `for s in Checks/*.sh; do "./$s"; done` — all seventeen green (the last
       is the BuildHost build, so there is nothing to run separately)
