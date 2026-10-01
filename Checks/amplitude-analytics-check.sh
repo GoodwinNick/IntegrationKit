@@ -21,11 +21,26 @@ swiftc -emit-module -emit-library -static \
 	Checks/Stubs/AmplitudeSwift/BaseEvent.swift \
 	Checks/Stubs/AmplitudeSwift/EnrichmentPlugin.swift \
 	Checks/Stubs/AmplitudeSwift/Amplitude.swift
-swiftc -o "$work/check" -I "$work" -L "$work" -lAmplitudeSwift \
+# Since 0.8.0 `AmplitudeAnalytics` hands every event, property and user id to
+# `FirebaseAnalyticsMirror` as well (FA-02, FA-03), so the mirror and the two Firebase stub modules
+# it imports are part of this slice. What reaches them is asserted in `firebase-analytics-check.sh`;
+# this script only has to keep proving the Amplitude half unchanged.
+swiftc -emit-module -emit-library -static \
+	-module-name FirebaseCore \
+	-emit-module-path "$work/FirebaseCore.swiftmodule" \
+	-o "$work/libFirebaseCore.a" \
+	Checks/Stubs/FirebaseCrashlytics/FirebaseApp.swift
+swiftc -emit-module -emit-library -static \
+	-module-name FirebaseAnalytics \
+	-emit-module-path "$work/FirebaseAnalytics.swiftmodule" \
+	-o "$work/libFirebaseAnalytics.a" \
+	Checks/Stubs/FirebaseAnalytics/Analytics.swift
+swiftc -o "$work/check" -I "$work" -L "$work" -lAmplitudeSwift -lFirebaseCore -lFirebaseAnalytics \
 	Checks/Cases/AmplitudeAnalyticsCheck.swift \
 	Sources/IntegrationKit/Support/LogLevel.swift \
 	Sources/IntegrationKit/Support/DebugLog.swift \
 	Sources/IntegrationKit/Support/ConfigurationIssues.swift \
+	Sources/IntegrationKit/Firebase/FirebaseAnalyticsMirror.swift \
 	Sources/IntegrationKit/Amplitude/AnalyticsTracking.swift \
 	Sources/IntegrationKit/Amplitude/AmplitudeAnalytics.swift \
 	Sources/IntegrationKit/Amplitude/AmplitudeIDFAPlugin.swift

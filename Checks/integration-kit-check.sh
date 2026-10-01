@@ -71,6 +71,11 @@ swiftc -emit-module -emit-library -static \
 	-o "$work/libFirebaseCore.a" \
 	Checks/Stubs/FirebaseCrashlytics/FirebaseApp.swift
 swiftc -emit-module -emit-library -static \
+	-module-name FirebaseAnalytics \
+	-emit-module-path "$work/FirebaseAnalytics.swiftmodule" \
+	-o "$work/libFirebaseAnalytics.a" \
+	Checks/Stubs/FirebaseAnalytics/Analytics.swift
+swiftc -emit-module -emit-library -static \
 	-module-name FirebaseCrashlytics \
 	-emit-module-path "$work/FirebaseCrashlytics.swiftmodule" \
 	-o "$work/libFirebaseCrashlytics.a" \
@@ -84,9 +89,13 @@ swiftc -emit-module -emit-library -static \
 	Checks/Stubs/FirebaseRemoteConfig/RemoteConfigValue.swift \
 	Checks/Stubs/FirebaseRemoteConfig/RemoteConfig.swift
 swiftc -o "$work/check" -I "$work" -L "$work" \
-	-lUIKit -lAppsFlyerLib -lAdapty -lAmplitudeSwift -lFirebaseCore -lFirebaseCrashlytics -lFirebaseRemoteConfig \
+	-lUIKit -lAppsFlyerLib -lAdapty -lAmplitudeSwift -lFirebaseCore -lFirebaseAnalytics -lFirebaseCrashlytics -lFirebaseRemoteConfig \
 	Checks/Cases/IntegrationKitCheck.swift \
 	Sources/IntegrationKit/*.swift \
 	Sources/IntegrationKit/*/*.swift \
 	Sources/IntegrationKit/*/*/*.swift
-exec "$work/check"
+# `configure` builds one kit per process by design, and what it decides about a test run is decided
+# once — so a normal launch and a test run (FA-01 r3, TM-07 r10) are two processes of one binary.
+# `set -e` stops at the first non-zero exit; the second process only runs if the first was green.
+"$work/check"
+exec "$work/check" --tests-running

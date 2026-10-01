@@ -30,6 +30,8 @@
 
 import Adapty
 import AppTrackingTransparency
+import FirebaseAnalytics
+import FirebaseCore
 import Foundation
 
 /// The `AnalyticsTracking` the service needs to run. `deviceId` is settable because AD-01 row 2 is
@@ -70,6 +72,14 @@ enum AdaptyServiceCheck {
 	static func reset(_ row: String = "") {
 		if !row.isEmpty { fputs("  \(row)\n", stderr) }
 		Adapty.reset()
+		Analytics.reset()
+		FirebaseApp.reset()
+		// Since 0.8.0 a successful purchase is handed to the Firebase mirror (FA-04), and a mirror that
+		// finds Firebase down writes "Firebase is not up" into `configurationIssues` — a line none of
+		// the AD rows is about, and one that would move every `issues()` assert after a purchase.
+		// Firebase therefore starts UP, as the app has it before the kit; the rows about it being down
+		// (`transactionMirror()`) take it down themselves.
+		FirebaseApp.configure()
 		ConfigurationIssues.shared.reset()
 		log = []
 	}
@@ -151,8 +161,8 @@ enum AdaptyServiceCheck {
 	}
 
 	/// A purchase that went through, in the shape 4.1.3 answers with.
-	static func purchased() -> Result<AdaptyPurchaseResult, AdaptyError> {
-		.success(.success(profile: AdaptyProfile(accessLevels: [:]), transaction: AdaptyPurchaseResult.SignedTransaction()))
+	static func purchased(id: UInt64 = 1) -> Result<AdaptyPurchaseResult, AdaptyError> {
+		.success(.success(profile: AdaptyProfile(accessLevels: [:]), transaction: AdaptyPurchaseResult.SignedTransaction(id: id)))
 	}
 
 	/// One locale's worth of remote config, which is all most rows need.
@@ -1315,5 +1325,93 @@ enum AdaptyServiceCheck {
 		t56.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
 		let t56Firebase = Adapty.integrationIdentifierJournal.filter { $0.key == .firebaseAppInstanceId }
 		check(t56Firebase.map(\.value) == ["fid-new"], "AD-06: two ids queued before activation must land as one write of the newest — got \(t56Firebase.map(\.value))")
+
+		transactionMirror()
+	}
+
+	// MARK: - FA-04: the purchase that reaches Firebase.
+
+	/// Appended last for the reason given in `attributionRetry()`. These are the call-site rows of
+	/// `FA-04 Ризики` (3, 4, 1 and the "which outcomes do not count" half of the contract); the gate
+	/// behind them — Firebase up or down, what the log shows — is `firebase-analytics-check.sh`.
+	///
+	/// What lands in `Analytics.transactions` is `String(describing:)` of the value the service
+	/// handed over (see the stub), so a row that wants to know WHICH transaction went compares it
+	/// with the description of the payload it built.
+	static func transactionMirror() {
+		func described(_ id: UInt64) -> String {
+			String(describing: AdaptyPurchaseResult.Payload(id: id))
+		}
+
+		/// One purchase against a loaded service, answered with `answer`; the verdict it produced.
+		func bought(_ answer: Result<AdaptyPurchaseResult, AdaptyError>) -> PurchaseVerdict? {
+			let service = loadedService()
+			Adapty.makePurchaseResult = answer
+			var verdict: PurchaseVerdict?
+			service.buyProduct(placement: "main", id: "year.sub") { verdict = $0 }
+			return verdict
+		}
+
+		// T57 — FA-04 rows 3 and 4: a completed purchase with a VERIFIED transaction reaches Firebase,
+		// once, and it is THAT transaction. The id is not the default, so a service that logged some
+		// other value (or built its own) fails here.
+		reset("T57")
+		let t57 = bought(purchased(id: 77))
+		check(name(t57) == "success", "FA-04 setup: the purchase itself must still map to .success, got \(name(t57))")
+		check(Analytics.transactions == [described(77)], "FA-04 r3: a verified purchase must reach Firebase exactly once, as the transaction that was bought — got \(Analytics.transactions)")
+
+		// T57b — FA-04 row 4: `.success` with a transaction whose signature did not verify. The SDK's
+		// public `transaction` accessor would hand that payload over as if it were fine
+		// (`AdaptyPurchaseResult.swift:62-65`), which is a payment in Google that never happened. The
+		// purchase itself still counts for the user — only the Firebase side is withheld, and the
+		// reason is an error line, because someone has to be able to find out why a purchase is missing.
+		reset("T57b")
+		let unverified = AdaptyPurchaseResult.SignedTransaction.unverified(AdaptyPurchaseResult.Payload(id: 78), AdaptyError(.networkFailed))
+		let t57b = bought(.success(.success(profile: AdaptyProfile(accessLevels: [:]), transaction: unverified)))
+		check(name(t57b) == "success", "FA-04 r4: an unverified transaction must not change the verdict the user gets — got \(name(t57b))")
+		check(Analytics.transactions.isEmpty, "FA-04 r4: an unverified transaction must never reach Firebase — got \(Analytics.transactions)")
+		check(log.contains { $0.contains("[error]") && $0.contains("unverified") }, "FA-04 r4: the withheld transaction must leave an error line saying why — got \(log)")
+
+		// T57c — the three outcomes that are not a payment. Each is its own purchase, so a service
+		// that logged on "the SDK answered" instead of on "it was paid" fails on exactly one of them.
+		reset("T57c")
+		let cancelled = bought(.success(.userCancelled))
+		check(name(cancelled) == "cancelled" && Analytics.transactions.isEmpty, "FA-04: a cancelled purchase must not reach Firebase — verdict \(name(cancelled)), got \(Analytics.transactions)")
+		reset("T57d")
+		let pending = bought(.success(.pending))
+		check(name(pending) == "pending" && Analytics.transactions.isEmpty, "FA-04: a pending purchase (Ask to Buy) must not reach Firebase — verdict \(name(pending)), got \(Analytics.transactions)")
+		reset("T57e")
+		let failed = bought(.failure(AdaptyError(.networkFailed)))
+		check(name(failed) == "failed" && Analytics.transactions.isEmpty, "FA-04: a failed purchase must not reach Firebase — verdict \(name(failed)), got \(Analytics.transactions)")
+
+		// T57f — AD-04 row 8 meets FA-04: an SDK that answers twice yields one verdict (T41), and must
+		// yield ONE payment too — the second answer is dropped before anything reads it, or revenue
+		// doubles on exactly the purchases where the SDK misbehaves.
+		reset("T57f")
+		Adapty.getFlowResults = [.success(AdaptyFlow())]
+		Adapty.getPaywallProductsResult = .success([AdaptyPaywallProduct(vendorProductId: "year.sub")])
+		let t57f = AdaptyService(deadlines: fast(\.purchase, 5))
+		t57f.configure(apiKey: key, customerUserId: "u1", sessionsCounter: 1, placements: ["main"], analytics: FakeAnalytics(), attStatus: .notDetermined)
+		Adapty.holdMakePurchase = true
+		let t57fHeld = Adapty.heldPurchases.count
+		var t57fVerdicts: [String] = []
+		Task { t57fVerdicts.append(name(await t57f.buy(productId: "year.sub", placement: "main"))) }
+		check(wait(3) { Adapty.heldPurchases.count > t57fHeld }, "FA-04 setup: the purchase must reach the SDK and be held")
+		let t57fCallback = Adapty.heldPurchases.last
+		t57fCallback?(purchased(id: 79))
+		t57fCallback?(purchased(id: 80))
+		check(wait(3) { !t57fVerdicts.isEmpty }, "FA-04 setup: the call must settle after the SDK's first answer")
+		check(Analytics.transactions == [described(79)], "FA-04: a second answer to the same purchase must not log a second payment — got \(Analytics.transactions)")
+
+		// T57g — FA-04 row 1 through the real call site: Firebase is not up. The purchase goes through
+		// exactly as it would with Firebase up (the user paid; analytics is not part of that), nothing
+		// reaches the SDK, and the cause is recorded ONCE even for two purchases.
+		reset("T57g")
+		FirebaseApp.reset()
+		let t57g = bought(purchased(id: 81))
+		let t57gAgain = bought(purchased(id: 82))
+		check(name(t57g) == "success" && name(t57gAgain) == "success", "FA-04 r1: Firebase being down must not change the purchase verdict — got \(name(t57g)), \(name(t57gAgain))")
+		check(Analytics.transactions.isEmpty, "FA-04 r1: with Firebase down no transaction may reach the SDK — got \(Analytics.transactions)")
+		check(issues().filter { $0.contains("Firebase is not up") }.count == 1, "FA-04 r1: the cause must be recorded once, not once per purchase — got \(issues())")
 	}
 }

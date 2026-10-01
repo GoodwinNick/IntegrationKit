@@ -56,6 +56,7 @@
 
 import AmplitudeSwift
 import AppTrackingTransparency
+import FirebaseCore
 import Foundation
 
 @main
@@ -77,6 +78,13 @@ enum AmplitudeAnalyticsCheck {
 	}
 
 	static func main() {
+		// Since 0.8.0 `AmplitudeAnalytics` also hands everything to the Firebase mirror, and a mirror
+		// that finds Firebase down writes "Firebase is not up" into `configurationIssues` — a line none
+		// of the rows below is about, and one that would move every assert on that list. Firebase is
+		// brought up once for the whole run, the way the app does it before the kit; what the mirror
+		// then does is `firebase-analytics-check.sh`'s business, not this file's.
+		FirebaseApp.configure()
+
 		// ── AN-01 row 1 — the first-open gate must not close before the event ships ────────
 		// Executes `AmplitudeAnalytics.swift:77-100`. Green: `:95` hands the event over and only
 		// then `:99` writes the flag — the flag used to be written first, so at the instant it

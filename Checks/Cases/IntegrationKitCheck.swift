@@ -11,21 +11,29 @@
 //
 //  This check builds the whole package against the same stub modules the other checks use and runs
 //  the root the way an app does.
+//
+//  Two processes of one binary, because `configure` builds one kit per process and what it decides
+//  about a test run is decided once: no argument is a normal launch (`launch()`), `--tests-running`
+//  is a test run (`testRun()`, FA-01 r3 and TM-07 r10 for Firebase). The script runs them in turn.
 //  Run:  ./Checks/integration-kit-check.sh
 //
 
 import Adapty
 import AmplitudeSwift
+import FirebaseAnalytics
+import FirebaseCore
 import Foundation
 import UIKit
 
 @main
 enum IntegrationKitCheck {
 	static var failures: [String] = []
+	static var assertCount = 0
 
 	/// Records a failure instead of trapping, same as `PremiumStoreKitCheck` — one failing row must
 	/// not stop the rest from running.
 	static func check(_ condition: @autoclosure () -> Bool, _ message: @autoclosure () -> String) {
+		assertCount += 1
 		guard !condition() else { return }
 		let text = message()
 		failures.append(text)
@@ -60,28 +68,104 @@ enum IntegrationKitCheck {
 	/// stops every one of them at its own guard before the forward can be seen at all. It has to be
 	/// decided here rather than per row — `configure` builds one kit per process by design, so the
 	/// first call in this file is the only call that chooses anything.
-	static func kitWithoutAppsFlyer() -> IntegrationKit {
+	static let deviceId = "00000000-0000-0000-0000-000000000000"
+
+	static func kitWithoutAppsFlyer(isTestsRunning: Bool = false) -> IntegrationKit {
 		IntegrationKit.configure(
-			deviceId: "00000000-0000-0000-0000-000000000000",
+			deviceId: deviceId,
 			amplitudeKey: "amp-key",
 			adaptyKey: "public_live_0000000000000000000000000000000000",
 			placements: [],
 			sessionsCounter: 1,
 			productIds: [],
 			isDebug: false,
-			isTestsRunning: false,
+			isTestsRunning: isTestsRunning,
 			appsFlyerDevKey: ""
 		)
 	}
 
 	static func main() {
+		let testsRunning = CommandLine.arguments.contains("--tests-running")
+		if testsRunning {
+			testRun()
+		} else {
+			launch()
+		}
+
+		if failures.isEmpty {
+			print("IntegrationKit composition root (\(testsRunning ? "test run" : "launch")): \(assertCount) checks OK")
+		} else {
+			print("\(failures.count) of \(assertCount) check(s) failed (\(testsRunning ? "test run" : "launch")):")
+			for failure in failures {
+				print("  - \(failure)")
+			}
+			exit(1)
+		}
+	}
+
+	// MARK: - A test run (FA-01 r3, TM-07 r10)
+
+	/// Firebase is up — the app does that before the kit — and the app says this is a test run. The
+	/// kit must still tell Firebase to stop collecting (the flag is stored between launches, so a run
+	/// that skipped it would leave collection on for the next one), and must otherwise leave it
+	/// entirely alone: no event, no user id, no property, no read of the instance id for Adapty.
+	static func testRun() {
+		FirebaseApp.configure()
+		Analytics.stubAppInstanceID = "fid-test-run"
+		let kit = kitWithoutAppsFlyer(isTestsRunning: true)
+		kit.analytics.logEvent("root_test_event", properties: ["k": "v"])
+		kit.analytics.setUserProperties(["status": "tester"])
+
+		check(Analytics.collectionEnabledCalls == [false],
+		      "FA-01 r3: a test run must switch Firebase collection OFF, exactly once — got \(Analytics.collectionEnabledCalls)")
+		check(Analytics.loggedEvents.isEmpty,
+		      "TM-07 r10: a test run must send Firebase no event, not even through the facade — got \(Analytics.loggedEvents.map(\.name))")
+		check(Analytics.userIDs.isEmpty && Analytics.userProperties.isEmpty,
+		      "TM-07 r10: a test run must send Firebase no user id and no property — ids \(Analytics.userIDs), properties \(Analytics.userProperties.map(\.name))")
+		check(Analytics.transactions.isEmpty,
+		      "TM-07 r10: a test run must send Firebase no transaction — got \(Analytics.transactions)")
+		check(Analytics.appInstanceIDReads == 0,
+		      "FA-05: a test run must not read the Firebase instance id — it has nobody to give it to — got \(Analytics.appInstanceIDReads) read(s)")
+	}
+
+	// MARK: - A normal launch
+
+	static func launch() {
+		// FA-01, FA-03, FA-05 — what the kit does with Firebase on its own, before any call from the
+		// app. Firebase is up and has an instance id ready, as in the app after
+		// `FirebaseIntegration.configure`. Asserted first, while the stubs hold nothing else.
+		FirebaseApp.configure()
+		Analytics.stubAppInstanceID = "fid-auto"
+		let kit = kitWithoutAppsFlyer()
+
+		check(Analytics.collectionEnabledCalls == [true],
+		      "FA-01: a normal launch must state collection ON, exactly once, on every launch — got \(Analytics.collectionEnabledCalls)")
+		check(Analytics.userIDs == [deviceId],
+		      "FA-03: the user id Firebase gets is the app's own device id, once — got \(Analytics.userIDs)")
+		check(Analytics.userProperties.contains { $0.name == "environment" && $0.value == "unknown" },
+		      "AN-01 r12: `environment` must reach Firebase from the root — got \(Analytics.userProperties)")
+		// The id reaches Adapty by itself: no `setFirebaseAppInstanceId` call has been made by this file
+		// yet, so anything in the journal came from the kit (FA-05). The activation answers a moment
+		// later, hence the wait.
+		wait { Adapty.integrationIdentifierJournal.contains { $0.key == .firebaseAppInstanceId } }
+		let autoWrites = Adapty.integrationIdentifierJournal.filter { $0.key == .firebaseAppInstanceId }.map(\.value)
+		check(autoWrites == ["fid-auto"],
+		      "FA-05: the kit must hand the Firebase instance id to Adapty by itself, once, with no call from the app — got \(autoWrites)")
+
+		// …and an event through the facade goes to BOTH SDKs, under one name (FA-02 r1, AN-02 r6).
+		kit.analytics.logEvent("root_event", properties: ["plan": "year"])
+		check(Amplitude.trackedEvents.last?.eventType == "root_event" && Analytics.loggedEvents.last?.name == "root_event",
+		      "FA-02 r1: an event through the facade must reach Amplitude and Firebase under the same name — Amplitude \(String(describing: Amplitude.trackedEvents.last?.eventType)), Firebase \(Analytics.loggedEvents.map(\.name))")
+		check(Analytics.loggedEvents.last?.parameters?["plan"] as? String == "year",
+		      "FA-02 r1: the parameters must travel with it — got \(String(describing: Analytics.loggedEvents.last?.parameters))")
+
 		// AF-05 row 3, through the facade. The schema is explicit that answering is a duty of its own:
 		// "вимкнений шар теж відповідає, і відповідає рівно один раз". `restorationHandler` belongs to
 		// UIKit, and an app that never calls it sits on its launch screen for the whole universal-link
 		// open. `AppsFlyerServiceCheck.swift:566` and `:572` pin this for a SERVICE configured with an
 		// empty dev key — but with an empty dev key the composition root builds no service, so the
-		// path the app actually takes is this one and nothing covered it.
-		let kit = kitWithoutAppsFlyer()
+		// path the app actually takes is this one and nothing covered it. (The kit itself is the one
+		// built at the top of `launch()`.)
 		var answers: [[UIUserActivityRestoring]?] = []
 		let activity = NSUserActivity(activityType: "com.integrationkit.checks.af05")
 		kit.handleContinue(activity) { answers.append($0) }
@@ -154,8 +238,11 @@ enum IntegrationKitCheck {
 		let beforeFirebase = Adapty.integrationIdentifierJournal.count
 		kit.setFirebaseAppInstanceId("fid-facade")
 		let firebaseWrites = Adapty.integrationIdentifierJournal.filter { $0.key == .firebaseAppInstanceId }
-		check(firebaseWrites.map(\.value) == ["fid-facade"],
-		      "AD-06 r12: setFirebaseAppInstanceId on the facade must reach the SDK with the app's own id — journal \(beforeFirebase) → \(Adapty.integrationIdentifierJournal.count), Firebase writes \(firebaseWrites.map(\.value))")
+		// Since 0.8.0 the kit has already written its own id by now ("fid-auto", asserted at the top), so
+		// the journal holds both, the app's last — the forward must neither swallow the app's id because
+		// one is there already, nor rewrite it.
+		check(firebaseWrites.map(\.value) == ["fid-auto", "fid-facade"],
+		      "AD-06 r12: setFirebaseAppInstanceId on the facade must reach the SDK with the app's own id, after the kit's own — journal \(beforeFirebase) → \(Adapty.integrationIdentifierJournal.count), Firebase writes \(firebaseWrites.map(\.value))")
 
 		// The assert names the id, not "something came back": a forward wired to the wrong call would
 		// still answer a string, and `profileId()` answering `nil` is a legal answer everywhere else.
@@ -179,15 +266,5 @@ enum IntegrationKitCheck {
 		let amplitudeGrew = Amplitude.identifyCalls.count == beforeIdentify + 1
 		check(amplitudeGrew && sharedAmplitudeValue == "returning",
 		      "AN-03 r6: setUserProperty must reach Amplitude with the same pair — identify calls \(beforeIdentify) → \(Amplitude.identifyCalls.count), value \(String(describing: sharedAmplitudeValue))")
-
-		if failures.isEmpty {
-			print("IntegrationKit composition root: \(14) checks OK")
-		} else {
-			print("\(failures.count) check(s) failed:")
-			for failure in failures {
-				print("  - \(failure)")
-			}
-			exit(1)
-		}
 	}
 }

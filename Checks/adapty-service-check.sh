@@ -34,11 +34,25 @@ swiftc -emit-module -emit-library -static \
 	Checks/Stubs/Adapty/AdaptyProfileParameters.swift \
 	Checks/Stubs/Adapty/AdaptyDelegate.swift \
 	Checks/Stubs/Adapty/Adapty.swift
-swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty \
+# Since 0.8.0 `AdaptyService` reads a successful purchase's transaction and hands a verified one to
+# `FirebaseAnalyticsMirror` (FA-04), so the mirror and the two Firebase stub modules it imports are
+# part of this slice.
+swiftc -emit-module -emit-library -static \
+	-module-name FirebaseCore \
+	-emit-module-path "$work/FirebaseCore.swiftmodule" \
+	-o "$work/libFirebaseCore.a" \
+	Checks/Stubs/FirebaseCrashlytics/FirebaseApp.swift
+swiftc -emit-module -emit-library -static \
+	-module-name FirebaseAnalytics \
+	-emit-module-path "$work/FirebaseAnalytics.swiftmodule" \
+	-o "$work/libFirebaseAnalytics.a" \
+	Checks/Stubs/FirebaseAnalytics/Analytics.swift
+swiftc -o "$work/check" -I "$work" -L "$work" -lAdapty -lFirebaseCore -lFirebaseAnalytics \
 	Checks/Cases/AdaptyServiceCheck.swift \
 	Sources/IntegrationKit/Support/LogLevel.swift \
 	Sources/IntegrationKit/Support/DebugLog.swift \
 	Sources/IntegrationKit/Support/ConfigurationIssues.swift \
+	Sources/IntegrationKit/Firebase/FirebaseAnalyticsMirror.swift \
 	Sources/IntegrationKit/Support/SingleResume.swift \
 	Sources/IntegrationKit/Support/WithTimeout.swift \
 	Sources/IntegrationKit/Amplitude/AnalyticsTracking.swift \
