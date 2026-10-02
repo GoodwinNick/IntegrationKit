@@ -48,6 +48,11 @@
 //  AN-02 row 4 and AN-03 row 4 name `AppsFlyerService.swift` and are asserted in
 //  `AppsFlyerServiceCheck.swift` (the `af_` event names, and the unprefixed profile properties).
 //
+//  T24..T30 are AN-05 (`flush()`, 0.9.0, APP-127), written red first from the approved schema: the
+//  methods they call did not exist. They too are appended at the end, for the reason above. Rows
+//  4, 5 and 9 of AN-05 are NOT covered — no network in `Checks/`, no way to see an iOS suspension, and
+//  the SDK's own behaviour is read from its source, not asserted on a stub (see the risk table).
+//
 //  This check does not stop at the first failing row: every row runs, every failure is collected,
 //  and the summary at the end reports all of them with a non-zero exit code — same shape as
 //  `CrashlyticsCheck`. A non-zero exit is now a regression, not the expected outcome.
@@ -56,6 +61,7 @@
 
 import AmplitudeSwift
 import AppTrackingTransparency
+import FirebaseAnalytics
 import FirebaseCore
 import Foundation
 
@@ -575,10 +581,126 @@ enum AmplitudeAnalyticsCheck {
 		Amplitude.reset()
 		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
 
+		// ── AN-05 setup — one configured instance, no first-open event, reused by rows 2, 3, 6 ──
+		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
+		Amplitude.reset()
+		let an05 = AmplitudeAnalytics()
+		an05.configure(apiKey: "amp-key", deviceId: "device-an05", firstOpenEvent: nil)
+
+		// ── AN-05 row 2 — flush right after logEvent runs after the event, never before ───────
+		// The point of `flush()` is to push the event that was JUST logged. `callLog` is one array in
+		// arrival order, because `trackedEvents` and a flush counter on their own cannot say which came
+		// first. The real SDK keeps this order itself: `track` and `flush` land on the same serial queue.
+		Amplitude.reset()
+		an05.logEvent("first_open_custom")
+		an05.flush()
+		check(
+			Amplitude.callLog == ["track:first_open_custom", "flush"],
+			"T24 AN-05 row 2: flush() right after logEvent must reach the SDK after that event, got "
+				+ "\(Amplitude.callLog)"
+		)
+
+		// ── AN-05 row 7 — flush with nothing logged is just a flush ───────────────────────────
+		Amplitude.reset()
+		an05.flush()
+		check(
+			Amplitude.callLog == ["flush"] && Amplitude.trackedEvents.isEmpty,
+			"T25 AN-05 row 7: flush() on a layer with no events must reach the SDK once and create no "
+				+ "event, got callLog \(Amplitude.callLog), events \(Amplitude.trackedEvents.map { $0.eventType })"
+		)
+
+		// ── AN-05 row 3 — two flushes from two queues must both arrive, without a crash ──────
+		// Same shape as T7: the stub's array is not thread-safe, so the calls are serialised through one
+		// queue after being dispatched from two — what is under test is the wrapper, not the stub.
+		Amplitude.reset()
+		let flushGroup = DispatchGroup()
+		let flushSerial = DispatchQueue(label: "amplitude-check.an05.row3")
+		for _ in 0..<2 {
+			DispatchQueue.global().async(group: flushGroup) {
+				flushSerial.sync {
+					an05.flush()
+				}
+			}
+		}
+		let flushFinished = flushGroup.wait(timeout: .now() + 2) == .success
+		check(
+			flushFinished && Amplitude.callLog == ["flush", "flush"],
+			"T26 AN-05 row 3: two flush() calls from different queues must both reach the SDK, "
+				+ "finished=\(flushFinished), got \(Amplitude.callLog)"
+		)
+
+		// ── AN-05 row 1 — an inactive layer flushes nothing and does not crash ───────────────
+		// Both legal ways to be off: an empty key and a test run. Nothing is built, so there is nothing
+		// for `flush()` to reach — and, as for every other operation of this layer, nothing to throw.
+		Amplitude.reset()
+		let flushEmptyKey = AmplitudeAnalytics()
+		flushEmptyKey.configure(apiKey: "", deviceId: "device-an05-off", firstOpenEvent: nil)
+		flushEmptyKey.flush()
+		let flushTestRun = AmplitudeAnalytics()
+		flushTestRun.configure(apiKey: "amp-key", deviceId: "device-an05-test", firstOpenEvent: nil, isTestsRunning: true)
+		flushTestRun.flush()
+		check(
+			Amplitude.callLog.isEmpty && Amplitude.initCount == 0,
+			"T27 AN-05 row 1: flush() on a layer that is off (empty key, test run) must reach nothing, "
+				+ "got callLog \(Amplitude.callLog), \(Amplitude.initCount) initialization(s)"
+		)
+
+		// ── AN-05 row 6 — flush is not mirrored into Firebase, and creates no event there ────
+		// Firebase Analytics has no equivalent of flush and the package does not push its own cycle: the
+		// mirror must see no call at all, not a harmless one.
+		Amplitude.reset()
+		Analytics.reset()
+		let flushMirror = AmplitudeAnalytics()
+		flushMirror.configure(apiKey: "amp-key", deviceId: "device-an05-mirror", firstOpenEvent: nil)
+		let firebaseCallsBeforeFlush = Analytics.callOrder
+		flushMirror.flush()
+		check(
+			Analytics.callOrder == firebaseCallsBeforeFlush && Analytics.loggedEvents.isEmpty,
+			"T28 AN-05 row 6: flush() must not reach Firebase Analytics at all, got "
+				+ "\(Analytics.callOrder.dropFirst(firebaseCallsBeforeFlush.count)) after it"
+		)
+
+		// ── AN-05 row 11 — flush says in the log whether it went anywhere ─────────────────────
+		// Written before the branch, like logEvent's line: in DEBUG "flush did nothing because Amplitude
+		// is off" has to look different from "flush went to the SDK". Both at info, under the package
+		// prefix and the service tag; the words that carry the state are "flush" and "off".
+		Amplitude.reset()
+		var activeFlushLines: [String] = []
+		debugLogSink = { activeFlushLines.append($0) }
+		an05.flush()
+		debugLogSink = nil
+		check(
+			activeFlushLines.contains {
+				$0.hasPrefix("[IntegrationKit][AmplitudeAnalytics] ")
+					&& !$0.contains("[error]")
+					&& $0.contains("flush")
+					&& !$0.contains("off")
+			},
+			"T29 AN-05 row 11: an active flush() must log a line with the tag, no [error], the word "
+				+ "\"flush\" and no \"off\", got \(activeFlushLines)"
+		)
+
+		var inactiveFlushLines: [String] = []
+		debugLogSink = { inactiveFlushLines.append($0) }
+		flushEmptyKey.flush()
+		debugLogSink = nil
+		check(
+			inactiveFlushLines.contains {
+				$0.hasPrefix("[IntegrationKit][AmplitudeAnalytics] ")
+					&& !$0.contains("[error]")
+					&& $0.contains("flush")
+					&& $0.contains("off")
+			},
+			"T30 AN-05 row 11: a flush() on a layer that is off must say so in the log, with the tag, "
+				+ "no [error], the words \"flush\" and \"off\", got \(inactiveFlushLines)"
+		)
+		Amplitude.reset()
+		UserDefaults.standard.removeObject(forKey: firstOpenTrackedKey)
+
 		if failures.isEmpty {
-			print("AmplitudeAnalytics (AN-01..AN-04): 25/25 OK")
+			print("AmplitudeAnalytics (AN-01..AN-05): 32/32 OK")
 		} else {
-			print("\(failures.count) of 25 asserts FAILED")
+			print("\(failures.count) of 32 asserts FAILED")
 			exit(1)
 		}
 	}

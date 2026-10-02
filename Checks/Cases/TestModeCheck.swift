@@ -624,6 +624,25 @@ enum TestModeCheck {
 		assert(afterExpiry.isPremium == false, "once the cache's own date has passed, a fresh expired receipt must close access, got \(afterExpiry)")
 		row()
 
-		print("TestMode: \(passed)/35 OK")
+		// 36. TM-07 / AN-05 row 8: `flush()` on the test run's analytics layer is an empty call. The
+		//     sink's own writes already reach the disk before they return, and Amplitude is not built
+		//     at all — so a flush that wrote a line, or failed to leave the file as it found it, would
+		//     put something in front of a UI test that no event of the app produced.
+		let flushPath = temporary + "/flush.log"
+		guard let flushSink = AnalyticsSink(path: flushPath) else {
+			assertionFailure("AN-05 row 8: the flush sink must open")
+			return
+		}
+		let flushLayer = SinkAnalytics(sink: flushSink)
+		flushLayer.logEvent("first_open_custom", properties: nil)
+		let linesBeforeFlush = lines(of: flushPath)
+		flushLayer.flush()
+		assert(flushSink.count == 1, "AN-05 row 8: flush() must not write a line to the sink, count is \(flushSink.count)")
+		assert(lines(of: flushPath) == linesBeforeFlush, "AN-05 row 8: flush() must leave the file as it was, got \(lines(of: flushPath))")
+		// And with no sink at all — the unit-run shape (TM-01 row 7) — it is still just a no-op.
+		SinkAnalytics(sink: nil).flush()
+		row()
+
+		print("TestMode: \(passed)/36 OK")
 	}
 }

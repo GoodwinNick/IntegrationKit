@@ -26,6 +26,9 @@ public final class Amplitude {
 	/// `setUserId` and the first event, and the two land on separate arrays — the end state alone
 	/// (both having happened) can't say which ran first, only a snapshot taken at the moment can.
 	public static private(set) var userIdAtFirstTrack: String?
+	/// Every `track` and `flush` in the order it arrived. AN-05 row 2 is about ORDER — a flush that
+	/// overtook the event it was meant to push — and `trackedEvents` alone cannot say which came first.
+	public static private(set) var callLog: [String] = []
 
 	/// What `getDeviceId()` answers. Settable so a check can seed it before `configure()` runs.
 	public static var deviceId: String? = "stub-device-id"
@@ -37,6 +40,7 @@ public final class Amplitude {
 		addedPluginCount = 0
 		initCount = 0
 		userIdAtFirstTrack = nil
+		callLog = []
 		deviceId = "stub-device-id"
 	}
 
@@ -57,6 +61,13 @@ public final class Amplitude {
 			Amplitude.userIdAtFirstTrack = Amplitude.lastUserId
 		}
 		Amplitude.trackedEvents.append((eventType, eventProperties))
+		Amplitude.callLog.append("track:\(eventType)")
+	}
+
+	/// The real one queues "send what you have" behind everything already queued and returns `self`
+	/// (`@discardableResult`); the stub only records that it was asked, and when.
+	public func flush() {
+		Amplitude.callLog.append("flush")
 	}
 
 	public func identify(userProperties: [String: Any]) {
