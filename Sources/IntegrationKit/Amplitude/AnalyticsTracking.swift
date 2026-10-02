@@ -21,6 +21,11 @@ public protocol AnalyticsTracking: AnyObject {
 	var deviceId: String? { get }
 	/// Forwards the ATT answer to SDKs that don't read it themselves (Amplitude IDFA).
 	func updateTrackingAuthorization(_ status: ATTrackingManager.AuthorizationStatus)
+	/// Asks Amplitude to send what it has queued now instead of at its next scheduled batch — for an
+	/// event the app cannot afford to leave behind a short session (the first open). A request, not a
+	/// guarantee: nothing comes back, and an app suspended or killed first can still lose the batch.
+	/// Does nothing while the layer is off, and never reaches Firebase.
+	func flush()
 }
 
 public extension AnalyticsTracking {

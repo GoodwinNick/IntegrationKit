@@ -47,6 +47,7 @@ final class FakeAnalytics: AnalyticsTracking {
 	func setUserProperties(_ properties: [String: Any]) {}
 	func setUserId(_ userId: String) {}
 	func updateTrackingAuthorization(_ status: ATTrackingManager.AuthorizationStatus) {}
+	func flush() {}
 }
 
 @main

@@ -133,6 +133,15 @@ final class AmplitudeAnalytics: AnalyticsTracking {
 		firebase.setUserProperties(properties)
 	}
 
+	/// AN-05. Goes straight to the SDK, which queues it behind the events already handed over, so a
+	/// `flush()` right after `logEvent` pushes that event too. Nothing is mirrored to Firebase — it has
+	/// no equivalent, and the package does not drive its own cycle. The line is written before the
+	/// branch (row 11), so "Amplitude is off" reads differently from "went to the SDK" in a DEBUG log.
+	func flush() {
+		debugLog(tag: Self.tag, "flush: \(amplitude == nil ? "Amplitude is off — nothing to send" : "asked Amplitude to send what it has queued")")
+		amplitude?.flush()
+	}
+
 	/// The status itself is not read here: the plugin asks `ATTrackingManager` on every event, so a
 	/// permission revoked later stops the IDFA on its own (AN-04 row 3). What this call does is make
 	/// sure the plugin is in the chain at all.

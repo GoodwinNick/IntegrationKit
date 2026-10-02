@@ -92,6 +92,8 @@ final class FakeAnalytics: AnalyticsTracking {
 	func setUserId(_ userId: String) {}
 
 	func updateTrackingAuthorization(_ status: ATTrackingManager.AuthorizationStatus) {}
+
+	func flush() {}
 }
 
 /// Records the two calls `AppsFlyerService` makes on Adapty. Everything else is the empty

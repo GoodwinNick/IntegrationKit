@@ -45,4 +45,11 @@ final class SinkAnalytics: AnalyticsTracking {
 	func updateTrackingAuthorization(_ status: ATTrackingManager.AuthorizationStatus) {
 		debugLog(tag: Self.tag, "ATT status \(status.rawValue) — nothing to forward, no SDK is up")
 	}
+
+	/// AN-05 / TM-07: nothing to send — Amplitude is not built in a test run, and every write to the
+	/// sink already reaches the disk before it returns. Not written to the sink either: a line there
+	/// would be an event nobody produced.
+	func flush() {
+		debugLog(tag: Self.tag, "flush — nothing to send, no SDK is up")
+	}
 }
