@@ -136,7 +136,11 @@ the type's zero, which no caller can tell apart from a fetched value: register
 a default for every key you read.
 Besides `logEvent`, `kit.analytics` carries `setUserId(_:)` (re-point analytics
 at another id after a login), `setUserProperties(_:)` (Amplitude and Firebase user
-properties) and `deviceId` (Amplitude's own id, `nil` until the layer is up). Since
+properties), `deviceId` (Amplitude's own id, `nil` until the layer is up) and, since
+0.9.0, `flush()` — it asks Amplitude to send what it has queued now instead of at its
+next batch, for an event you cannot leave behind a short session (the first open);
+a request, not a guarantee — nothing comes back, an app suspended or killed first can
+still lose the batch — and it does nothing for Firebase. Since
 0.8.0 every event, property and user id sent through `kit.analytics` goes to
 Firebase Analytics too, under the same names — what Firebase would drop (a reserved
 or invalid name, a value past its limits) is not sent and is named in the DEBUG log,

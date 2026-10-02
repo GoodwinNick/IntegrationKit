@@ -661,6 +661,7 @@ public protocol AnalyticsTracking: AnyObject {
 	func setUserId(_ userId: String)
 	var deviceId: String? { get }
 	func updateTrackingAuthorization(_ status: ATTrackingManager.AuthorizationStatus)
+	func flush()   // since 0.9.0
 }
 ```
 
@@ -691,6 +692,26 @@ kit.analytics.setUserProperties(["locale": "en_US"])
 
 The package accepts event names as plain `String` — it does not define an
 event enum. Keeping one (e.g. a `LogEventKey` enum) is the app's decision.
+
+`flush()` (since 0.9.0) asks Amplitude to send what it has queued now instead of at
+its next batch. Call it right after an event the app cannot afford to leave behind
+a short session — the first open, whose batch otherwise goes out only if the app
+lives long enough or is backgrounded cleanly:
+
+```swift
+kit.analytics.logEvent("first_open_custom")
+kit.analytics.flush()   // queued behind the event above, so that event is in the push
+```
+
+It is a request, not a guarantee. Nothing comes back, with no network the events
+stay in Amplitude's own queue, and an app suspended or killed before the upload
+finishes can still lose the batch — the call shortens that window, it does not
+close it. It does nothing while the layer is off (empty key, test run), never
+reaches Firebase Analytics (which has no equivalent), and creates no event of its
+own. Amplitude already flushes when the app goes to the background; `flush()` is for
+the seconds before that. Since the protocol gained a member, anything in your
+code that conforms to `AnalyticsTracking` — a test double, say — has to implement
+`flush()`: there is no default, so the compiler names the one that forgot.
 
 `setUserProperties` reaches Amplitude and, since 0.8.0, Firebase Analytics — see
 [Firebase Analytics](#firebase-analytics). To write the same pair
@@ -1373,11 +1394,11 @@ for s in Checks/*.sh; do "./$s"; done
 | `premium-pending-check.sh` | That one hung purchase does not refuse every later purchase in the process. |
 | `premium-storekit-check.sh` | Restore, price lookup, unfinished transactions delivered by the payment queue, and that every SwiftyStoreKit entry point is reached on the main thread even when the caller is not. |
 | `crashlytics-check.sh` | Double `configure`, the network-noise filter, and the tags a non-fatal carries. |
-| `amplitude-analytics-check.sh` | First-open gating, the IDFA plugin attached exactly once, the environment property, the test-run guard, and the debug log lines for user id, device id and each user property. Firebase is brought up for the whole run so the mirror stays out of the way — what it does is `firebase-analytics-check.sh`'s business. |
+| `amplitude-analytics-check.sh` | First-open gating, the IDFA plugin attached exactly once, the environment property, the test-run guard, and the debug log lines for user id, device id and each user property. Since 0.9.0 also AN-05: `flush()` reaches the SDK after the event it follows, once per call even from two queues, nothing at all while the layer is off, never Firebase, and leaves a log line saying whether it went anywhere. Firebase is brought up for the whole run so the mirror stays out of the way — what it does is `firebase-analytics-check.sh`'s business. |
 | `appsflyer-service-check.sh` | Session start, attribution mapping, the ATT wait limit, deep-link values. |
 | `appsflyer-attribution-check.sh` | `cleanedAttributionData`: `NSNull`/non-scalar values and non-string keys dropped, an empty input staying empty, a `nil` deep link value becoming `"-"`, `clickEvent` fields flowing through. |
 | `integration-kit-check.sh` | The composition root, actually run — in two processes of one binary, a normal launch and a test run (`--tests-running`): the `AppDelegate` forwards answering with no AppsFlyer layer, the empty dev key leaving a readable reason, a second `configure` handing back the first kit instead of building a second graph, and (0.8.0) Firebase hearing the collection flag, the user id, the `environment` property and the kit's own Adapty-bound instance id on a normal launch, and only `collection off` in a test run. The other scripts compile a chosen slice of `Sources/` and never compile `IntegrationKit.swift` at all, so a forward that drops a request on the floor is invisible to every one of them. |
-| `test-mode-check.sh` | TM-01…TM-07: the test mode — the fake Adapty and Apple sources, and the production arbiter that stays above them. |
+| `test-mode-check.sh` | TM-01…TM-07: the test mode — the fake Adapty and Apple sources, and the production arbiter that stays above them. Since 0.9.0 also that `flush()` on the test layer writes nothing to the sink. |
 | `remote-config-service-check.sh` | RC-01…RC-03: Remote Config defaults, the fetch, the "is Firebase up" guard, and a failed fetch filed as a non-fatal. |
 | `price-cache-check.sh` | PM-07 rows 14–16: the price cache over `UserDefaults`, pure types with no SDK stub. |
 | `store-price-check.sh` | PM-07 row 17: `StorePrice`, pure `Decimal` and `Foundation`. |
