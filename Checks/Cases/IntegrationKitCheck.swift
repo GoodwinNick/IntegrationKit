@@ -112,7 +112,12 @@ enum IntegrationKitCheck {
 	static func testRun() {
 		FirebaseApp.configure()
 		Analytics.stubAppInstanceID = "fid-test-run"
+		UserDefaults.standard.removeObject(forKey: TestModeGraph.runMarkKey)
 		let kit = kitWithoutAppsFlyer(isTestsRunning: true)
+		// TM-08 r6, through the root: a test run leaves its mark, so the next live launch cleans up.
+		check(UserDefaults.standard.bool(forKey: TestModeGraph.runMarkKey),
+		      "TM-08 r6: a test run must mark the device through configure()")
+		UserDefaults.standard.removeObject(forKey: TestModeGraph.runMarkKey)
 		kit.analytics.logEvent("root_test_event", properties: ["k": "v"])
 		kit.analytics.setUserProperties(["status": "tester"])
 
@@ -136,7 +141,28 @@ enum IntegrationKitCheck {
 		// `FirebaseIntegration.configure`. Asserted first, while the stubs hold nothing else.
 		FirebaseApp.configure()
 		Analytics.stubAppInstanceID = "fid-auto"
+		// TM-08 rows 1, 2, 5 and 13, through the root — the only place the live branch's call to the
+		// wipe actually runs. What a test run's fake purchase leaves: a dateless premium, the legacy
+		// flag on, prices, and the mark. Row 5 shows in what `start()` leaves on disk, synchronously:
+		// after a wipe that came first, its own free verdict; after one that came later, nothing at
+		// all. `isPremium` cannot tell the two apart — the store reads the disk on every call.
+		let standard = UserDefaults.standard
+		UserDefaultsPremiumStore().cached = PremiumState(isPremium: true, source: .apple, isVerified: false, expiresAt: nil)
+		standard.set(true, forKey: "premiumKey")
+		standard.set(Data("fake-prices".utf8), forKey: "priceCacheKey")
+		standard.set(true, forKey: TestModeGraph.runMarkKey)
 		let kit = kitWithoutAppsFlyer()
+		let startedFrom = UserDefaultsPremiumStore().cached
+		check(kit.premium.isPremium == false,
+		      "TM-08 r1: a test run's dateless premium must not survive into a live launch")
+		check(startedFrom != nil && startedFrom?.isPremium == false && startedFrom?.source == PremiumSource.none,
+		      "TM-08 r5: the wipe must run before start(), which then writes its own free verdict — got \(String(describing: startedFrom))")
+		check(standard.bool(forKey: "premiumKey") == false && standard.object(forKey: "priceCacheKey") == nil,
+		      "TM-08 r2, r3: the legacy flag and the prices must go too — flag \(standard.bool(forKey: "premiumKey")), prices \(String(describing: standard.object(forKey: "priceCacheKey")))")
+		check(standard.object(forKey: TestModeGraph.runMarkKey) == nil,
+		      "TM-08 r8: a live launch must take the mark down")
+		check(kit.configurationIssues.filter { $0.contains("a test run had used this device") }.count == 1,
+		      "TM-08 r13: the wipe must leave exactly one line in configurationIssues — got \(kit.configurationIssues)")
 
 		check(Analytics.collectionEnabledCalls == [true],
 		      "FA-01: a normal launch must state collection ON, exactly once, on every launch — got \(Analytics.collectionEnabledCalls)")
