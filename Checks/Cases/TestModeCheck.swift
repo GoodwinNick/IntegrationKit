@@ -2,13 +2,19 @@
 //  TestModeCheck.swift
 //  IntegrationKit
 //
-//  TM-01 through TM-07 — the rows of the approved test-mode schemas that can be reached without an
+//  TM-01 through TM-08 — the rows of the approved test-mode schemas that can be reached without an
 //  app. No XCTest: the parse is a pure function and every fake source is handed to the real
 //  `PremiumService`, so a script is enough.
 //  Run:  ./Checks/test-mode-check.sh
 //
+//  37..43 are TM-08 (0.9.1, a test run's premium leaking into the next live launch), written red
+//  first from the approved schema: the mark and the wipe they call did not exist. TM-08 row 5 —
+//  the wipe runs before the premium layer is built — lives in `IntegrationKit.swift`, which cannot
+//  be compiled here, so it is covered by reading and by the simulator run, not by this file.
+//
 
 import Adapty
+import Combine
 import Foundation
 
 /// The real store's behaviour without `UserDefaults`: counts every write to `cached`, and a
@@ -110,6 +116,17 @@ enum TestModeCheck {
 	static func lines(of path: String) -> [String] {
 		let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
 		return text.split(separator: "\n").map(String.init)
+	}
+
+	/// TM-08: the three keys a test run shares with a live launch, spelled the way the apps read them
+	/// rather than through the package's own constants — a renamed key must fail here, not pass along.
+	static let kitKeys = ["premiumStateKey", "premiumKey", "priceCacheKey"]
+
+	/// `.standard` outlives this process, so a row that dies halfway would hand its mark to the next run.
+	static func clearKit(_ defaults: UserDefaults) {
+		for key in kitKeys + [TestModeGraph.runMarkKey] {
+			defaults.removeObject(forKey: key)
+		}
 	}
 
 	// MARK: - Rows
@@ -643,6 +660,140 @@ enum TestModeCheck {
 		SinkAnalytics(sink: nil).flush()
 		row()
 
-		print("TestMode: \(passed)/36 OK")
+		// MARK: TM-08 — what a test run leaves behind
+
+		// 37. TM-08 rows 1, 3, 6 and 8: the bug itself, end to end on `.standard` — the one place both
+		//     halves really meet. A test run marks the device before it writes anything; its fake
+		//     purchase, with no receipt flag, leaves a dateless premium in the shared keys and its price
+		//     warm-up leaves the fake catalogue. A live launch wipes all three before the premium layer
+		//     reads them, takes the mark down with them, and starts free.
+		let standard = UserDefaults.standard
+		clearKit(standard)
+		let testRun = TestModeGraph.make(
+			arguments: ["-receiptDelay", "0", "-storePurchaseDelay", "0"],
+			environment: [:],
+			levels: ["premium"],
+			productIds: ["sub.month"],
+			remoteConfigDefaults: [:]
+		)
+		assert(standard.bool(forKey: TestModeGraph.runMarkKey), "TM-08 row 6: a test run must mark the device before it writes anything")
+		// The default price cache, on `.standard` — what the composition root builds in a test run.
+		let testRunPremium = PremiumService(
+			store: testRun.store,
+			adapty: testRun.adapty,
+			apple: testRun.apple,
+			levels: ["premium"],
+			sourceTimeout: 5,
+			productIds: ["sub.month"]
+		)
+		testRunPremium.start()
+		var leakOutcome: PurchaseOutcome?
+		testRunPremium.purchase("sub.month", placement: "main") { leakOutcome = $0 }
+		assert(waitUntil({ leakOutcome != nil }), "TM-08 row 1: the test run's purchase must settle")
+		assert(waitUntil({ standard.data(forKey: "priceCacheKey") != nil }), "TM-08 row 3: the test run must warm the shared price cache")
+		pump(0.3)
+		let leaked = UserDefaultsPremiumStore().cached
+		assert(leaked?.isPremium == true && leaked?.expiresAt == nil, "TM-08 row 1: the fake purchase must leave a dateless premium in the shared keys — the leak this case closes, got \(String(describing: leaked))")
+		assert(standard.bool(forKey: "premiumKey"), "TM-08 row 2: and the mirror of the legacy flag with it")
+
+		TestModeGraph.wipeTestRunLeftovers()
+		for key in kitKeys {
+			assert(standard.object(forKey: key) == nil, "TM-08 rows 1-3: \(key) must be gone after the wipe")
+		}
+		assert(standard.object(forKey: TestModeGraph.runMarkKey) == nil, "TM-08 row 8: the mark must go with the keys")
+		let liveStore = UserDefaultsPremiumStore()
+		let livePremium = PremiumService(store: liveStore, sourceTimeout: 5)
+		livePremium.start()
+		pump(0.2)
+		assert(livePremium.isPremium == false, "TM-08 row 1: a live launch after a test run must start free")
+		assert(liveStore.cached?.source == PremiumSource.none, "TM-08 row 1: with no source at all, got \(String(describing: liveStore.cached))")
+		assert(liveStore.premium == false, "TM-08 row 2: the legacy flag must start off")
+		var livePrices: [String: PremiumProduct]?
+		Task { livePrices = await PriceCache().cached(ids: ["sub.month"]) }
+		assert(waitUntil({ livePrices != nil }), "TM-08 row 3: the live price cache must answer")
+		assert(livePrices?.isEmpty == true, "TM-08 row 3: no fake price may survive into a live launch, got \(String(describing: livePrices))")
+		clearKit(standard)
+		row()
+
+		// 38. TM-08 row 2: the legacy flag on its own — no verdict — is enough to leak, because an empty
+		//     store is seeded from it as a dateless legacy premium. The wipe takes it down too.
+		let flagOnly = UserDefaults(suiteName: UUID().uuidString)!
+		flagOnly.set(true, forKey: TestModeGraph.runMarkKey)
+		flagOnly.set(true, forKey: "premiumKey")
+		TestModeGraph.wipeTestRunLeftovers(defaults: flagOnly)
+		let flagStore = UserDefaultsPremiumStore(defaults: flagOnly)
+		let flagPremium = PremiumService(store: flagStore, sourceTimeout: 5)
+		flagPremium.start()
+		pump(0.2)
+		assert(flagPremium.isPremium == false, "TM-08 row 2: a legacy flag left by a test run must not seed premium")
+		assert(flagStore.premium == false, "TM-08 row 2: the flag itself must be off")
+		row()
+
+		// 39. TM-08 rows 4 and 11: no mark, no effect — a real user's verdict, flag and prices stay byte
+		//     for byte. With the mark only the three keys go; a key of the app's own sits it out.
+		let realUser = UserDefaults(suiteName: UUID().uuidString)!
+		UserDefaultsPremiumStore(defaults: realUser).cached = PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: Date() + hour)
+		let realVerdict = realUser.data(forKey: "premiumStateKey")
+		realUser.set(true, forKey: "premiumKey")
+		realUser.set(Data("prices".utf8), forKey: "priceCacheKey")
+		realUser.set(true, forKey: "onboardingWasShowed")
+		TestModeGraph.wipeTestRunLeftovers(defaults: realUser)
+		assert(realVerdict != nil && realUser.data(forKey: "premiumStateKey") == realVerdict, "TM-08 row 4: without the mark the verdict must stay as it was")
+		assert(realUser.bool(forKey: "premiumKey"), "TM-08 row 4: and the flag")
+		assert(realUser.data(forKey: "priceCacheKey") == Data("prices".utf8), "TM-08 row 4: and the prices")
+		realUser.set(true, forKey: TestModeGraph.runMarkKey)
+		TestModeGraph.wipeTestRunLeftovers(defaults: realUser)
+		assert(kitKeys.allSatisfy { realUser.object(forKey: $0) == nil }, "TM-08 row 11: with the mark the three keys must go")
+		assert(realUser.bool(forKey: "onboardingWasShowed"), "TM-08 row 11: and nothing of the app's own")
+		row()
+
+		// 40. TM-08 row 7: a test after a test. The test branch neither takes the mark down nor wipes
+		//     behind it — `-legacyPremium` still means what TM-02 row 8 says.
+		clearKit(standard)
+		standard.set(true, forKey: TestModeGraph.runMarkKey)
+		let secondRun = TestModeGraph.make(arguments: ["-legacyPremium"], environment: [:], levels: ["premium"], productIds: [], remoteConfigDefaults: [:])
+		assert(secondRun.store.premium, "TM-08 row 7: -legacyPremium must survive a mark left by the previous test")
+		assert(standard.bool(forKey: TestModeGraph.runMarkKey), "TM-08 row 7: the test branch must leave the mark standing")
+		clearKit(standard)
+		row()
+
+		// 41. TM-08 row 9: the mark is a name of the package's own — not a launch flag, which would land
+		//     in `NSArgumentDomain` and shadow it, and not one of the keys it exists to wipe.
+		assert(TestModeGraph.runMarkKey.hasPrefix("IntegrationKit."), "TM-08 row 9: the mark must carry the package prefix, got \(TestModeGraph.runMarkKey)")
+		assert(!TestModeFlagParser.allNames.contains("-" + TestModeGraph.runMarkKey), "TM-08 row 9: the mark must not be a flag name")
+		assert(!kitKeys.contains(TestModeGraph.runMarkKey), "TM-08 row 9: nor one of the wiped keys")
+		row()
+
+		// 42. TM-08 row 12: the wipe notifies nobody. Going through the store's flag setter would post
+		//     `.premiumDidChange` on the main queue, after the kit is built, for a change only the disk saw.
+		let quietWipe = UserDefaults(suiteName: UUID().uuidString)!
+		quietWipe.set(true, forKey: TestModeGraph.runMarkKey)
+		quietWipe.set(true, forKey: "premiumKey")
+		var wipeNotifications = 0
+		// A publisher rather than a block observer: the block is `@Sendable` and may not bump a local.
+		let wipeObserver = NotificationCenter.default.publisher(for: .premiumDidChange).sink { _ in
+			wipeNotifications += 1
+		}
+		TestModeGraph.wipeTestRunLeftovers(defaults: quietWipe)
+		pump(0.2)
+		wipeObserver.cancel()
+		assert(quietWipe.object(forKey: "premiumKey") == nil, "TM-08 row 12: the flag must be wiped")
+		assert(wipeNotifications == 0, "TM-08 row 12: the wipe must post no .premiumDidChange, got \(wipeNotifications)")
+		row()
+
+		// 43. TM-08 row 13: a wipe leaves one line in `configurationIssues`, naming the keys — the log is
+		//     silent in release, and a wipe nobody can see reads exactly like "there was no mark".
+		ConfigurationIssues.shared.reset()
+		let traced = UserDefaults(suiteName: UUID().uuidString)!
+		TestModeGraph.wipeTestRunLeftovers(defaults: traced)
+		assert(ConfigurationIssues.shared.all.isEmpty, "TM-08 row 13: no mark, no line, got \(ConfigurationIssues.shared.all)")
+		traced.set(true, forKey: TestModeGraph.runMarkKey)
+		TestModeGraph.wipeTestRunLeftovers(defaults: traced)
+		let wipeIssues = ConfigurationIssues.shared.all
+		assert(wipeIssues.count == 1, "TM-08 row 13: exactly one line for the wipe, got \(wipeIssues)")
+		assert(kitKeys.allSatisfy { key in wipeIssues.first?.contains(key) == true }, "TM-08 row 13: the line must name the wiped keys, got \(wipeIssues)")
+		row()
+
+		print("TestMode: \(passed)/43 OK")
 	}
 }
