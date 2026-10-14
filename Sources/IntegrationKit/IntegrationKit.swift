@@ -92,7 +92,8 @@ public struct IntegrationKit {
 	///   or `XCTestConfigurationFilePath` in the environment. `true` leaves Amplitude, Adapty and
 	///   AppsFlyer down for the whole run, each recording its own reason. Firebase stays up: a test
 	///   run that was meant to catch crashes must not be the run that loses them. StoreKit is not
-	///   restricted by either key.
+	///   built at all in a test run — the test mode's fake store answers instead (TM-04, TM-05);
+	///   `isDebug` does not touch it.
 	///
 	/// `remoteConfigDefaults` are the app's own Firebase Remote Config keys and the value each one
 	/// answers until the fetch lands — `["paywallReview": NSNumber(value: false)]`. The package names
