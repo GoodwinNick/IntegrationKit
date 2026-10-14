@@ -23,6 +23,11 @@ struct TestModeGraph {
 	/// `UserDefaults`, and a name that collided with an app's key would shadow it silently (TM-07).
 	static let sinkPathVariable = "UITEST_ANALYTICS_LOG"
 
+	/// TM-08: what a test run leaves on the device, so the next live launch knows to clean up after it.
+	/// Prefixed, because a launch argument of this name would land in `NSArgumentDomain` and forge the
+	/// mark — and no `removeObject` takes it back out of there (TM-08 rows 9 and 15).
+	static let runMarkKey = "IntegrationKit.testRunMark"
+
 	let flags: TestModeFlags
 	let analytics: SinkAnalytics
 	let adapty: FakeAdaptySource
@@ -41,6 +46,11 @@ struct TestModeGraph {
 		productIds: Set<String>,
 		remoteConfigDefaults: [String: NSObject]
 	) -> TestModeGraph {
+		// TM-08 row 6: first, before the store below exists and before `-noPremiumCache` or
+		// `-legacyPremium` write a thing — everything this run puts in the shared keys is put there
+		// under the mark, even if the process dies halfway. The app's own reset runs before
+		// `configure`, so it cannot take the mark down either.
+		UserDefaults.standard.set(true, forKey: runMarkKey)
 		let flags = TestModeFlagParser.parse(arguments)
 
 		// Invariant 2: the loudest thing this layer does. An app that somehow shipped with the mode on
@@ -80,6 +90,27 @@ struct TestModeGraph {
 			apple: FakeAppleStore(flags: flags, productIds: productIds),
 			remoteConfig: FakeRemoteConfig(values: flags.remoteConfigValues, defaults: remoteConfigDefaults),
 			store: store
+		)
+	}
+
+	/// TM-08: the live half. A test run writes the verdict, the legacy flag and the price cache into
+	/// the same keys a live launch reads — it has to, apps under test read that flag themselves — so a
+	/// live launch that finds the mark starts from none of it. Called before the premium layer is
+	/// built, because the price cache reads its key in its initializer (row 5).
+	///
+	/// Straight `removeObject`, not the store: its flag setter posts `.premiumDidChange`, and a change
+	/// only the disk saw is nobody's business (row 12). The mark goes last (row 8). The line goes to
+	/// `configurationIssues` as well as the log, which is silent in release (row 13).
+	static func wipeTestRunLeftovers(defaults: UserDefaults = .standard) {
+		guard defaults.bool(forKey: runMarkKey) else { return }
+		let keys = [UserDefaultsPremiumStore.defaultStateKey, UserDefaultsPremiumStore.defaultFlagKey, PriceCache.defaultKey]
+		for key in keys {
+			defaults.removeObject(forKey: key)
+		}
+		defaults.removeObject(forKey: runMarkKey)
+		ConfigurationIssues.shared.record(
+			"a test run had used this device — its premium verdict, legacy flag and prices (\(keys.joined(separator: ", "))) were wiped before this live launch read them",
+			tag: tag
 		)
 	}
 

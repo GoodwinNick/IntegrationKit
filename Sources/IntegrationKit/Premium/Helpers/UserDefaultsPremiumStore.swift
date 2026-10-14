@@ -8,11 +8,15 @@ import Foundation
 /// Default storage: the resolved state as JSON, the legacy flag as a plain Bool. An app that
 /// keeps the flag somewhere of its own supplies its own `PremiumStateStoring` instead.
 final class UserDefaultsPremiumStore: PremiumStateStoring {
+	/// Named once, because a test run's leftovers are wiped by these names too (TM-08).
+	static let defaultStateKey = "premiumStateKey"
+	static let defaultFlagKey = "premiumKey"
+
 	private let defaults: UserDefaults
 	private let stateKey: String
 	private let flagKey: String
 
-	init(defaults: UserDefaults = .standard, stateKey: String = "premiumStateKey", flagKey: String = "premiumKey") {
+	init(defaults: UserDefaults = .standard, stateKey: String = defaultStateKey, flagKey: String = defaultFlagKey) {
 		self.defaults = defaults
 		self.stateKey = stateKey
 		self.flagKey = flagKey

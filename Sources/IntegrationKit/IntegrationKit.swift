@@ -174,6 +174,11 @@ public struct IntegrationKit {
 			)
 			: nil
 		debugLog(testMode == nil ? "test mode off — every layer is the real one" : "test mode ON — fake sources replace Adapty, Apple, analytics and remote config")
+		// TM-08: a live launch on a device a test run has used starts from none of what that run left
+		// in the shared keys. Here, before anything below builds the premium layer and reads them.
+		if testMode == nil {
+			TestModeGraph.wipeTestRunLeftovers()
+		}
 
 		// First of the four, and the only one that is not a network dependency of the others: a
 		// paywall variant is read on the way to the first screen, so the fetch gets whatever head

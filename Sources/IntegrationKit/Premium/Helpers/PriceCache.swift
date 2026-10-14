@@ -15,12 +15,14 @@ import Foundation
 /// dictionary, and two placements resolving at once must not race each other's cache entry.
 actor PriceCache {
 	private static let tag = "PriceCache"
+	/// Named once, because a test run's leftovers are wiped by this name too (TM-08).
+	static let defaultKey = "priceCacheKey"
 
 	private let defaults: UserDefaults
 	private let key: String
 	private var products: [String: PremiumProduct]
 
-	init(defaults: UserDefaults = .standard, key: String = "priceCacheKey") {
+	init(defaults: UserDefaults = .standard, key: String = defaultKey) {
 		self.defaults = defaults
 		self.key = key
 		self.products = defaults.data(forKey: key)

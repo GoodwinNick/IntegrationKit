@@ -769,6 +769,9 @@ enum TestModeCheck {
 		let quietWipe = UserDefaults(suiteName: UUID().uuidString)!
 		quietWipe.set(true, forKey: TestModeGraph.runMarkKey)
 		quietWipe.set(true, forKey: "premiumKey")
+		// Row 40's `-legacyPremium` went through the store's setter, and its notification is still
+		// queued on main — drained first, or this row counts somebody else's.
+		pump(0.2)
 		var wipeNotifications = 0
 		// A publisher rather than a block observer: the block is `@Sendable` and may not bump a local.
 		let wipeObserver = NotificationCenter.default.publisher(for: .premiumDidChange).sink { _ in
