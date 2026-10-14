@@ -110,6 +110,9 @@ spend the attribution budget it is measured by, and Firebase Analytics gets
 nothing and has its collection switched off; Firebase crash collection and
 StoreKit are not touched by it, because a run meant to catch crashes must not
 lose them. They are separate keys on purpose: one silences, the other reports.
+Since 0.9.1 a test run also marks the device, and the next live launch wipes the
+premium state, legacy flag and prices that run wrote before anything reads them,
+so a test purchase never shows up as premium in a normal launch.
 
 An empty key switches its SDK off for the whole run rather than half-starting
 it — `adaptyKey: ""` leaves the Adapty layer inert and records why,

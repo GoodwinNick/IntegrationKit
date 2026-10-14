@@ -439,6 +439,19 @@ shipped without monetisation and a test run land in the same place through
 different facts, and are fixed differently. Which is why they are separate
 lines in `configurationIssues` rather than one.
 
+**A test run is cleaned up after on the next live launch (since 0.9.1).** A
+test run's premium layer writes into the same `UserDefaults` keys a live launch
+reads — the cached verdict, the legacy flag your screens read, the price cache —
+and it has to: an app under test reads that flag itself. So a test launch marks
+the device first, and the first live launch that finds the mark wipes those
+three keys before the premium layer is built, takes the mark down and records
+one line in `configurationIssues`. The premium layer then starts free and asks
+Adapty and Apple again: a real purchase comes back, a test one does not.
+Without the mark nothing is touched — a device that never ran a test sees no
+difference. It does not clean between two test runs (that is still your test
+flags and your own reset), and it cannot fix a device that leaked before 0.9.1,
+which carries no mark: reinstall the app there once.
+
 For `adaptyKey` this is a hard guard, not a courtesy: `Adapty.activate` runs
 `assert(apiKey.count >= 41 && apiKey.starts(with: "public_live"))` on the
 caller's own stack, so a key that is empty — or that was obfuscated and
@@ -1397,8 +1410,8 @@ for s in Checks/*.sh; do "./$s"; done
 | `amplitude-analytics-check.sh` | First-open gating, the IDFA plugin attached exactly once, the environment property, the test-run guard, and the debug log lines for user id, device id and each user property. Since 0.9.0 also AN-05: `flush()` reaches the SDK after the event it follows, once per call even from two queues, nothing at all while the layer is off, never Firebase, and leaves a log line saying whether it went anywhere. Firebase is brought up for the whole run so the mirror stays out of the way — what it does is `firebase-analytics-check.sh`'s business. |
 | `appsflyer-service-check.sh` | Session start, attribution mapping, the ATT wait limit, deep-link values. |
 | `appsflyer-attribution-check.sh` | `cleanedAttributionData`: `NSNull`/non-scalar values and non-string keys dropped, an empty input staying empty, a `nil` deep link value becoming `"-"`, `clickEvent` fields flowing through. |
-| `integration-kit-check.sh` | The composition root, actually run — in two processes of one binary, a normal launch and a test run (`--tests-running`): the `AppDelegate` forwards answering with no AppsFlyer layer, the empty dev key leaving a readable reason, a second `configure` handing back the first kit instead of building a second graph, and (0.8.0) Firebase hearing the collection flag, the user id, the `environment` property and the kit's own Adapty-bound instance id on a normal launch, and only `collection off` in a test run. The other scripts compile a chosen slice of `Sources/` and never compile `IntegrationKit.swift` at all, so a forward that drops a request on the floor is invisible to every one of them. |
-| `test-mode-check.sh` | TM-01…TM-07: the test mode — the fake Adapty and Apple sources, and the production arbiter that stays above them. Since 0.9.0 also that `flush()` on the test layer writes nothing to the sink. |
+| `integration-kit-check.sh` | The composition root, actually run — in two processes of one binary, a normal launch and a test run (`--tests-running`): the `AppDelegate` forwards answering with no AppsFlyer layer, the empty dev key leaving a readable reason, a second `configure` handing back the first kit instead of building a second graph, and (0.8.0) Firebase hearing the collection flag, the user id, the `environment` property and the kit's own Adapty-bound instance id on a normal launch, and only `collection off` in a test run. Since 0.9.1 also TM-08 through the root: a test run marks the device, and a normal launch that finds the mark wipes the premium verdict, legacy flag and prices before `start()` and says so in `configurationIssues`. The other scripts compile a chosen slice of `Sources/` and never compile `IntegrationKit.swift` at all, so a forward that drops a request on the floor is invisible to every one of them. |
+| `test-mode-check.sh` | TM-01…TM-08: the test mode — the fake Adapty and Apple sources, and the production arbiter that stays above them. Since 0.9.0 also that `flush()` on the test layer writes nothing to the sink. Since 0.9.1 also TM-08: a test run's fake purchase leaking into the next live launch, and the wipe that stops it — only with the mark, only the package's three keys, without a notification, with one line in `configurationIssues`. |
 | `remote-config-service-check.sh` | RC-01…RC-03: Remote Config defaults, the fetch, the "is Firebase up" guard, and a failed fetch filed as a non-fatal. |
 | `price-cache-check.sh` | PM-07 rows 14–16: the price cache over `UserDefaults`, pure types with no SDK stub. |
 | `store-price-check.sh` | PM-07 row 17: `StorePrice`, pure `Decimal` and `Foundation`. |
@@ -1623,6 +1636,12 @@ dashboard entry.
   state, so crashes still arrive and the app does not look dead — though
   Firebase **Analytics** is silent too, with its collection switched off until
   the next normal launch writes it back on.
+- **A device that ran UI tests shows premium in a normal launch.** A test run's
+  fake purchase stayed in the keys the live launch reads, with no expiry, and
+  Adapty never takes premium away. From 0.9.1 the first live launch after a test
+  run wipes it, and `configurationIssues` carries one line saying so. A device
+  that leaked under an older version carries no mark — reinstall the app there
+  once.
 - **A report is in the dashboard but cannot be filtered by its tag.** Filter on
   the custom key `ik_tag`, not on the `info` dictionary: `info` is the report's
   `userInfo` and is only visible inside an issue that is already open.
