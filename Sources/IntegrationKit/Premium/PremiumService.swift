@@ -411,6 +411,41 @@ final class PremiumService: PremiumServicing {
 		return "\(product.id): \(product.localizedPrice ?? "nil") (\(product.price) \(product.currencyCode ?? "?")), period \(period), intro \(offer), source \(source)"
 	}
 
+	// MARK: - PremiumServicing: active subscriptions.
+
+	/// PM-09. Read-only on purpose: nothing here goes through `askAdapty` or `apply`, so no generation
+	/// number is taken, nothing is written to the store and nobody is notified — a profile that
+	/// disagrees with the verdict (a promo, a local purchase) is none of this operation's business.
+	///
+	/// The deadline is the screen one, `waitingTimeout`, like `purchase` and `restore`; the loser of
+	/// `withTimeout` is dropped by its single-resume guard, so the callback below fires once either way.
+	func activeSubscriptionIds(completion: @escaping (Set<String>?) -> Void) {
+		// An inactive layer is "I do not know" at once. Asking it would cost the whole deadline for an
+		// answer that cannot come.
+		guard let adapty, adapty.isActive else {
+			debugLog(tag: Self.tag, level: .error, "activeSubscriptionIds: the Adapty layer is inactive — nil without asking")
+			DispatchQueue.main.async { completion(nil) }
+			return
+		}
+		let deadline = waitingTimeout
+		Task {
+			// `withTimeout` is `nil` when the deadline won, and `profile()` is `nil` when Adapty gave
+			// none — the same answer to this question, so one `flatMap` folds both.
+			let profile = await withTimeout(deadline) { await adapty.profile() }.flatMap { $0 }
+			guard let profile else {
+				debugLog(tag: Self.tag, level: .error, "activeSubscriptionIds: no profile from Adapty within \(deadline)s (timeout or no answer) — nil")
+				DispatchQueue.main.async { completion(nil) }
+				return
+			}
+			// The id is the vendor product id the subscription carries, not the dictionary key, and
+			// `isActive` is Adapty's own flag with no rule of ours on top: a grace period is active, a
+			// date in the past on an active one changes nothing.
+			let ids = Set(profile.subscriptions.values.filter(\.isActive).map(\.vendorProductId))
+			debugLog(tag: Self.tag, "activeSubscriptionIds: \(ids.count) active subscription id(s)")
+			DispatchQueue.main.async { completion(ids) }
+		}
+	}
+
 	// MARK: - PremiumServicing: prices.
 	// Two sources, one list: Adapty says WHICH products are on the placement (it owns the paywall),
 	// StoreKit says what they cost (it owns the storefront). Adapty's price is what its dashboard

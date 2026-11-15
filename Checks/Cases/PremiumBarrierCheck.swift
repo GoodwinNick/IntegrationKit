@@ -1046,7 +1046,179 @@ enum PremiumBarrierCheck {
 		assert(aheadStore.cached?.expiresAt == now + hour, "case 39: the profile's date replaces the cache's either way, got \(String(describing: aheadStore.cached?.expiresAt))")
 		assert(aheadStore.notified == 0, "case 39: premium never moved, so nothing to announce, got \(aheadStore.notified)")
 
-		print("PremiumService barrier, restore, purchase fallback and prices: 40/40 OK")
+		// MARK: PM-09 — activeSubscriptionIds (0.10.0). Cases 41-53, one per row of the risk table, written
+		// red first: the operation did not exist, so the file did not compile.
+
+		let pm9Year = subscriptionJSON("year.sub", active: true)
+		let pm9Week = subscriptionJSON("week.sub", active: true)
+
+		// 41. PM-09 row 1 — an inactive layer is "I do not know" at once. The fake would answer, and slowly,
+		//     if it were asked: the proof is that it was not asked and the screen did not wait for its deadline.
+		let pm9InactiveAdapty = InactiveProbeAdapty(answer: decodedProfile(subscriptions: ["year.sub": pm9Year]), delay: 5)
+		let pm9InactiveService = PremiumService(store: SpyStore(), adapty: pm9InactiveAdapty, apple: nil, levels: ["premium"], sourceTimeout: 5)
+		let pm9Inactive = ActiveSubscriptionsProbe(asking: pm9InactiveService)
+		wait(1) { !pm9Inactive.answers.isEmpty }
+		assert(pm9Inactive.answers == [nil], "case 41 (PM-09 row 1): an inactive layer must answer nil, got \(pm9Inactive.answers)")
+		assert((pm9Inactive.firstAnswerAfter ?? 99) < 0.5, "case 41 (PM-09 row 1): nil must come at once, not after the 2s screen deadline — took \(String(describing: pm9Inactive.firstAnswerAfter))s")
+		assert(pm9InactiveAdapty.asks == 0, "case 41 (PM-09 row 1): an inactive layer must not be asked for a profile, was asked \(pm9InactiveAdapty.asks) time(s)")
+
+		// 42. PM-09 row 2 — a profile request that hangs is cut at the SCREEN deadline (`waitingTimeout`),
+		//     not at `sourceTimeout` and not at the SDK's own ten seconds.
+		let pm9HangAdapty = FakeAdapty(answer: decodedProfile(subscriptions: ["year.sub": pm9Year]), delay: 5)
+		let pm9HangService = PremiumService(store: SpyStore(), adapty: pm9HangAdapty, apple: nil, levels: ["premium"], sourceTimeout: 5, waitingTimeout: 0.3)
+		let pm9Hang = ActiveSubscriptionsProbe(asking: pm9HangService)
+		wait(3) { !pm9Hang.answers.isEmpty }
+		assert(pm9Hang.answers == [nil], "case 42 (PM-09 row 2): a profile that never comes must answer nil, got \(pm9Hang.answers)")
+		assert(pm9HangAdapty.asks == 1, "case 42 (PM-09 row 2): Adapty must have been asked once, got \(pm9HangAdapty.asks)")
+		let pm9HangAfter = pm9Hang.firstAnswerAfter ?? 99
+		assert(pm9HangAfter >= 0.25 && pm9HangAfter < 1, "case 42 (PM-09 row 2): nil must come at the 0.3s screen deadline, not at sourceTimeout 5s — took \(pm9HangAfter)s")
+
+		// 43. PM-09 row 3 — offline, the SDK hands over its saved profile and that is an answer: the set is
+		//     taken from it as is. A date in the past on an `is_active` subscription changes nothing.
+		let pm9StaleAdapty = FakeAdapty(answer: decodedProfile(subscriptions: ["week.sub": subscriptionJSON("week.sub", active: true, expiresAt: now - 2 * hour)]))
+		let pm9StaleService = PremiumService(store: SpyStore(), adapty: pm9StaleAdapty, apple: nil, levels: ["premium"], sourceTimeout: 5)
+		let pm9Stale = ActiveSubscriptionsProbe(asking: pm9StaleService)
+		wait { !pm9Stale.answers.isEmpty }
+		assert(pm9Stale.answers == [["week.sub"]], "case 43 (PM-09 row 3): the saved profile's set must be returned as is, got \(pm9Stale.answers)")
+
+		// 44. PM-09 row 4 — Adapty answers after the deadline: one callback, nil, and the late answer is
+		//     dropped without a word. Counted again after the late answer has certainly landed.
+		let pm9LateAdapty = FakeAdapty(answer: decodedProfile(subscriptions: ["year.sub": pm9Year]), delay: 0.5)
+		let pm9LateService = PremiumService(store: SpyStore(), adapty: pm9LateAdapty, apple: nil, levels: ["premium"], sourceTimeout: 5, waitingTimeout: 0.2)
+		let pm9Late = ActiveSubscriptionsProbe(asking: pm9LateService)
+		wait { !pm9Late.answers.isEmpty }
+		assert(pm9Late.answers == [nil], "case 44 (PM-09 row 4): the deadline wins, the answer is nil, got \(pm9Late.answers)")
+		Thread.sleep(forTimeInterval: 0.6)
+		RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+		assert(pm9Late.answers.count == 1, "case 44 (PM-09 row 4): the late answer must not call back again, got \(pm9Late.answers)")
+
+		// 45. PM-09 row 5 — two calls at once are two independent runs, each with its own single callback.
+		let pm9PairAdapty = FakeAdapty(answer: decodedProfile(subscriptions: ["year.sub": pm9Year]), delay: 0.1)
+		let pm9PairService = PremiumService(store: SpyStore(), adapty: pm9PairAdapty, apple: nil, levels: ["premium"], sourceTimeout: 5, waitingTimeout: 1)
+		let pm9First = ActiveSubscriptionsProbe(asking: pm9PairService)
+		let pm9Second = ActiveSubscriptionsProbe(asking: pm9PairService)
+		wait { !pm9First.answers.isEmpty && !pm9Second.answers.isEmpty }
+		RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+		assert(pm9First.answers == [["year.sub"]] && pm9Second.answers == [["year.sub"]], "case 45 (PM-09 row 5): each call must get its own one answer, got \(pm9First.answers) and \(pm9Second.answers)")
+		assert(pm9PairAdapty.asks == 2, "case 45 (PM-09 row 5): no deduplication — two calls, two requests, got \(pm9PairAdapty.asks)")
+
+		// 46. PM-09 row 6 — read-only. A live premium the profile knows nothing about (a promo: access level,
+		//     no subscriptions) is answered `[]` and the verdict is left exactly where it was: no store write,
+		//     no notification, and the generation counter — visible in the apply log as "(gen N)" — does not
+		//     move, so the next real refresh takes the very next number.
+		let pm9Logs = LogLines()
+		debugLogSink = pm9Logs.append
+		let pm9ReadStore = SpyStore(cached: PremiumState(isPremium: true, source: .apple, isVerified: false), premium: true)
+		let pm9ReadAdapty = FakeAdapty(answer: decodedProfile(subscriptions: [:]))
+		let pm9ReadService = PremiumService(store: pm9ReadStore, adapty: pm9ReadAdapty, apple: nil, levels: ["premium"], sourceTimeout: 5)
+		pm9ReadService.start()
+		wait { pm9ReadAdapty.asks >= 1 }
+		RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+		let pm9WritesBefore = pm9ReadStore.writes
+		let pm9NotifiedBefore = pm9ReadStore.notified
+		let pm9CachedBefore = pm9ReadStore.cached
+		let pm9GensBefore = pm9Logs.generations
+		let pm9Read = ActiveSubscriptionsProbe(asking: pm9ReadService)
+		wait { !pm9Read.answers.isEmpty }
+		assert(pm9Read.answers == [Set<String>()], "case 46 (PM-09 row 6): a profile with no subscriptions must answer [], not nil, got \(pm9Read.answers)")
+		RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+		assert(pm9ReadStore.writes == pm9WritesBefore, "case 46 (PM-09 row 6): the operation must write nothing to the store, writes \(pm9WritesBefore) -> \(pm9ReadStore.writes)")
+		assert(pm9ReadStore.notified == pm9NotifiedBefore, "case 46 (PM-09 row 6): the operation must notify nobody, \(pm9NotifiedBefore) -> \(pm9ReadStore.notified)")
+		assert(pm9ReadStore.cached == pm9CachedBefore, "case 46 (PM-09 row 6): the cached verdict must be untouched")
+		// A refresh that changes the verdict, so it logs its own number.
+		pm9ReadAdapty.answer = profile(active: true, expiresAt: now + hour)
+		pm9ReadService.refresh()
+		wait { pm9Logs.generations.count > pm9GensBefore.count }
+		debugLogSink = nil
+		assert(!pm9GensBefore.isEmpty, "case 46 (PM-09 row 6): the apply log must show a generation before the call, or this row proves nothing")
+		assert(pm9Logs.generations.last == pm9GensBefore.last.map { $0 + 1 }, "case 46 (PM-09 row 6): the generation counter must not move — the refresh after the call must be gen \(String(describing: pm9GensBefore.last.map { $0 + 1 })), got \(String(describing: pm9Logs.generations.last))")
+
+		// 47. PM-09 row 7 — a profile with no `subscriptions` key at all is `[]`: Adapty did answer.
+		let pm9NoKeyAdapty = FakeAdapty(answer: decodedProfile(subscriptions: nil))
+		let pm9NoKeyService = PremiumService(store: SpyStore(), adapty: pm9NoKeyAdapty, apple: nil, levels: ["premium"], sourceTimeout: 5)
+		let pm9NoKey = ActiveSubscriptionsProbe(asking: pm9NoKeyService)
+		wait { !pm9NoKey.answers.isEmpty }
+		assert(pm9NoKey.answers == [Set<String>()], "case 47 (PM-09 row 7): a profile without the subscriptions key must answer [], not nil, got \(pm9NoKey.answers)")
+
+		// 48. PM-09 row 8 — exactly what Adapty marked active: weekly and yearly yes, a refunded one no, one
+		//     in its grace period yes (its date is already in the past), an expired one no.
+		let pm9MixedAdapty = FakeAdapty(answer: decodedProfile(subscriptions: [
+			"week.sub": pm9Week,
+			"year.sub": pm9Year,
+			"refunded.sub": subscriptionJSON("refunded.sub", active: false, refund: true),
+			"grace.sub": subscriptionJSON("grace.sub", active: true, grace: true, expiresAt: now - hour),
+			"expired.sub": subscriptionJSON("expired.sub", active: false, expiresAt: now - hour)
+		]))
+		let pm9MixedService = PremiumService(store: SpyStore(), adapty: pm9MixedAdapty, apple: nil, levels: ["premium"], sourceTimeout: 5)
+		let pm9Mixed = ActiveSubscriptionsProbe(asking: pm9MixedService)
+		wait { !pm9Mixed.answers.isEmpty }
+		assert(pm9Mixed.answers == [["week.sub", "year.sub", "grace.sub"]], "case 48 (PM-09 row 8): only what Adapty marked active — weekly, yearly, grace — got \(pm9Mixed.answers)")
+
+		// 49. PM-09 row 9 — a subscription the app no longer sells (not among `productIds`) comes back as is.
+		let pm9LegacyAdapty = FakeAdapty(answer: decodedProfile(subscriptions: ["week.sub": pm9Week, "retired.sub": subscriptionJSON("retired.sub", active: true)]))
+		let pm9LegacyService = PremiumService(store: SpyStore(), adapty: pm9LegacyAdapty, apple: nil, levels: ["premium"], sourceTimeout: 5, productIds: ["week.sub", "year.sub"])
+		let pm9Legacy = ActiveSubscriptionsProbe(asking: pm9LegacyService)
+		wait { !pm9Legacy.answers.isEmpty }
+		assert(pm9Legacy.answers == [["week.sub", "retired.sub"]], "case 49 (PM-09 row 9): no filter by productIds, got \(pm9Legacy.answers)")
+
+		// 50. PM-09 row 10 — never inside the caller's own call, always on the main queue. Both paths, and each
+		//     also from a background queue, where "on main" is a fact rather than a coincidence.
+		let pm9AsyncInactive = ActiveSubscriptionsProbe(asking: pm9InactiveService)
+		assert(!pm9AsyncInactive.answeredInsideCall, "case 50 (PM-09 row 10): the inactive-layer nil must not arrive inside the call")
+		let pm9AsyncActive = ActiveSubscriptionsProbe(asking: pm9NoKeyService)
+		assert(!pm9AsyncActive.answeredInsideCall, "case 50 (PM-09 row 10): the answer must not arrive inside the call either")
+		let pm9Background = ActiveSubscriptionsProbe(asking: pm9InactiveService, onBackgroundQueue: true)
+		let pm9BackgroundActive = ActiveSubscriptionsProbe(asking: pm9NoKeyService, onBackgroundQueue: true)
+		wait { !pm9AsyncInactive.answers.isEmpty && !pm9AsyncActive.answers.isEmpty && !pm9Background.answers.isEmpty && !pm9BackgroundActive.answers.isEmpty }
+		assert(pm9AsyncInactive.allOnMain && pm9AsyncActive.allOnMain, "case 50 (PM-09 row 10): the callback must run on the main queue")
+		assert(pm9Background.answers == [nil] && pm9Background.allOnMain, "case 50 (PM-09 row 10): the inactive-layer nil, asked from a background queue, must still come on main")
+		assert(pm9BackgroundActive.answers == [Set<String>()] && pm9BackgroundActive.allOnMain, "case 50 (PM-09 row 10): the answer, asked from a background queue, must still come on main")
+
+		// 51. PM-09 row 11 — the app waking after a suspension, with the deadline and the answer both due at the
+		//     same instant. A script cannot background an app; this is the nearest reproducible state, and it is
+		//     the one where a second callback would come from. Thirty rounds, each exactly one.
+		let pm9RaceAdapty = FakeAdapty(answer: decodedProfile(subscriptions: ["year.sub": pm9Year]), delay: 0.05)
+		let pm9RaceService = PremiumService(store: SpyStore(), adapty: pm9RaceAdapty, apple: nil, levels: ["premium"], sourceTimeout: 5, waitingTimeout: 0.05)
+		let pm9Race = (0 ..< 30).map { _ in ActiveSubscriptionsProbe(asking: pm9RaceService) }
+		wait(3) { pm9Race.allSatisfy { !$0.answers.isEmpty } }
+		RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+		assert(pm9Race.allSatisfy { $0.answers.count == 1 }, "case 51 (PM-09 row 11): every call must get exactly one callback, got counts \(pm9Race.map { $0.answers.count })")
+
+		// 52. PM-09 row 12 — the trace: `info` says how many ids came, `error` names the timeout and the inactive
+		//     layer; tag `PremiumService`.
+		let pm9TraceLogs = LogLines()
+		debugLogSink = pm9TraceLogs.append
+		let pm9TraceOk = ActiveSubscriptionsProbe(asking: pm9MixedService)
+		wait { !pm9TraceOk.answers.isEmpty }
+		let pm9TraceHang = ActiveSubscriptionsProbe(asking: pm9HangService)
+		let pm9TraceInactive = ActiveSubscriptionsProbe(asking: pm9InactiveService)
+		wait(3) { !pm9TraceHang.answers.isEmpty && !pm9TraceInactive.answers.isEmpty }
+		debugLogSink = nil
+		let pm9Traced = pm9TraceLogs.all.filter { $0.contains("activeSubscriptionIds") }
+		assert(pm9Traced.contains { $0.hasPrefix("[IntegrationKit][PremiumService] ") && $0.contains("3 active") }, "case 52 (PM-09 row 12): an info line with the id count (3) is missing, got \(pm9Traced)")
+		assert(pm9Traced.filter { $0.hasPrefix("[IntegrationKit][PremiumService][error] ") }.count == 2, "case 52 (PM-09 row 12): the timeout and the inactive layer must each leave one error line, got \(pm9Traced)")
+		assert(pm9Traced.contains { $0.contains("[error]") && $0.lowercased().contains("timeout") }, "case 52 (PM-09 row 12): the error line must name the timeout, got \(pm9Traced)")
+		assert(pm9Traced.contains { $0.contains("[error]") && $0.lowercased().contains("inactive") }, "case 52 (PM-09 row 12): the error line must name the inactive layer, got \(pm9Traced)")
+
+		// 53. PM-09 row 13 — the new member is declared on `PremiumServicing` with NO default implementation
+		//     (an app's own fake must fail to compile until it answers: a minor release, 0.10.0), and
+		//     `AdaptyPremiumProviding` did not grow — `profile()` already carries everything the operation needs.
+		//     Compile-time facts, read from the source text: a runtime check cannot see a missing default.
+		let pm9Sources = "Sources/IntegrationKit"
+		let pm9Protocol = (try? String(contentsOfFile: "\(pm9Sources)/Premium/Protocols/PremiumServicing.swift", encoding: .utf8)) ?? ""
+		assert(pm9Protocol.contains("func activeSubscriptionIds(completion: @escaping (Set<String>?) -> Void)"), "case 53 (PM-09 row 13): PremiumServicing must declare activeSubscriptionIds(completion:)")
+		let pm9Provider = (try? String(contentsOfFile: "\(pm9Sources)/Premium/Protocols/AdaptyPremiumProviding.swift", encoding: .utf8)) ?? ""
+		assert(!pm9Provider.contains("activeSubscription"), "case 53 (PM-09 row 13): AdaptyPremiumProviding must not grow a member for this")
+		var pm9Defaults: [String] = []
+		if let files = FileManager.default.enumerator(atPath: pm9Sources) {
+			for case let file as String in files where file.hasSuffix(".swift") {
+				let text = (try? String(contentsOfFile: "\(pm9Sources)/\(file)", encoding: .utf8)) ?? ""
+				if text.contains("extension PremiumServicing") { pm9Defaults.append(file) }
+			}
+		}
+		assert(pm9Defaults.isEmpty, "case 53 (PM-09 row 13): no default implementation may exist — extension PremiumServicing found in \(pm9Defaults)")
+
+		print("PremiumService barrier, restore, purchase fallback, prices and activeSubscriptionIds: 53/53 OK")
 	}
 }
 
@@ -1163,4 +1335,147 @@ extension StatefulPaywallAdapty {
 
 extension InactiveLayerAdapty {
 	func setProfileValue(value: String, key: String) {}
+}
+
+// MARK: - PM-09 (cases 41-53). Appended here for the same reason as everything above: a line added
+// higher up moves the line numbers the PM-01…PM-08 risk tables quote.
+
+/// Case 41's Adapty: a layer that never came up, but one that WOULD answer — slowly, with a profile —
+/// if it were asked. `InactiveLayerAdapty` answers `nil` at once either way, so it could not tell
+/// "the service skipped the question" from "the service asked and got nothing back".
+final class InactiveProbeAdapty: AdaptyPremiumProviding {
+	var isActive: Bool { false }
+	var premiumObserver: ((AdaptyProfile, Bool) -> Void)?
+	private let answer: AdaptyProfile?
+	private let delay: TimeInterval
+	private let lock = NSLock()
+	private var count = 0
+
+	init(answer: AdaptyProfile?, delay: TimeInterval) {
+		self.answer = answer
+		self.delay = delay
+	}
+
+	/// How many times anybody asked for a profile.
+	var asks: Int {
+		lock.lock()
+		defer { lock.unlock() }
+		return count
+	}
+
+	func profile() async -> AdaptyProfile? {
+		record()
+		try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+		return answer
+	}
+
+	private func record() {
+		lock.lock()
+		count += 1
+		lock.unlock()
+	}
+
+	func products(placement: String) async -> AdaptyProductsAnswer { .notReady }
+	func buy(productId: String, placement: String) async -> PurchaseVerdict { .failed }
+	func remoteValue<T>(placement: String, key: String) -> RemoteValue<T> { .notReady }
+	func logPaywallOpen(placement: String) {}
+	func hasPaywall(placement: String) -> Bool { false }
+	func paywallState(placement: String) -> PaywallState { .unavailable }
+	func syncReceipt() {}
+	func setProfileValue(value: String, key: String) {}
+}
+
+/// `activeSubscriptionIds` seen from the caller's side: every answer it gave, on which queue, how long
+/// it took, and whether any of it arrived inside the call itself. The callback is read on the main
+/// thread only — the contract says it runs there, and the check pumps the main run loop to see it.
+final class ActiveSubscriptionsProbe {
+	private(set) var answers: [Set<String>?] = []
+	private(set) var allOnMain = true
+	private(set) var firstAnswerAfter: TimeInterval?
+	private(set) var answeredInsideCall = false
+	private let startedAt = Date()
+
+	init(asking service: PremiumServicing, onBackgroundQueue: Bool = false) {
+		let ask = { [self] in
+			service.activeSubscriptionIds { [weak self] ids in
+				guard let self else { return }
+				if !Thread.isMainThread { allOnMain = false }
+				if firstAnswerAfter == nil { firstAnswerAfter = Date().timeIntervalSince(startedAt) }
+				answers.append(ids)
+			}
+		}
+		if onBackgroundQueue {
+			DispatchQueue.global().async(execute: ask)
+		} else {
+			ask()
+			answeredInsideCall = !answers.isEmpty
+		}
+	}
+}
+
+/// The log, collected. `debugLog` calls come from the cooperative pool as well as from main, so the
+/// lines go behind a lock.
+final class LogLines {
+	private let lock = NSLock()
+	private var storage: [String] = []
+
+	func append(_ line: String) {
+		lock.lock()
+		storage.append(line)
+		lock.unlock()
+	}
+
+	var all: [String] {
+		lock.lock()
+		defer { lock.unlock() }
+		return storage
+	}
+
+	/// The generation numbers `PremiumService.apply` printed, in order — the only place the counter is
+	/// visible from outside. A dropped answer prints another line and is not counted here.
+	var generations: [Int] {
+		all.filter { $0.contains("apply: isPremium") }.compactMap { line in
+			guard let open = line.range(of: "(gen ", options: .backwards) else { return nil }
+			return Int(line[open.upperBound...].prefix { $0.isNumber })
+		}
+	}
+}
+
+/// One subscription as the server sends it: every key the SDK requires, `expires_at` only when given.
+func subscriptionJSON(_ id: String, active: Bool, grace: Bool = false, refund: Bool = false, expiresAt: Date? = nil) -> [String: Any] {
+	var json: [String: Any] = [
+		"store": "app_store",
+		"vendor_product_id": id,
+		"vendor_transaction_id": "transaction-\(id)",
+		"vendor_original_transaction_id": "transaction-\(id)",
+		"is_active": active,
+		"is_lifetime": false,
+		"activated_at": 0,
+		"is_in_grace_period": grace,
+		"is_sandbox": true,
+		"is_refund": refund,
+		"will_renew": !refund,
+	]
+	if let expiresAt {
+		json["expires_at"] = expiresAt.timeIntervalSince1970
+	}
+	return json
+}
+
+/// A profile built by the decoder, the way the SDK builds one. `nil` leaves the `subscriptions` key
+/// out altogether — a profile with no subscriptions carries none (PM-09 row 7).
+func decodedProfile(subscriptions: [String: [String: Any]]?) -> AdaptyProfile {
+	var payload: [String: Any] = ["profile_id": "pm09-profile", "segment_hash": "pm09"]
+	if let subscriptions {
+		payload["subscriptions"] = subscriptions
+	}
+	let decoder = JSONDecoder()
+	decoder.dateDecodingStrategy = .secondsSince1970
+	guard
+		let data = try? JSONSerialization.data(withJSONObject: payload),
+		let profile = try? decoder.decode(AdaptyProfile.self, from: data)
+	else {
+		fatalError("PM-09 fixture: the profile did not decode")
+	}
+	return profile
 }

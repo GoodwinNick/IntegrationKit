@@ -15,6 +15,7 @@ enum TestModeFlagParser {
 	/// invented locally: `~/.claude/skills/xcuitest/reference/kit-flags.md`.
 	private static let valueFlags: Set<String> = [
 		"-adaptyLevelId",
+		"-activeSubscription",
 		"-premiumAfter",
 		"-noPremiumAfter",
 		"-receiptDelay",
@@ -120,6 +121,10 @@ enum TestModeFlagParser {
 			switch name {
 				case "-adaptyLevelId":
 					flags.adaptyLevelId = raw
+				case "-activeSubscription":
+					// TM-09 rows 1 and 3: repeatable, so it adds instead of overwriting. The missing-value
+					// case never gets here — the guard above dropped it and recorded the cause.
+					flags.activeSubscriptions.insert(raw)
 				case "-premiumAfter":
 					flags.premiumAfter = seconds(raw, flag: name, into: &flags)
 				case "-noPremiumAfter":

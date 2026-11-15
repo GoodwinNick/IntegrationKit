@@ -22,11 +22,19 @@ enum TestModeProfile {
 
 	/// A profile with one active access level, or with none at all. `nil` expiry means lifetime —
 	/// the same meaning `PremiumAccess.init(profile:levels:isVerified:)` gives it.
-	static func make(levelId: String, isActive: Bool, expiresAt: Date?) -> AdaptyProfile? {
+	///
+	/// TM-09: `subscriptions` are the product ids reported as active subscriptions next to the level.
+	/// Each one carries every key the SDK's own `Subscription` requires — one missing and the whole
+	/// decode fails, taking the level down with it (TM-09 row 4). The level and the subscriptions are
+	/// independent here, as they are in a real profile: the verdict reads the level alone.
+	static func make(levelId: String, isActive: Bool, expiresAt: Date?, subscriptions: Set<String> = []) -> AdaptyProfile? {
 		var payload: [String: Any] = [
 			"profile_id": "uitest-profile",
 			"segment_hash": "uitest",
 		]
+		if !subscriptions.isEmpty {
+			payload["subscriptions"] = Dictionary(uniqueKeysWithValues: subscriptions.map { ($0, subscription(productId: $0)) })
+		}
 		if isActive {
 			var level: [String: Any] = [
 				"id": levelId,
@@ -59,5 +67,23 @@ enum TestModeProfile {
 			return nil
 		}
 		return profile
+	}
+
+	/// One active subscription as the server sends it. The key names are the SDK's
+	/// (`AdaptyProfile.Subscription.swift`, `CodingKeys`); the optional ones are left out.
+	private static func subscription(productId: String) -> [String: Any] {
+		[
+			"store": "app_store",
+			"vendor_product_id": productId,
+			"vendor_transaction_id": "uitest.transaction.\(productId)",
+			"vendor_original_transaction_id": "uitest.transaction.\(productId)",
+			"is_active": true,
+			"is_lifetime": false,
+			"activated_at": 0,
+			"is_in_grace_period": false,
+			"is_sandbox": true,
+			"is_refund": false,
+			"will_renew": true,
+		]
 	}
 }

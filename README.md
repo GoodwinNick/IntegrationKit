@@ -89,6 +89,16 @@ the app asking — Adapty pushes a new profile, an interrupted purchase is
 delivered by the payment queue at launch — so a screen that reads `isPremium`
 once and never subscribes goes stale.
 
+Since 0.10.0, `kit.premium.activeSubscriptionIds { ids in … }` says *through which
+subscription* there is access — for a screen that picks a cohort (a weekly user and
+a yearly one are not offered the same upsell). It asks Adapty only, within the short
+screen deadline, and answers a set of store product ids, `[]` (answered, nothing
+active) or `nil` (unknown — never read it as "none"). Read-only: it never changes
+`isPremium`. The new member has no default implementation, so an app's own
+`PremiumServicing` fake has to answer it. In a test run, `-activeSubscription <id>`
+(repeatable, together with `-premium`) sets which subscriptions the fake Adapty
+reports active; see [`docs/Integration.md`](docs/Integration.md#active-subscriptions).
+
 **Store the returned `IntegrationKit` for the lifetime of the app** — on the
 `AppDelegate`, not in a local that ends with the function: pulling one member
 out of it (`let premium = IntegrationKit.configure(...).premium`) drops the

@@ -160,6 +160,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 		}
 		kit.premium.refresh()
 
+		// Since 0.10.0: which subscriptions Adapty reports active, for the screen that picks a cohort.
+		// `nil` is "unknown" — the layer is off or Adapty did not answer in time — never "none"; `[]`
+		// is the answer "nothing active". Read-only: it moves neither `isPremium` nor the notification.
+		kit.premium.activeSubscriptionIds { ids in
+			guard let ids else { return print("unknown — decide without it") }
+			print(ids.isEmpty ? "answered: nothing active" : "active: \(ids.sorted())")
+		}
+
 		// Empty is the healthy state. Anything in here is a cause no retry will fix.
 		kit.premium.configurationIssues.forEach { print("[IntegrationKit] \($0)") }
 	}

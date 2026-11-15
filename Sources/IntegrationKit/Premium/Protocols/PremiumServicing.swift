@@ -25,6 +25,26 @@ public protocol PremiumServicing: AnyObject {
 	/// Purchase. Updates state the same way `restore` does.
 	func purchase(_ productId: String, placement: String, completion: @escaping (PurchaseOutcome) -> Void)
 
+	/// PM-09: which subscriptions Adapty reports as active right now — the store product ids, as in
+	/// `productIds` and on the paywall. `isPremium` says "there is access"; this says "through which
+	/// subscription", for the screen that has to pick a cohort (a weekly user and a yearly one are not
+	/// offered the same upsell).
+	///
+	/// Asks Adapty and nobody else, with the same short deadline a purchase or a restore gets — a
+	/// person is looking at the screen that calls this. Read-only: the verdict, the cache and the
+	/// legacy flag stay exactly as they were, and `.premiumDidChange` is never posted by it.
+	///
+	/// - A set: Adapty answered. `[]` means "answered, nothing active" — not the same as `nil`.
+	///   Exactly what Adapty marks active, a grace period included, a refunded or expired one not.
+	///   Not filtered by `productIds`: a subscription the app no longer sells comes back too. Offline,
+	///   the profile the SDK saved last answers, as it is.
+	/// - `nil`: Adapty did not answer — the layer is off, or no profile came before the deadline.
+	///   Treat it as "unknown", never as "none". Asking again is allowed; nothing is cached.
+	///
+	/// `completion` runs exactly once, on the main queue, and never inside this call. Two calls at once
+	/// are two requests.
+	func activeSubscriptionIds(completion: @escaping (Set<String>?) -> Void)
+
 	/// Prices and product description — from here, not from Adapty or StoreKit directly.
 	func product(_ productId: String, placement: String, completion: @escaping (PremiumProduct?) -> Void)
 	/// Everything the placement sells, priced. Two sources, one list: Adapty owns the paywall and

@@ -21,6 +21,7 @@ compiler proves the public API is enough on its own.
   - [Firebase Analytics](#firebase-analytics)
 - [Crash reporting](#crash-reporting)
 - [Premium](#premium)
+  - [Active subscriptions](#active-subscriptions)
   - [Promoted purchases](#promoted-purchases)
 - [The StoreKit side](#the-storekit-side)
 - [Deep links](#deep-links)
@@ -53,6 +54,17 @@ at `swift-tools-version: 5.9` and its own floor has not moved; the requirement
 arrives through the dependency graph, and there is nothing here that can lower
 it. An app that has to stay on an older Xcode stays on IntegrationKit 0.2.2,
 which pins Adapty 2.10.x.
+
+### Upgrading from 0.9.x
+
+Nothing breaks at a call site that only uses `kit.premium`. One thing breaks the
+build of an app that **implements** `PremiumServicing` itself — in practice the
+fake in its unit tests.
+
+| What | Then (0.9.x) | Now (0.10.0) |
+|---|---|---|
+| `PremiumServicing.activeSubscriptionIds(completion:)` | — | New member with **no default implementation**, on purpose: a fake that does not answer it fails to compile instead of silently reading as "no subscriptions". `PremiumService` is the only conformer in the package. See [Active subscriptions](#active-subscriptions). |
+| `-activeSubscription <productId>` | — | New repeatable test-mode flag for the fake Adapty's active subscriptions. Nothing changes for a run that does not pass it. |
 
 ### Upgrading from 0.2.x
 
@@ -1001,6 +1013,7 @@ public protocol PremiumServicing: AnyObject {
 	func refresh()
 	func restore(completion: @escaping (RestoreOutcome) -> Void)
 	func purchase(_ productId: String, placement: String, completion: @escaping (PurchaseOutcome) -> Void)
+	func activeSubscriptionIds(completion: @escaping (Set<String>?) -> Void)   // since 0.10.0
 	func product(_ productId: String, placement: String, completion: @escaping (PremiumProduct?) -> Void)
 	func products(placement: String, completion: @escaping ([PremiumProduct]) -> Void)
 	func hasPaywall(placement: String) -> Bool
@@ -1232,6 +1245,74 @@ Three of the five need a UI decision that `failed` would get wrong:
 | `.unavailable` | Hide or disable the button. A retry fails identically every time. |
 | `.failed` | Show an error and let the user try again — this one really is temporary. **It is also what a second tap on the buy button gets while the first purchase is still in flight.** The package refuses the second call before the SDK ever sees it, so two payment sheets can never stack; the app is not expected to disable the button itself. Do not turn that into an alert — a purchase is already running, so the screen should be waiting, and the outcome of the first call is the one to react to. |
 
+### Active subscriptions
+
+Since 0.10.0.
+
+```swift
+kit.premium.activeSubscriptionIds { ids in
+	guard let ids else { return }   // unknown — Adapty did not answer; decide without it
+	let hasWeeklyOnly = ids.contains("week.sub") && !ids.contains("year.sub")
+}
+```
+
+`isPremium` says there is access; this says *through which subscription* — for
+the screen that has to choose a cohort, because a weekly user and a yearly one
+are not offered the same upsell.
+
+- **Adapty only.** The receipt, the cached verdict and the local-purchase mark
+  take no part: the question is not "is there access" but "which subscriptions
+  does Adapty see as active".
+- **Three kinds of answer.** A set of product ids; `[]`, which means Adapty
+  answered and nothing is active; and `nil`, which means Adapty did not answer
+  — the layer is off (empty or invalid key, a test run without test mode), or
+  no profile came before the deadline. `nil` is "unknown", never "none": a
+  screen that reads it as "no subscription" will show an upsell to a user who
+  already pays. An inactive layer answers `nil` at once and does not spend the
+  deadline.
+- **Exactly what Adapty marks active.** The ids are the store product ids of
+  every subscription whose `isActive` is true. A subscription in its grace
+  period is active, a refunded or expired one is not, and the package adds no
+  rule of its own — in particular it does not compare the expiry date, which in
+  a grace period is already in the past. The set is **not** filtered by the
+  `productIds` given to `configure`: a subscription the app no longer sells
+  comes back too, and what to do with it is the app's decision.
+- **Offline is still an answer.** Without a network Adapty hands over the
+  profile it saved last, and the set is taken from that as it is. It can be
+  stale — a weekly subscription that ended since is still in it — and that is
+  accepted.
+- **The screen deadline.** The same short one `purchase` and `restore` use
+  (`waitingTimeout`, 2 seconds by default), not the longer one a background
+  refresh gets: the caller is a screen with a person in front of it.
+- **Read-only.** It writes nothing, posts no `.premiumDidChange` and leaves the
+  verdict and the cache as they were, even when the profile disagrees with
+  `isPremium` (a promo, a local purchase). It never changes who is premium.
+- **The callback** runs exactly once, on the main queue, and never inside the
+  call itself — also when the answer is known at once. Two calls at once are two
+  requests; there is no de-duplication, the same limit `refresh()` has.
+- **In the DEBUG log**, tag `PremiumService`: how many ids came back, and an
+  `error` line for a timeout or an inactive layer.
+
+**In a test run**, `-activeSubscription <productId>` tells the fake Adapty which
+subscriptions are active. It is the one repeatable flag: every occurrence adds
+an id, and the same id twice is one.
+
+| Flags | `activeSubscriptionIds` |
+|---|---|
+| `-premium -activeSubscription year_50` | `["year_50"]` |
+| `-premium -activeSubscription week_9_trial_3d -activeSubscription year_50` | both |
+| `-premium` alone | `[]` — premium without a subscription (a promo, a manual grant) |
+| `-noPremium`, or no flag at all | `[]` — subscriptions travel with the grant only |
+| `-adaptySilent` | `nil` |
+
+The profile is a real `AdaptyProfile`, decoded from the keys the server sends,
+so what a test sees is what `activeSubscriptionIds` reads in production. A
+deferred `-premiumAfter` brings the same ids with it; `-noPremiumAfter` brings
+none. The ids never change the verdict (`isPremium` is still decided by the
+access level alone) and never change the price list. A flag with no value after
+it, or followed by another flag, is ignored and recorded in
+`configurationIssues`.
+
 ### Promoted purchases
 
 An App Store product page can promote an in-app purchase, and tapping it opens
@@ -1402,7 +1483,7 @@ for s in Checks/*.sh; do "./$s"; done
 | `adapty-service-check.sh` | The whole of AD-01…AD-07: activation guards, paywall de-duplication and TTL, the `PaywallState` answers, purchase verdict mapping (including that a server or network error grants nothing), the attribution pair failing by halves, the ATT resend, remote-config parsing done once, locale selection, and the promoted purchase that must not be started. Since 0.8.0 also the purchase half of FA-04: a verified `.success` reaches Firebase once, an unverified one, a cancel, a pending purchase and a failure never do, and a second answer to the same purchase does not log a second payment. |
 | `firebase-analytics-check.sh` | FA-01…FA-05 and their boundary with Amplitude (0.8.0): the collection flag written in both directions, "Firebase is not up" recorded once, what the sanitiser refuses and cuts (event names, reserved names and prefixes, parameter keys, the 25-parameter and 100/36-character limits in UTF-16 units, value types, user id), the mirror in the same call as Amplitude, and the Firebase instance id delivered once. |
 | `premium-resolver-check.sh` | Arbitration order: a verified Adapty answer beats the cache both ways; a false receipt does not revoke an unverified local purchase; a stale cache plus a true receipt yields unverified state with no `expiresAt`; silence yields `.free`. |
-| `premium-barrier-check.sh` | The `refresh()` concurrency barrier, restore, the StoreKit-fallback path, and the price merge — the store's price winning where it answered, Adapty's kept where it did not. |
+| `premium-barrier-check.sh` | The `refresh()` concurrency barrier, restore, the StoreKit-fallback path, and the price merge — the store's price winning where it answered, Adapty's kept where it did not. Since 0.10.0 also PM-09, `activeSubscriptionIds`: `nil` at once from an inactive layer and at the screen deadline from a hung one, exactly one callback even when the answer and the deadline are due together, `[]` for a profile without subscriptions, exactly the `isActive` ones (grace period in, refunded and expired out, no `productIds` filter), nothing written, notified or renumbered in the arbiter, always on main and never inside the call, and the DEBUG trace. |
 | `premium-local-purchase-check.sh` | The local-purchase mark: what sets it, what may clear it, and what must never clear it. |
 | `premium-pending-check.sh` | That one hung purchase does not refuse every later purchase in the process. |
 | `premium-storekit-check.sh` | Restore, price lookup, unfinished transactions delivered by the payment queue, and that every SwiftyStoreKit entry point is reached on the main thread even when the caller is not. |
@@ -1411,7 +1492,7 @@ for s in Checks/*.sh; do "./$s"; done
 | `appsflyer-service-check.sh` | Session start, attribution mapping, the ATT wait limit, deep-link values. |
 | `appsflyer-attribution-check.sh` | `cleanedAttributionData`: `NSNull`/non-scalar values and non-string keys dropped, an empty input staying empty, a `nil` deep link value becoming `"-"`, `clickEvent` fields flowing through. |
 | `integration-kit-check.sh` | The composition root, actually run — in two processes of one binary, a normal launch and a test run (`--tests-running`): the `AppDelegate` forwards answering with no AppsFlyer layer, the empty dev key leaving a readable reason, a second `configure` handing back the first kit instead of building a second graph, and (0.8.0) Firebase hearing the collection flag, the user id, the `environment` property and the kit's own Adapty-bound instance id on a normal launch, and only `collection off` in a test run. Since 0.9.1 also TM-08 through the root: a test run marks the device, and a normal launch that finds the mark wipes the premium verdict, legacy flag and prices before `start()` and says so in `configurationIssues`. The other scripts compile a chosen slice of `Sources/` and never compile `IntegrationKit.swift` at all, so a forward that drops a request on the floor is invisible to every one of them. |
-| `test-mode-check.sh` | TM-01…TM-08: the test mode — the fake Adapty and Apple sources, and the production arbiter that stays above them. Since 0.9.0 also that `flush()` on the test layer writes nothing to the sink. Since 0.9.1 also TM-08: a test run's fake purchase leaking into the next live launch, and the wipe that stops it — only with the mark, only the package's three keys, without a notification, with one line in `configurationIssues`. |
+| `test-mode-check.sh` | TM-01…TM-09: the test mode — the fake Adapty and Apple sources, and the production arbiter that stays above them. Since 0.9.0 also that `flush()` on the test layer writes nothing to the sink. Since 0.9.1 also TM-08: a test run's fake purchase leaking into the next live launch, and the wipe that stops it — only with the mark, only the package's three keys, without a notification, with one line in `configurationIssues`. Since 0.10.0 also TM-09: `-activeSubscription` accumulating, a missing value dropped without eating the next flag, the fake profile decoding with every key the SDK requires, subscriptions riding on the grant and the deferred grant only, and never touching the verdict or the price list. |
 | `remote-config-service-check.sh` | RC-01…RC-03: Remote Config defaults, the fetch, the "is Firebase up" guard, and a failed fetch filed as a non-fatal. |
 | `price-cache-check.sh` | PM-07 rows 14–16: the price cache over `UserDefaults`, pure types with no SDK stub. |
 | `store-price-check.sh` | PM-07 row 17: `StorePrice`, pure `Decimal` and `Foundation`. |
@@ -1465,6 +1546,8 @@ so it can be traced to one layer without reading the message, and an
   product in the list it is about to hand back — price, period, the
   introductory offer, and **which of the three sources answered for it**
   (StoreKit, Adapty, or the price cache) — PM-07's merge made readable.
+  Since 0.10.0 `activeSubscriptionIds(completion:)` prints how many ids it
+  found, or an `error` line for a timeout or an inactive layer.
 - **PriceCache** (since 0.7.1) — how many prices came in fresh on a merge
   and how many carried an old introductory offer forward, and how many of
   the ids a screen asked for only the cache remembered.

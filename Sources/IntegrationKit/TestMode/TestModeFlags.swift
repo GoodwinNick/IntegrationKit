@@ -51,6 +51,11 @@ struct TestModeFlags {
 	/// `nil` means the package's own default level — whatever the app passed as `levels`. A test that
 	/// checks a specific access level names it with `-adaptyLevelId` (TM-03 row 5).
 	var adaptyLevelId: String?
+	/// TM-09: the product ids a granted profile reports as active subscriptions. The one flag in the
+	/// package that accumulates — every other value flag is a scalar (the last wins) or a key=value
+	/// pair — because "weekly and yearly at once" is a state a test has to be able to ask for. A set,
+	/// so a repeated id is one element. Read by the fake source on a grant only.
+	var activeSubscriptions: Set<String> = []
 	var premiumAfter: TimeInterval?
 	var noPremiumAfter: TimeInterval?
 	/// The app started with its old premium flag already on. Kept apart from ``adapty`` on purpose:

@@ -797,6 +797,127 @@ enum TestModeCheck {
 		assert(kitKeys.allSatisfy { key in wipeIssues.first?.contains(key) == true }, "TM-08 row 13: the line must name the wiped keys, got \(wipeIssues)")
 		row()
 
-		print("TestMode: \(passed)/43 OK")
+		// MARK: TM-09 — active subscriptions (0.10.0). 44-49, written red first: the flag, the field and the
+		// operation they call did not exist, so the file did not compile.
+
+		/// What `activeSubscriptionIds` answers on a layer built from `arguments`, and whether it answered
+		/// at all — the outer optional is "no callback", the inner one is the answer.
+		func activeIds(_ arguments: [String]) -> (ids: Set<String>?, answered: Bool) {
+			let built = layer(arguments)
+			var answer: Set<String>??
+			built.service.activeSubscriptionIds { answer = .some($0) }
+			let answered = waitUntil({ answer != nil })
+			return (answer ?? nil, answered)
+		}
+
+		// 44. TM-09 rows 1-3: the flag is a value flag that ACCUMULATES — a repeat adds, a duplicate id is one
+		//     element — and a missing value is dropped and said out loud without eating the next flag.
+		let accumulated = TestModeFlagParser.parse(["-activeSubscription", "a", "-activeSubscription", "b", "-activeSubscription", "a"])
+		assert(accumulated.activeSubscriptions == ["a", "b"], "TM-09 rows 1-2: the set must accumulate to {a, b} with the duplicate folded, got \(accumulated.activeSubscriptions)")
+		assert(accumulated.issues.isEmpty, "TM-09 row 2: a well-formed flag must leave no issue, got \(accumulated.issues)")
+		assert(TestModeFlagParser.allNames.contains("-activeSubscription"), "TM-09 row 2: the name must be one of the package's own")
+		let subscriptionEaten = TestModeFlagParser.parse(["-activeSubscription", "-premium"])
+		assert(subscriptionEaten.activeSubscriptions.isEmpty, "TM-09 row 3: -premium must not be eaten as an id, got \(subscriptionEaten.activeSubscriptions)")
+		assert(subscriptionEaten.adapty == .grant, "TM-09 row 3: -premium must survive the flag before it, got \(subscriptionEaten.adapty)")
+		assert(subscriptionEaten.issues.count == 1 && subscriptionEaten.issues[0].contains("-activeSubscription"), "TM-09 row 3: exactly one line naming the flag, got \(subscriptionEaten.issues)")
+		let subscriptionLast = TestModeFlagParser.parse(["-activeSubscription"])
+		assert(subscriptionLast.activeSubscriptions.isEmpty && subscriptionLast.issues.count == 1, "TM-09 row 3: a flag with nothing after it is dropped and recorded once, got \(subscriptionLast.issues)")
+		row()
+
+		// 45. TM-09 row 4: the fake profile decodes WITH its subscriptions and keeps the grant. The stub's
+		//     `Subscription` requires every key the SDK requires, so a missing one fails to decode here the way
+		//     it does for real — the control below proves that, or this row would pass against any stub.
+		let incomplete = #"{"store":"app_store","vendor_product_id":"x","vendor_transaction_id":"t","vendor_original_transaction_id":"t","is_active":true,"is_lifetime":false,"activated_at":0,"is_in_grace_period":false,"is_sandbox":true,"is_refund":false}"#
+		let strict = JSONDecoder()
+		strict.dateDecodingStrategy = .secondsSince1970
+		assert((try? strict.decode(AdaptyProfile.Subscription.self, from: Data(incomplete.utf8))) == nil, "TM-09 row 4 (control): a subscription without will_renew must NOT decode — the stub is meant to be as strict as the SDK")
+		ConfigurationIssues.shared.reset()
+		let subscribed = FakeAdaptySource(
+			flags: TestModeFlagParser.parse(["-premium", "-activeSubscription", "week_9_trial_3d", "-activeSubscription", "year_50"]),
+			levels: ["premium"], productIds: [], sink: nil
+		)
+		var subscribedProfile: AdaptyProfile?
+		Task { subscribedProfile = await subscribed.profile() }
+		assert(waitUntil({ subscribedProfile != nil }), "TM-09 row 4: the grant with subscriptions must still produce a profile, not the silence a failed decode gives")
+		guard let subscribedProfile else {
+			assertionFailure("TM-09 row 4: the grant with subscriptions must still produce a profile")
+			return
+		}
+		assert(ConfigurationIssues.shared.all.isEmpty, "TM-09 row 4: a profile that decodes must not record an issue, got \(ConfigurationIssues.shared.all)")
+		assert(Set(subscribedProfile.subscriptions.values.filter(\.isActive).map(\.vendorProductId)) == ["week_9_trial_3d", "year_50"], "TM-09 row 4: both subscriptions must be in the profile and active, got \(subscribedProfile.subscriptions)")
+		assert(PremiumAccess(profile: subscribedProfile, levels: ["premium"]).isActive, "TM-09 row 4: the access level must survive next to the subscriptions")
+		row()
+
+		// 46. TM-09 «Результат для PM-09», rows 5 and the whole table: through the real `PremiumService` on the
+		//     fake source. Subscriptions ride on the grant only — not on a denial, not on the default — and
+		//     silence is stronger than any of it.
+		let yearOnly = activeIds(["-premium", "-activeSubscription", "year_50"])
+		assert(yearOnly.answered && yearOnly.ids == ["year_50"], "TM-09: -premium + year_50 must answer {year_50}, got \(String(describing: yearOnly.ids))")
+		let both = activeIds(["-premium", "-activeSubscription", "week_9_trial_3d", "-activeSubscription", "year_50"])
+		assert(both.answered && both.ids == ["week_9_trial_3d", "year_50"], "TM-09: two ids must both arrive, got \(String(describing: both.ids))")
+		let grantAlone = activeIds(["-premium"])
+		assert(grantAlone.answered && grantAlone.ids == Set<String>(), "TM-09: -premium alone is a premium with no subscriptions — [] and not nil, got \(String(describing: grantAlone.ids))")
+		let denialWithSubscription = activeIds(["-noPremium", "-activeSubscription", "week_9_trial_3d"])
+		assert(denialWithSubscription.answered && denialWithSubscription.ids == Set<String>(), "TM-09 row 5: a denial must carry no subscriptions, got \(String(describing: denialWithSubscription.ids))")
+		let defaultWithSubscription = activeIds(["-activeSubscription", "week_9_trial_3d"])
+		assert(defaultWithSubscription.answered && defaultWithSubscription.ids == Set<String>(), "TM-09 row 5: the default answer is a denial too, so no subscriptions, got \(String(describing: defaultWithSubscription.ids))")
+		let nothing = activeIds([])
+		assert(nothing.answered && nothing.ids == Set<String>(), "TM-09: no flags at all is [], got \(String(describing: nothing.ids))")
+		let silentWithSubscription = activeIds(["-adaptySilent", "-premium", "-activeSubscription", "year_50"])
+		assert(silentWithSubscription.answered && silentWithSubscription.ids == nil, "TM-09: silence is stronger than the grant and the ids — nil, got \(String(describing: silentWithSubscription.ids))")
+		row()
+
+		// 47. TM-09 row 6: the deferred transitions carry the same set — the grant brings the subscriptions, the
+		//     removal brings none. Read from the push itself, on the channel a real push uses. NOT through a
+		//     second `activeSubscriptionIds` after the push: the fake's `profile()` answers from the flags and
+		//     does not remember a push (TM-03 leaves the fake source with nothing to replay), so a silent
+		//     source stays silent for it. TM-09's own repro for this row wants `["year_50"]` there instead —
+		//     an open question, not decided here.
+		let grantPush = FakeAdaptySource(
+			flags: TestModeFlagParser.parse(["-adaptySilent", "-premiumAfter", "0.2", "-activeSubscription", "year_50"]),
+			levels: ["premium"], productIds: [], sink: nil
+		)
+		var grantPushed: AdaptyProfile?
+		grantPush.premiumObserver = { profile, _ in grantPushed = profile }
+		assert(waitUntil({ grantPushed != nil }, timeout: 3), "TM-09 row 6: the deferred grant must arrive as a push")
+		assert(Set(grantPushed?.subscriptions.values.filter(\.isActive).map(\.vendorProductId) ?? []) == ["year_50"], "TM-09 row 6: the deferred grant must carry the same set, got \(String(describing: grantPushed?.subscriptions))")
+		let revokePush = FakeAdaptySource(
+			flags: TestModeFlagParser.parse(["-premium", "-noPremiumAfter", "0.2", "-activeSubscription", "year_50"]),
+			levels: ["premium"], productIds: [], sink: nil
+		)
+		var revokePushed: AdaptyProfile?
+		revokePush.premiumObserver = { profile, _ in revokePushed = profile }
+		assert(waitUntil({ revokePushed != nil }, timeout: 3), "TM-09 row 6: the deferred removal must arrive as a push")
+		assert(revokePushed?.subscriptions.isEmpty == true, "TM-09 row 6: the removal is a denial and carries no subscriptions, got \(String(describing: revokePushed?.subscriptions))")
+		row()
+
+		// 48. TM-09 row 7: subscriptions never move the verdict. The same flags with and without the ids end in
+		//     the same `isPremium` from the same source, and the ids alone grant nothing.
+		let withIds = layer(["-premium", "-receiptDelay", "0", "-activeSubscription", "year_50"])
+		let withoutIds = layer(["-premium", "-receiptDelay", "0"])
+		withIds.service.start()
+		withoutIds.service.start()
+		waitUntil { withIds.service.isPremium && withoutIds.service.isPremium }
+		assert(withIds.service.isPremium && withoutIds.service.isPremium, "TM-09 row 7: -premium must grant with and without ids")
+		assert(withIds.store.cached?.source == withoutIds.store.cached?.source && withIds.store.cached?.isVerified == withoutIds.store.cached?.isVerified, "TM-09 row 7: the verdict must come from the same source with and without ids, got \(String(describing: withIds.store.cached)) against \(String(describing: withoutIds.store.cached))")
+		let idsAlone = layer(["-receiptDelay", "0", "-activeSubscription", "year_50"])
+		idsAlone.service.start()
+		pump(0.4)
+		assert(idsAlone.service.isPremium == false, "TM-09 row 7: ids without -premium must not make anybody premium")
+		row()
+
+		// 49. TM-09 row 8: the fake catalogue still derives period and price from the id alone — the ids named
+		//     as active subscriptions have nothing to do with what the paywall lists.
+		let plainCatalogue = layer([], productIds: ["sub.month", "sub.year"])
+		let subscribedCatalogue = layer(["-premium", "-activeSubscription", "sub.year"], productIds: ["sub.month", "sub.year"])
+		var plainListed: [PremiumProduct] = []
+		var subscribedListed: [PremiumProduct] = []
+		plainCatalogue.service.products(placement: "main") { plainListed = $0 }
+		subscribedCatalogue.service.products(placement: "main") { subscribedListed = $0 }
+		assert(waitUntil({ plainListed.count == 2 && subscribedListed.count == 2 }), "TM-09 row 8: both catalogues must list both ids")
+		assert(plainListed.sorted { $0.id < $1.id } == subscribedListed.sorted { $0.id < $1.id }, "TM-09 row 8: the catalogue must not depend on the active subscriptions")
+		row()
+
+		print("TestMode: \(passed)/49 OK")
 	}
 }
