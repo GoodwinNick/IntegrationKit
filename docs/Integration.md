@@ -1033,31 +1033,39 @@ receipt as a fallback when Adapty has not answered yet.
 
 Three candidates go in — Adapty's answer, the App Store receipt, the state
 cached from the last launch — and one verdict comes out. The order of the
-branches *is* the rule, and it is not simply "Adapty, then the receipt":
+branches *is* the rule, and it is not simply "Adapty, then the receipt".
+Adapty hands premium out and never takes it back (user's decision,
+2026-09-11, commit `340d901`); what closes access is the expiry date and
+Apple's receipt:
 
 1. **Adapty says active** → premium, and the local-purchase mark is dropped.
    An answer that has not been confirmed over the network yet still grants:
    doubt goes to the user.
-2. **Adapty says inactive, that answer was checked over the network in this
-   process, and no local purchase is outstanding** → premium is revoked. An
-   *unverified* "inactive" — the profile the SDK pushes out of its own storage
-   at activation, a memory of the last launch rather than a check — is read as
-   silence and revokes nothing. Neither does a verified one while the
-   local-purchase mark is up: a purchase or restore that just went through on
-   this device is newer evidence than anything Adapty has seen.
-3. **The cache**, when it is verified or premium and has not expired → it
-   stands as it is, and the receipt is never consulted.
-4. **The receipt**, and only once the cache is gone or expired: `true` grants
-   premium and carries the expiry date with it, `false` leaves premium off.
-5. **Nobody answered** → not premium.
+2. **The cache**, when it is verified or premium and has not expired → it
+   stands as it is, and the receipt is never consulted. Its expiry date mirrors
+   the Adapty profile: it is refreshed from Adapty's answer on every pass,
+   including a denial.
+3. **The receipt**, and only once the cache is gone or expired: active and not
+   past its expiry date grants premium and carries the date with it; anything
+   else leaves premium off. A purchase or restore that just went through on
+   this device counts as a receipt saying "yes" — newer than any cached
+   verdict, which stops being verified against it.
+4. **Nobody answered** → not premium.
 
-So the two things that can actually close premium are a **verified** Adapty
-"inactive" with no local purchase outstanding, and an expiry date that has
-passed. A `false` from the receipt revokes nothing on its own — with a live
-premium cache the verdict never reaches branch 4, and behind a local-purchase
-mark the receipt is treated as saying "yes" regardless. The asymmetry is
-deliberate: a short free ride for someone who did not pay costs less than a
-paywall shown to someone who did.
+Adapty's `isActive == false` is not an answer at all: it falls through exactly
+like silence, whether it was checked over the network or not, with a local
+purchase outstanding or not. So no branch can tell a denial from silence, and
+Adapty can only grant. The two things that can actually close premium are an
+**expiry date that has passed** and **Apple's receipt** once the cache no
+longer holds. A premium the store knows nothing about is one the dashboard
+handed out, and Adapty writes an end date on those — so the date takes it
+back. A `false` from the receipt revokes nothing on its own: with a live
+premium cache the verdict never reaches branch 3. The local-purchase mark is
+still computed, carried and stored (seven days), but under this rule it
+decides nothing today. One question stays open: a grant that arrives with no
+date can never be revoked. The asymmetry is deliberate: a short free ride for
+someone who did not pay costs less than a paywall shown to someone who did.
+The code is `Sources/IntegrationKit/Premium/Helpers/PremiumResolver.swift`.
 
 ### The paywall-to-purchase flow
 
