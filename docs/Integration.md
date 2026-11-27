@@ -55,6 +55,16 @@ arrives through the dependency graph, and there is nothing here that can lower
 it. An app that has to stay on an older Xcode stays on IntegrationKit 0.2.2,
 which pins Adapty 2.10.x.
 
+### Upgrading from 0.10.x
+
+Nothing breaks, and nothing changes for an app that does not pass the new map.
+
+| What | Then (0.10.x) | Now (0.11.0) |
+|---|---|---|
+| `PremiumServicing.hasAccess(level:)` | — | New member **with** a default implementation that answers `isPremium`, so an app's own fake keeps compiling. See [Access per level](#access-per-level). |
+| `IntegrationKit.configure(productLevels:)` | — | New argument, defaults to `[:]` — the single verdict of 0.10.x, with nothing new computed, stored or posted. |
+| `-grantLevel <levelId>` | — | New repeatable test-mode flag: the access levels a fake Adapty grant carries. Nothing changes for a run that does not pass it. |
+
 ### Upgrading from 0.9.x
 
 Nothing breaks at a call site that only uses `kit.premium`. One thing breaks the
@@ -402,6 +412,7 @@ public static func configure(
 	isDebug: Bool,
 	isTestsRunning: Bool,
 	levels: Set<String> = ["premium"],
+	productLevels: [String: String] = [:],   // since 0.11.0
 	firstOpenEvent: String? = nil,
 	appsFlyerDevKey: String = "",
 	appsFlyerAppId: String = "",
@@ -422,6 +433,7 @@ public static func configure(
 | `isDebug` | The app's own `#if DEBUG`, and the only thing that decides crash collection. Here it also turns AppsFlyer's own console logging on and off; pass the same value to `FirebaseIntegration.configure(isDebug:)` | An `#if DEBUG` in the app, beside its other developer flags | Required — no default, deliberately: a default is the package guessing the build type. `true` switches Crashlytics collection off and AppsFlyer's SDK logging on; `false` does the opposite. It does **not** touch Amplitude, Adapty or StoreKit. |
 | `isTestsRunning` | Whether this launch is a test run. `true` leaves Amplitude, Adapty and AppsFlyer down for the whole run, each recording its own reason in `configurationIssues` | The app: `ProcessInfo.processInfo.arguments.contains("-uitest")` or `ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil` | Required — no default. `true` means no Amplitude events, no Adapty activation (so no live paywalls and no live purchases through it), and no AppsFlyer sessions, install data or deep links. Firebase Analytics receives nothing and has its collection switched **off**; Firebase crash collection is **not** affected — it follows `isDebug` alone. StoreKit is not built at all (since 0.6.0): the test mode's fake store answers instead, so a test run touches no payment queue, reads no receipt and shows no system dialog. |
 | `levels` | The set of Adapty access level ids that count as "premium" | Adapty dashboard — access level ids configured for the paywall | Defaults to `["premium"]`. Wrong values here mean a real Adapty premium purchase never flips `isPremium` to true. |
+| `productLevels` | Store product id → the access level it unlocks, for an app that sells more than one level and reads `hasAccess(level:)` | Adapty dashboard — which product is attached to which access level | Defaults to `[:]`: one verdict for every level, exactly as before 0.11.0. Every level in it must be in `levels` and every product in `productIds`; each mismatch is one line in `configurationIssues`. See [Access per level](#access-per-level). |
 | `firstOpenEvent` | Analytics event name logged exactly once per install | App's own event naming | `nil` (default) — no first-open event is logged at all. |
 | `appsFlyerDevKey` | AppsFlyer dev key | AppsFlyer dashboard, per app | Defaults to `""`. An empty dev key means **AppsFlyer is not created at all** — no attribution and no deep links, and one line saying so lands in `configurationIssues`. Keep forwarding `handleContinue`/`handleOpen` anyway: `handleContinue` still calls your `restorationHandler` (see [Deep links](#deep-links)), so the app must not answer UIKit itself. |
 | `appsFlyerAppId` | Numeric App Store id | App Store Connect / `itunes.apple.com/lookup` | Defaults to `""`. Only meaningful together with a non-empty `appsFlyerDevKey`; without a confirmed App ID, AppsFlyer attribution can end up pointed at the wrong app. |
@@ -453,10 +465,10 @@ lines in `configurationIssues` rather than one.
 
 **A test run is cleaned up after on the next live launch (since 0.9.1).** A
 test run's premium layer writes into the same `UserDefaults` keys a live launch
-reads — the cached verdict, the legacy flag your screens read, the price cache —
-and it has to: an app under test reads that flag itself. So a test launch marks
-the device first, and the first live launch that finds the mark wipes those
-three keys before the premium layer is built, takes the mark down and records
+reads — the cached verdict, the legacy flag your screens read, the per-level
+verdicts (since 0.11.0), the price cache — and it has to: an app under test
+reads that flag itself. So a test launch marks the device first, and the first
+live launch that finds the mark wipes those keys before the premium layer is built, takes the mark down and records
 one line in `configurationIssues`. The premium layer then starts free and asks
 Adapty and Apple again: a real purchase comes back, a test one does not.
 Without the mark nothing is touched — a device that never ran a test sees no
@@ -1009,6 +1021,7 @@ both internal to the implementation behind it.
 ```swift
 public protocol PremiumServicing: AnyObject {
 	var isPremium: Bool { get }
+	func hasAccess(level: String) -> Bool   // since 0.11.0, defaults to isPremium
 	func start()
 	func refresh()
 	func restore(completion: @escaping (RestoreOutcome) -> Void)
@@ -1321,6 +1334,68 @@ access level alone) and never change the price list. A flag with no value after
 it, or followed by another flag, is ignored and recorded in
 `configurationIssues`.
 
+### Access per level
+
+Since 0.11.0. For an app with more than one access level in the Adapty
+dashboard — say `lifetime` (a one-time purchase) and `remote_play` (a
+subscription) — where buying one must not open the other.
+
+```swift
+let kit = IntegrationKit.configure(
+	// …
+	productIds: ["cg.lifetime", "rp.month", "rp.year"],
+	levels: ["lifetime", "remote_play"],
+	productLevels: ["cg.lifetime": "lifetime", "rp.month": "remote_play", "rp.year": "remote_play"]
+)
+
+if kit.premium.hasAccess(level: "remote_play") { startRemoteGame() }
+```
+
+- **Each level is its own verdict**, through the same arbiter as `isPremium`:
+  Adapty only opens (that level and its own expiry date), the receipt counts
+  only the products the map ties to that level, a cached open level holds
+  offline, and doubt goes to the user.
+- **A purchase opens one level** — the one the map ties the bought product to,
+  whether Adapty sold it or the StoreKit fallback did. Inside the purchase
+  completion `hasAccess` is already up to date. A product with no level in the
+  map opens none. A restore opens the levels whose products Apple handed back;
+  a transaction delivered by the payment queue carries no product, so the
+  receipt and Adapty decide.
+- **A level with no product in the map** (a promo, a manual grant from the
+  dashboard) is opened by Adapty alone.
+- **A map that disagrees with the dashboard** (the map ties a product to one
+  level, Adapty unlocks another with it) closes nothing: Adapty opens its level,
+  the receipt opens the map's. A DEBUG line names both — check the map against
+  the dashboard. Every update also logs each level with the source that decided it.
+- **`.premiumDidChange`** is the same notification, posted once when
+  `isPremium` or any level changed; re-read the levels you need. Nothing
+  changed, nothing posted.
+- **`isPremium` is untouched**: still "any access at all", computed exactly as
+  before. With a map, decide what to unlock by `hasAccess` only.
+- **The first launch with a map** starts every level closed: the old verdict is
+  not copied into a level, because nobody knows which level it meant. The first
+  receipt answer (it works offline) or Adapty answer brings access back.
+- **Without a map** `hasAccess(level:)` answers `isPremium` for every level in
+  `levels`. Nothing per level is computed, stored or posted.
+- **A level not in `levels`** answers `false` and leaves one line in
+  `configurationIssues` — usually a typo.
+
+**In a test run**, `-grantLevel <levelId>` adds a level to what the fake Adapty
+grants. It is repeatable and adds up with `-adaptyLevelId`; without either, the
+grant carries the app's first level, as before. A denial carries none.
+
+| Flags (map as above) | `lifetime` | `remote_play` | `isPremium` |
+|---|---|---|---|
+| `-premium -grantLevel lifetime` | open | closed | `true` |
+| `-premium -grantLevel remote_play` | closed | open | `true` |
+| `-premium -grantLevel lifetime -grantLevel remote_play` | open | open | `true` |
+| `-premium` alone | open (first level) | closed | `true` |
+| `-noPremium`, `-adaptySilent`, or no flag | closed | closed | `false` |
+
+A deferred `-premiumAfter` brings the same levels; `-noPremiumAfter` brings
+none. `-noPremiumCache` wipes the per-level verdicts with the general one. The
+fake receipt does not narrow by level: `-receiptValid` opens every level.
+
 ### Promoted purchases
 
 An App Store product page can promote an in-app purchase, and tapping it opens
@@ -1492,6 +1567,7 @@ for s in Checks/*.sh; do "./$s"; done
 | `firebase-analytics-check.sh` | FA-01…FA-05 and their boundary with Amplitude (0.8.0): the collection flag written in both directions, "Firebase is not up" recorded once, what the sanitiser refuses and cuts (event names, reserved names and prefixes, parameter keys, the 25-parameter and 100/36-character limits in UTF-16 units, value types, user id), the mirror in the same call as Amplitude, and the Firebase instance id delivered once. |
 | `premium-resolver-check.sh` | Arbitration order: a verified Adapty answer beats the cache both ways; a false receipt does not revoke an unverified local purchase; a stale cache plus a true receipt yields unverified state with no `expiresAt`; silence yields `.free`. |
 | `premium-barrier-check.sh` | The `refresh()` concurrency barrier, restore, the StoreKit-fallback path, and the price merge — the store's price winning where it answered, Adapty's kept where it did not. Since 0.10.0 also PM-09, `activeSubscriptionIds`: `nil` at once from an inactive layer and at the screen deadline from a hung one, exactly one callback even when the answer and the deadline are due together, `[]` for a profile without subscriptions, exactly the `isActive` ones (grace period in, refunded and expired out, no `productIds` filter), nothing written, notified or renumbered in the arbiter, always on main and never inside the call, and the DEBUG trace. |
+| `premium-levels-check.sh` | Since 0.11.0, PM-10 and TM-10 — access per level: a level opened by Adapty, the receipt, a purchase (Adapty and the StoreKit fallback) or a restore never opening another, each level's own date, the map mistakes and an unknown level each one line in `configurationIssues`, no map meaning exactly 0.10.0 (no new key, no per-product receipt question), the offline restart, the first launch with a map starting closed, a corrupted payload, exactly one `.premiumDidChange` per update, the push/refresh race, a queued transaction marking no level, a dashboard-only level, an old app fake compiling against the default, the map/dashboard mismatch line and the per-level trace — and the `-grantLevel` flag: accumulating, adding up with `-adaptyLevelId`, the deferred pushes, the result table through the real arbiter, `-noPremiumCache` and the TM-08 wipe taking the level verdicts too. |
 | `premium-local-purchase-check.sh` | The local-purchase mark: what sets it, what may clear it, and what must never clear it. |
 | `premium-pending-check.sh` | That one hung purchase does not refuse every later purchase in the process. |
 | `premium-storekit-check.sh` | Restore, price lookup, unfinished transactions delivered by the payment queue, and that every SwiftyStoreKit entry point is reached on the main thread even when the caller is not. |
@@ -1504,7 +1580,7 @@ for s in Checks/*.sh; do "./$s"; done
 | `remote-config-service-check.sh` | RC-01…RC-03: Remote Config defaults, the fetch, the "is Firebase up" guard, and a failed fetch filed as a non-fatal. |
 | `price-cache-check.sh` | PM-07 rows 14–16: the price cache over `UserDefaults`, pure types with no SDK stub. |
 | `store-price-check.sh` | PM-07 row 17: `StorePrice`, pure `Decimal` and `Foundation`. |
-| `buildhost-check.sh` | That the package still compiles the way an app compiles it — against the real SDKs rather than the stubs in `Checks/Stubs/`, with the real Package.swift resolution behind it. The other sixteen never link a real SDK, so a dependency whose API moved under a `from:` range breaks here first. Runs `xcb app-sim --path BuildHost`, regenerating the xcodegen project first, because the generated `.xcodeproj` is gitignored and `xcb` exits 0 when it finds none. |
+| `buildhost-check.sh` | That the package still compiles the way an app compiles it — against the real SDKs rather than the stubs in `Checks/Stubs/`, with the real Package.swift resolution behind it. The other seventeen never link a real SDK, so a dependency whose API moved under a `from:` range breaks here first. Runs `xcb app-sim --path BuildHost`, regenerating the xcodegen project first, because the generated `.xcodeproj` is gitignored and `xcb` exits 0 when it finds none. |
 
 A test written from an approved schema goes in before the code that satisfies
 it, so an assert can be red for a while by design — a specification waiting to

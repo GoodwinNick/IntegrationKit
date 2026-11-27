@@ -20,10 +20,10 @@ final class FakeAdaptySource: AdaptyPremiumProviding, AdaptyServicing {
 	private static let tag = "TestMode"
 
 	private let flags: TestModeFlags
-	/// The access levels the app configured. A grant carries `-adaptyLevelId` when the test named one
-	/// and this otherwise — "the package's default level" is the app's own first level, not a name
-	/// the package invented (TM-03 row 5).
-	private let defaultLevelId: String
+	/// What a grant carries: every `-grantLevel` plus `-adaptyLevelId` (TM-10 row 7). With neither,
+	/// the app's own first level — "the package's default level" is the app's, not a name the package
+	/// invented (TM-03 row 5).
+	private let grantedLevels: Set<String>
 	private let productIds: Set<String>
 	private let sink: AnalyticsSink?
 
@@ -33,7 +33,8 @@ final class FakeAdaptySource: AdaptyPremiumProviding, AdaptyServicing {
 
 	init(flags: TestModeFlags, levels: Set<String>, productIds: Set<String>, sink: AnalyticsSink?) {
 		self.flags = flags
-		self.defaultLevelId = flags.adaptyLevelId ?? levels.sorted().first ?? "premium"
+		let named = flags.grantLevels.union(flags.adaptyLevelId.map { [$0] } ?? [])
+		self.grantedLevels = named.isEmpty ? [levels.sorted().first ?? "premium"] : named
 		self.productIds = productIds
 		self.sink = sink
 	}
@@ -67,8 +68,8 @@ final class FakeAdaptySource: AdaptyPremiumProviding, AdaptyServicing {
 				debugLog(tag: Self.tag, "Adapty stays silent — the verdict is built from what is left")
 				return nil
 			case .grant:
-				debugLog(tag: Self.tag, "Adapty grants level \(defaultLevelId) with \(flags.activeSubscriptions.count) active subscription(s)")
-				return Self.grant(levelId: defaultLevelId, subscriptions: flags.activeSubscriptions)
+				debugLog(tag: Self.tag, "Adapty grants level(s) \(grantedLevels.sorted()) with \(flags.activeSubscriptions.count) active subscription(s)")
+				return Self.grant(levelIds: grantedLevels, subscriptions: flags.activeSubscriptions)
 			case .denial:
 				debugLog(tag: Self.tag, "Adapty answers: no access level is active")
 				return Self.denial()
@@ -201,13 +202,14 @@ final class FakeAdaptySource: AdaptyPremiumProviding, AdaptyServicing {
 	}
 
 	private func push(isActive: Bool, after delay: TimeInterval) {
-		let levelId = defaultLevelId
-		// TM-09 row 6: the deferred grant brings the same subscriptions the immediate one does, or a
-		// screen that asked again after the push would find them gone. The removal brings none.
+		let levelIds = grantedLevels
+		// TM-09 row 6, TM-10 row 6: the deferred grant brings the same subscriptions and levels the
+		// immediate one does, or a screen that asked again after the push would find them gone. The
+		// removal brings none.
 		let subscriptions = flags.activeSubscriptions
 		let item = DispatchWorkItem { [weak self] in
 			guard let self, let observer = self.premiumObserver else { return }
-			guard let profile = isActive ? Self.grant(levelId: levelId, subscriptions: subscriptions) : Self.denial() else { return }
+			guard let profile = isActive ? Self.grant(levelIds: levelIds, subscriptions: subscriptions) : Self.denial() else { return }
 			debugLog(tag: Self.tag, "deferred push after \(delay)s: access \(isActive ? "granted" : "revoked")")
 			// Always verified: a fake source has no notion of an SDK's own disk copy, and TM-03
 			// records that as an accepted limit rather than a gap to be filled.
@@ -222,12 +224,13 @@ final class FakeAdaptySource: AdaptyPremiumProviding, AdaptyServicing {
 
 	/// Thirty days out rather than lifetime: a dated grant is what a subscription really looks like,
 	/// and it keeps `PremiumState.expiresAt` populated the way a real one does.
-	private static func grant(levelId: String, subscriptions: Set<String>) -> AdaptyProfile? {
-		TestModeProfile.make(levelId: levelId, isActive: true, expiresAt: Date().addingTimeInterval(30 * 24 * 3600), subscriptions: subscriptions)
+	private static func grant(levelIds: Set<String>, subscriptions: Set<String>) -> AdaptyProfile? {
+		TestModeProfile.make(levelIds: levelIds, expiresAt: Date().addingTimeInterval(30 * 24 * 3600), subscriptions: subscriptions)
 	}
 
+	/// TM-10 row 5: a denial carries no level at all.
 	private static func denial() -> AdaptyProfile? {
-		TestModeProfile.make(levelId: "", isActive: false, expiresAt: nil)
+		TestModeProfile.make(levelIds: [], expiresAt: nil)
 	}
 
 	private static func wait(_ seconds: TimeInterval) async {

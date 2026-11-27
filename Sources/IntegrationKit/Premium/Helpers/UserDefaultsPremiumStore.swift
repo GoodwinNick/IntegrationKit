@@ -11,15 +11,29 @@ final class UserDefaultsPremiumStore: PremiumStateStoring {
 	/// Named once, because a test run's leftovers are wiped by these names too (TM-08).
 	static let defaultStateKey = "premiumStateKey"
 	static let defaultFlagKey = "premiumKey"
+	static let defaultLevelsKey = "premiumLevelsKey"
 
 	private let defaults: UserDefaults
 	private let stateKey: String
 	private let flagKey: String
+	private let levelsKey = defaultLevelsKey
 
 	init(defaults: UserDefaults = .standard, stateKey: String = defaultStateKey, flagKey: String = defaultFlagKey) {
 		self.defaults = defaults
 		self.stateKey = stateKey
 		self.flagKey = flagKey
+	}
+
+	/// PM-10 row 16: an unreadable payload is "no levels" — every level closed, the general verdict
+	/// untouched. Empty removes the key, so an app without a map never finds one on disk.
+	var levels: [String: PremiumState] {
+		get {
+			defaults.data(forKey: levelsKey)
+				.flatMap { try? JSONDecoder().decode([String: PremiumState].self, from: $0) } ?? [:]
+		}
+		set {
+			defaults.set(newValue.isEmpty ? nil : try? JSONEncoder().encode(newValue), forKey: levelsKey)
+		}
 	}
 
 	var cached: PremiumState? {

@@ -21,6 +21,9 @@ final class PremiumService: PremiumServicing {
 	/// The subscription ids to look for in the Apple receipt, and the fallback list `products`
 	/// prices directly when Adapty's own listing for the placement comes back empty.
 	private let productIds: Set<String>
+	/// PM-10: store product id → access level. Empty is the 0.10.0 mode — one verdict, nothing per
+	/// level computed, written or posted, and `hasAccess` answers `isPremium`.
+	private let productLevels: [String: String]
 	/// PM-07: what the store answered last session, for a launch where it hasn't answered yet.
 	private let priceCache: PriceCache
 	// Guards the cached state AND its flag mirror together — see `apply`.
@@ -74,6 +77,7 @@ final class PremiumService: PremiumServicing {
 		sourceTimeout: TimeInterval = 5,
 		waitingTimeout: TimeInterval = 2,
 		productIds: Set<String> = [],
+		productLevels: [String: String] = [:],
 		priceCache: PriceCache = PriceCache()
 	) {
 		self.store = store
@@ -83,15 +87,45 @@ final class PremiumService: PremiumServicing {
 		self.sourceTimeout = sourceTimeout
 		self.waitingTimeout = min(waitingTimeout, sourceTimeout)
 		self.productIds = productIds
+		self.productLevels = productLevels
 		self.priceCache = priceCache
 		// PM-02 row 9: an app built without Adapty has nobody to wait for. Its question is closed
 		// before it is ever asked, so returning to the foreground costs it nothing.
 		isQuestionOpen = adapty != nil
+		Self.recordMapIssues(productLevels: productLevels, levels: levels, productIds: productIds)
+	}
+
+	/// PM-10 rows 7-9: the map is checked once, at construction — one line per mistake, naming what to
+	/// fix. A map level missing from `levels` is ignored without filtering: verdicts are computed only
+	/// for `levels`, so a purchase marked with it marks nothing.
+	private static func recordMapIssues(productLevels: [String: String], levels: Set<String>, productIds: Set<String>) {
+		guard !productLevels.isEmpty else { return }
+		for (product, level) in productLevels.sorted(by: { $0.key < $1.key }) {
+			if !levels.contains(level) {
+				ConfigurationIssues.shared.record("productLevels maps \(product) to level \"\(level)\", which is not in levels — the entry is ignored", tag: tag)
+			}
+			if !productIds.contains(product) {
+				ConfigurationIssues.shared.record("productLevels names \(product), which is not in productIds — a paywall Adapty did not load has no price for it", tag: tag)
+			}
+		}
+		for product in productIds.subtracting(productLevels.keys).sorted() {
+			ConfigurationIssues.shared.record("product \(product) has no level in productLevels — buying it marks no level; only Adapty or the receipt can open one", tag: tag)
+		}
 	}
 
 	/// Convenience read for call sites that just need the current answer.
 	var isPremium: Bool {
 		store.cached?.isPremium ?? false
+	}
+
+	/// PM-10: the level's own verdict with a map, `isPremium` without one.
+	func hasAccess(level: String) -> Bool {
+		guard levels.contains(level) else {
+			ConfigurationIssues.shared.record("hasAccess(level:) was asked about \"\(level)\", which is not in levels — answered false", tag: Self.tag)
+			return false
+		}
+		guard !productLevels.isEmpty else { return isPremium }
+		return store.levels[level]?.isPremium ?? false
 	}
 
 	/// PM-01: seeds the cache on the first launch after the update, then publishes what we know.
@@ -120,7 +154,10 @@ final class PremiumService: PremiumServicing {
 
 		adapty?.premiumObserver = { [weak self] profile, isVerified in
 			guard let self else { return }
-			self.apply(adapty: PremiumAccess(profile: profile, levels: self.levels, isVerified: isVerified))
+			self.apply(
+				adapty: PremiumAccess(profile: profile, levels: self.levels, isVerified: isVerified),
+				levelAccess: self.levelAccess(profile, isVerified: isVerified)
+			)
 		}
 		// PM-02: the impatient deadline. The splash is waiting behind this one, and a source that
 		// does not make it leaves the question open rather than unanswered for good.
@@ -180,7 +217,11 @@ final class PremiumService: PremiumServicing {
 	///
 	/// `localPurchase` marks that a purchase or a StoreKit restore has just gone through on this
 	/// device. That is a receipt saying yes, newer than any check we could run — see `apply`.
-	private func resolveBoth(localPurchase: Bool = false, timeout: TimeInterval? = nil) async {
+	///
+	/// `purchasedLevel` (PM-10) is the level the map ties the bought product to — the mark goes on that
+	/// level alone. `nil` for a restore and a queued transaction: they carry no product, so the receipt
+	/// and Adapty of this same barrier decide the levels.
+	private func resolveBoth(localPurchase: Bool = false, purchasedLevel: String? = nil, timeout: TimeInterval? = nil) async {
 		let deadline = timeout ?? sourceTimeout
 		// The number is taken before the sources are asked, not after they answer: an answer is at
 		// best as fresh as the question that fetched it, and anything arriving later while this one
@@ -188,16 +229,24 @@ final class PremiumService: PremiumServicing {
 		let generation = nextGeneration()
 		async let adaptyAnswer = askAdapty(timeout: deadline)
 		async let appleAnswer = askApple(timeout: deadline)
-		let (access, receipt) = await (adaptyAnswer, appleAnswer)
-		apply(adapty: access, apple: receipt, localPurchase: localPurchase, generation: generation)
+		async let levelAnswers = askAppleByLevel(timeout: deadline)
+		let (profile, receipt, levelReceipts) = await (adaptyAnswer, appleAnswer, levelAnswers)
+		apply(
+			adapty: profile.map { PremiumAccess(profile: $0, levels: levels) },
+			apple: receipt,
+			levelAccess: levelAccess(profile, isVerified: true),
+			levelReceipts: levelReceipts,
+			localPurchase: localPurchase,
+			purchasedLevel: purchasedLevel,
+			generation: generation
+		)
 	}
 
 	/// `nil` means Adapty did not answer — an error, no source at all, or slower than the deadline.
-	/// Never "no premium": that is `PremiumAccess(isActive: false)`.
-	private func askAdapty(timeout: TimeInterval) async -> PremiumAccess? {
+	/// Never "no premium": that is a profile with no active level.
+	private func askAdapty(timeout: TimeInterval) async -> AdaptyProfile? {
 		guard let adapty else { return nil }
-		let profile = await withTimeout(timeout) { await adapty.profile() }
-		return profile.flatMap { $0 }.map { PremiumAccess(profile: $0, levels: levels) }
+		return await withTimeout(timeout) { await adapty.profile() }.flatMap { $0 }
 	}
 
 	/// `nil` means the receipt could not be checked, in time or at all — never "no subscription".
@@ -206,12 +255,47 @@ final class PremiumService: PremiumServicing {
 		return await withTimeout(timeout) { await apple.checkReceipt() }.flatMap { $0 }
 	}
 
+	/// PM-10: the receipt once per level, about that level's products only. A level with no product in
+	/// the map (handed out from the dashboard) is not asked about — only Adapty opens it. Empty without
+	/// a map, or when the deadline won: every level then reads "not checked".
+	private func askAppleByLevel(timeout: TimeInterval) async -> [String: ReceiptAnswer] {
+		guard let apple, !productLevels.isEmpty else { return [:] }
+		let productLevels = self.productLevels
+		let levels = self.levels
+		// ponytail: one deadline over the levels asked in turn — `currentEntitlements` is a local read,
+		// so two or three levels never come near it. A TaskGroup if a level's question ever goes remote.
+		return await withTimeout(timeout) {
+			var answers: [String: ReceiptAnswer] = [:]
+			for level in levels {
+				let ids = Set(productLevels.filter { $0.value == level }.keys)
+				guard !ids.isEmpty else { continue }
+				answers[level] = await apple.checkReceipt(productIds: ids)
+			}
+			return answers
+		} ?? [:]
+	}
+
+	/// PM-10: what Adapty says about each level on its own, with that level's own date. `nil` when
+	/// Adapty did not answer, and always without a map — nothing per level is computed then.
+	private func levelAccess(_ profile: AdaptyProfile?, isVerified: Bool) -> [String: PremiumAccess]? {
+		guard !productLevels.isEmpty, let profile else { return nil }
+		// PM-10 row 13: the map and the dashboard disagree about a product. Nothing is closed for it —
+		// Adapty opens its level, the receipt the map's — so the only trace is this line.
+		for level in profile.accessLevels.values where level.isActive && levels.contains(level.id) {
+			if let mapped = productLevels[level.vendorProductId], mapped != level.id {
+				debugLog(tag: Self.tag, "Adapty opens \"\(level.id)\" by \(level.vendorProductId), which productLevels ties to \"\(mapped)\" — both may open; check the map against the dashboard")
+			}
+		}
+		return Dictionary(uniqueKeysWithValues: levels.map { ($0, PremiumAccess(profile: profile, levels: [$0], isVerified: isVerified)) })
+	}
+
 	/// PM-06: Adapty answered about the premium access level. The delegate push (`didLoadLatestProfile`)
 	/// comes in here — a one-way entrance that is deliberately not part of the `refresh()` barrier.
-	func apply(adapty: PremiumAccess?) {
+	/// `levelAccess` is the same profile read per level (PM-10); `nil` without a map.
+	func apply(adapty: PremiumAccess?, levelAccess: [String: PremiumAccess]? = nil) {
 		// The push takes its number here, on arrival, because that is when its answer was made — a
 		// `refresh()` already in flight asked an older question and loses to it.
-		apply(adapty: adapty, apple: nil, generation: nextGeneration())
+		apply(adapty: adapty, apple: nil, levelAccess: levelAccess, generation: nextGeneration())
 	}
 
 	/// A ticket for one question. Taken under the lock so two callers never share one.
@@ -223,7 +307,15 @@ final class PremiumService: PremiumServicing {
 		return ticket
 	}
 
-	private func apply(adapty: PremiumAccess?, apple: ReceiptAnswer?, localPurchase: Bool = false, generation: Int) {
+	private func apply(
+		adapty: PremiumAccess?,
+		apple: ReceiptAnswer?,
+		levelAccess: [String: PremiumAccess]? = nil,
+		levelReceipts: [String: ReceiptAnswer] = [:],
+		localPurchase: Bool = false,
+		purchasedLevel: String? = nil,
+		generation: Int
+	) {
 		lock.lock()
 		// PM-06 row 2: an answer to an older question than the one already applied is dropped whole —
 		// no write, no notification. A local purchase is the exception and is never dropped: money
@@ -246,21 +338,58 @@ final class PremiumService: PremiumServicing {
 		}
 		// The local-purchase mark and its cache-demotion trick now live entirely in
 		// PremiumResolver.resolve — this just hands over what it has and takes back the verdict.
-		let state = PremiumResolver.resolve(adapty: adapty, apple: apple, cached: store.cached, localPurchase: localPurchase, now: Date())
+		let now = Date()
+		let state = PremiumResolver.resolve(adapty: adapty, apple: apple, cached: store.cached, localPurchase: localPurchase, now: now)
 		// PM-02 rows 2 and 6: one store write per refresh. An answer that resolves to the state already
 		// cached writes nothing, so a receipt landing before Adapty cannot flash an intermediate
 		// value at the UI and be overwritten a moment later.
 		if state != store.cached {
 			store.cached = state
 		}
+		// PM-10: every level through the same arbiter, each with only its own inputs, written before
+		// the flag mirror below can post — an observer woken by it already reads the new levels.
+		var levelChanged = false
+		if !productLevels.isEmpty {
+			let before = store.levels
+			var after: [String: PremiumState] = [:]
+			for level in levels {
+				after[level] = PremiumResolver.resolve(
+					adapty: levelAccess?[level],
+					apple: levelReceipts[level],
+					cached: before[level],
+					localPurchase: level == purchasedLevel,
+					now: now
+				)
+			}
+			if after != before {
+				store.levels = after
+			}
+			levelChanged = levels.contains { (before[$0]?.isPremium ?? false) != (after[$0]?.isPremium ?? false) }
+		}
 		// Both stores move under the same lock: the cached state and the flag mirror must never
 		// disagree, which is exactly what happens if the mirror is written after unlock.
 		// The mirror is assigned every time — its own setter notifies on change only.
+		let wasPremium = store.premium
 		store.premium = state.isPremium
+		// PM-10 rows 18-19: a level that changed under an unchanged `isPremium` posts the one
+		// notification the mirror did not; when both changed, the mirror's is the only one.
+		if levelChanged, wasPremium == state.isPremium {
+			DispatchQueue.main.async {
+				NotificationCenter.default.post(name: .premiumDidChange, object: nil)
+			}
+		}
 		debugLog(
 			tag: Self.tag,
 			"apply: isPremium \(state.isPremium), source \(state.source.rawValue), verified \(state.isVerified), expires \(state.expiresAt.map(String.init(describing:)) ?? "never") (gen \(generation))"
 		)
+		if !productLevels.isEmpty {
+			// PM-10 row 26: every level, open or closed, with the source that decided it.
+			let stored = store.levels
+			let summary = levels.sorted().map { level in
+				stored[level].map { "\(level) \($0.isPremium ? "open" : "closed") (\($0.source.rawValue))" } ?? "\(level) closed (none)"
+			}
+			debugLog(tag: Self.tag, "apply: levels \(summary.joined(separator: ", ")), purchased level \(purchasedLevel ?? "none")")
+		}
 		lock.unlock()
 	}
 
@@ -383,7 +512,10 @@ final class PremiumService: PremiumServicing {
 				adapty.setProfileValue(value: placement, key: "purchasePlace")
 			}
 			debugLog(tag: Self.tag, "purchase '\(productId)' on '\(placement)' → \(outcome), didPay \(didPay)")
-			await self?.resolveBoth(localPurchase: didPay, timeout: deadline)
+			// PM-10 rows 3-4: the mark goes on the level the map ties this product to — the same for
+			// Adapty's purchase and the StoreKit fallback, since both set `didPay`.
+			let purchasedLevel = didPay ? self?.productLevels[productId] : nil
+			await self?.resolveBoth(localPurchase: didPay, purchasedLevel: purchasedLevel, timeout: deadline)
 			self?.endPurchase()
 			DispatchQueue.main.async { completion(outcome) }
 		}

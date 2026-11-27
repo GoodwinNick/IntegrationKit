@@ -56,6 +56,9 @@ struct TestModeFlags {
 	/// pair — because "weekly and yearly at once" is a state a test has to be able to ask for. A set,
 	/// so a repeated id is one element. Read by the fake source on a grant only.
 	var activeSubscriptions: Set<String> = []
+	/// TM-10: the access levels a grant carries, on top of `adaptyLevelId`. Repeatable like
+	/// `activeSubscriptions`, for an app with more than one level. Empty leaves the grant as before.
+	var grantLevels: Set<String> = []
 	var premiumAfter: TimeInterval?
 	var noPremiumAfter: TimeInterval?
 	/// The app started with its old premium flag already on. Kept apart from ``adapty`` on purpose:

@@ -118,9 +118,9 @@ enum TestModeCheck {
 		return text.split(separator: "\n").map(String.init)
 	}
 
-	/// TM-08: the three keys a test run shares with a live launch, spelled the way the apps read them
+	/// TM-08: the package's keys (four since 0.11.0, TM-10 row 10) a test run shares with a live launch, spelled the way the apps read them
 	/// rather than through the package's own constants — a renamed key must fail here, not pass along.
-	static let kitKeys = ["premiumStateKey", "premiumKey", "priceCacheKey"]
+	static let kitKeys = ["premiumStateKey", "premiumKey", "priceCacheKey", "premiumLevelsKey"]
 
 	/// `.standard` outlives this process, so a row that dies halfway would hand its mark to the next run.
 	static func clearKit(_ defaults: UserDefaults) {
@@ -730,12 +730,12 @@ enum TestModeCheck {
 		row()
 
 		// 39. TM-08 rows 4 and 11: no mark, no effect — a real user's verdict, flag and prices stay byte
-		//     for byte. With the mark only the three keys go; a key of the app's own sits it out.
+		//     for byte. With the mark only the package's keys go; a key of the app's own sits it out.
 		let realUser = UserDefaults(suiteName: UUID().uuidString)!
 		UserDefaultsPremiumStore(defaults: realUser).cached = PremiumState(isPremium: true, source: .adapty, isVerified: true, expiresAt: Date() + hour)
 		let realVerdict = realUser.data(forKey: "premiumStateKey")
 		realUser.set(true, forKey: "premiumKey")
-		realUser.set(Data("prices".utf8), forKey: "priceCacheKey")
+		realUser.set(Data("prices".utf8), forKey: "priceCacheKey"); realUser.set(Data("{}".utf8), forKey: "premiumLevelsKey")
 		realUser.set(true, forKey: "onboardingWasShowed")
 		TestModeGraph.wipeTestRunLeftovers(defaults: realUser)
 		assert(realVerdict != nil && realUser.data(forKey: "premiumStateKey") == realVerdict, "TM-08 row 4: without the mark the verdict must stay as it was")
@@ -743,7 +743,7 @@ enum TestModeCheck {
 		assert(realUser.data(forKey: "priceCacheKey") == Data("prices".utf8), "TM-08 row 4: and the prices")
 		realUser.set(true, forKey: TestModeGraph.runMarkKey)
 		TestModeGraph.wipeTestRunLeftovers(defaults: realUser)
-		assert(kitKeys.allSatisfy { realUser.object(forKey: $0) == nil }, "TM-08 row 11: with the mark the three keys must go")
+		assert(kitKeys.allSatisfy { realUser.object(forKey: $0) == nil }, "TM-08 row 11: with the mark the package's keys must go")
 		assert(realUser.bool(forKey: "onboardingWasShowed"), "TM-08 row 11: and nothing of the app's own")
 		row()
 

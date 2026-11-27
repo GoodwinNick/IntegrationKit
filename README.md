@@ -99,6 +99,18 @@ active) or `nil` (unknown — never read it as "none"). Read-only: it never chan
 (repeatable, together with `-premium`) sets which subscriptions the fake Adapty
 reports active; see [`docs/Integration.md`](docs/Integration.md#active-subscriptions).
 
+Since 0.11.0, an app that sells more than one access level passes a map
+`productLevels: ["cg.lifetime": "lifetime", "rp.month": "remote_play"]` to
+`configure` and reads `kit.premium.hasAccess(level: "remote_play")`. Each level
+gets its own verdict through the same arbiter: buying a product opens only the
+level the map ties it to — through Adapty and through the StoreKit fallback
+alike — and a change to any level posts the same `.premiumDidChange`.
+`isPremium` stays "any access at all". Without a map nothing changes:
+`hasAccess` answers `isPremium`, and the new member has a default, so an app's
+own fake keeps compiling. In a test run, `-grantLevel <id>` (repeatable) sets
+which levels the fake Adapty grants; see
+[`docs/Integration.md`](docs/Integration.md#access-per-level).
+
 **Store the returned `IntegrationKit` for the lifetime of the app** — on the
 `AppDelegate`, not in a local that ends with the function: pulling one member
 out of it (`let premium = IntegrationKit.configure(...).premium`) drops the
@@ -122,7 +134,7 @@ touched by it, because a run meant to catch crashes must not lose them. StoreKit
 is replaced by the test mode's fake store, so a test run never meets a payment
 sheet. They are separate keys on purpose: one silences, the other reports.
 Since 0.9.1 a test run also marks the device, and the next live launch wipes the
-premium state, legacy flag and prices that run wrote before anything reads them,
+premium state, legacy flag, level verdicts and prices that run wrote before anything reads them,
 so a test purchase never shows up as premium in a normal launch.
 
 An empty key switches its SDK off for the whole run rather than half-starting

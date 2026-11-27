@@ -15,6 +15,10 @@ protocol AppleSubscribing: AnyObject {
 	/// never "no subscription".
 	func checkReceipt() async -> ReceiptAnswer?
 
+	/// PM-10: the same question narrowed to `productIds` — one access level's products, so a product
+	/// of another level cannot open this one. Same `nil` meaning as above.
+	func checkReceipt(productIds: Set<String>) async -> ReceiptAnswer?
+
 	/// Restore on the StoreKit side. Premium is turned on by `PremiumService` afterwards, not
 	/// by this call.
 	func restore() async -> RestoreOutcome
@@ -26,4 +30,13 @@ protocol AppleSubscribing: AnyObject {
 	/// Prices for the ids a paywall lists. A missing key means the store said nothing about that
 	/// id (not approved yet, wrong bundle, offline) — never an empty price to show.
 	func products(ids: Set<String>) async -> [String: PremiumProduct]
+}
+
+extension AppleSubscribing {
+	// ponytail: an Apple side that cannot narrow answers for all its products — every level of a
+	// map then hears the same receipt. Only `StoreKitService` narrows; the test-mode store and the
+	// check fakes take this (an accepted TM-10 limit). Implement it where a level must not leak.
+	func checkReceipt(productIds: Set<String>) async -> ReceiptAnswer? {
+		await checkReceipt()
+	}
 }

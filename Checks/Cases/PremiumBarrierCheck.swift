@@ -1213,7 +1213,7 @@ enum PremiumBarrierCheck {
 		if let files = FileManager.default.enumerator(atPath: pm9Sources) {
 			for case let file as String in files where file.hasSuffix(".swift") {
 				let text = (try? String(contentsOfFile: "\(pm9Sources)/\(file)", encoding: .utf8)) ?? ""
-				if text.contains("extension PremiumServicing") { pm9Defaults.append(file) }
+				if let ext = text.range(of: "extension PremiumServicing"), text[ext.upperBound...].contains("func activeSubscriptionIds") { pm9Defaults.append(file) }
 			}
 		}
 		assert(pm9Defaults.isEmpty, "case 53 (PM-09 row 13): no default implementation may exist — extension PremiumServicing found in \(pm9Defaults)")

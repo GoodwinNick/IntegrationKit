@@ -28,19 +28,24 @@ public struct AdaptyProfile: Decodable {
 		public let isActive: Bool
 		public let isLifetime: Bool
 		public let expiresAt: Date?
+		/// PM-10 row 13: the product that unlocked the level. Required, as upstream
+		/// (`AdaptyProfile.AccessLevel.swift:19`, key `vendor_product_id`).
+		public let vendorProductId: String
 
 		enum CodingKeys: String, CodingKey {
 			case id
 			case isActive = "is_active"
 			case isLifetime = "is_lifetime"
 			case expiresAt = "expires_at"
+			case vendorProductId = "vendor_product_id"
 		}
 
-		public init(id: String, isActive: Bool, isLifetime: Bool, expiresAt: Date?) {
+		public init(id: String, isActive: Bool, isLifetime: Bool, expiresAt: Date?, vendorProductId: String = "product-stub") {
 			self.id = id
 			self.isActive = isActive
 			self.isLifetime = isLifetime
 			self.expiresAt = expiresAt
+			self.vendorProductId = vendorProductId
 		}
 	}
 

@@ -66,6 +66,11 @@ final class StoreKitService: AppleSubscribing {
 	/// what StoreKit currently entitles. That mark lives one layer up, in
 	/// `PremiumService.purchaseDelivered()`, the same place `purchase` and `restore` carry it.
 	func checkReceipt() async -> ReceiptAnswer? {
+		await checkReceipt(productIds: productIds)
+	}
+
+	/// PM-10: the same fold over one access level's products only.
+	func checkReceipt(productIds: Set<String>) async -> ReceiptAnswer? {
 		var isActive = false
 		var latestExpiry: Date?
 		for await result in Transaction.currentEntitlements {

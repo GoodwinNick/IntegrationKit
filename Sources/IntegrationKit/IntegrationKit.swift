@@ -71,6 +71,13 @@ public struct IntegrationKit {
 	/// for pricing. Native StoreKit 2 validates locally; there is no shared secret to configure and
 	/// no server round trip to turn off.
 	///
+	/// `productLevels` maps a store product id to the Adapty access level it unlocks —
+	/// `["cg.lifetime": "lifetime", "rp.month": "remote_play"]`. Pass it when the app sells more than
+	/// one level and reads `premium.hasAccess(level:)`: buying a product then opens that level alone,
+	/// through Adapty and through the StoreKit fallback alike. Every level in it belongs in `levels`,
+	/// and every product in `productIds`; a mismatch is a line in ``configurationIssues``. Empty, the
+	/// default, is the single-verdict behaviour of 0.10.0.
+	///
 	/// `sourceTimeout` is how long a premium refresh waits for one source — Adapty or the Apple
 	/// receipt — before deciding without it. Five seconds is a number from practice, not one Adapty
 	/// documents; an app on a worse network passes its own instead of patching the package.
@@ -133,6 +140,7 @@ public struct IntegrationKit {
 		isDebug: Bool,
 		isTestsRunning: Bool,
 		levels: Set<String> = ["premium"],
+		productLevels: [String: String] = [:],
 		firstOpenEvent: String? = nil,
 		appsFlyerDevKey: String = "",
 		appsFlyerAppId: String = "",
@@ -149,7 +157,7 @@ public struct IntegrationKit {
 		// so they come out as plain `[IntegrationKit]`.
 		debugLog("configure: deviceId \(deviceId), isDebug \(isDebug), isTestsRunning \(isTestsRunning)")
 		debugLog("configure: keys — amplitude \(amplitudeKey.isEmpty ? "empty" : "set"), adapty \(adaptyKey.isEmpty ? "empty" : "set"), appsFlyer \(appsFlyerDevKey.isEmpty ? "empty" : "set")")
-		debugLog("configure: levels \(levels.sorted()), placements \(placements), productIds \(productIds.sorted()), sessionsCounter \(sessionsCounter)")
+		debugLog("configure: levels \(levels.sorted()), productLevels \(productLevels.sorted { $0.key < $1.key }.map { "\($0.key)→\($0.value)" }), placements \(placements), productIds \(productIds.sorted()), sessionsCounter \(sessionsCounter)")
 		debugLog("configure: sourceTimeout \(sourceTimeout)s, attTimeout \(attTimeout)s, remoteConfigTimeout \(remoteConfigTimeout)s, remoteConfigDefaults \(remoteConfigDefaults.keys.sorted()), adaptyAttributionEnabled \(adaptyAttributionEnabled), appsFlyerResetsInstallInSandbox \(appsFlyerResetsInstallInSandbox), firstOpenEvent \(firstOpenEvent ?? "none")")
 		if let built {
 			debugLog(level: .error, "configure called a second time — the kit from the first call is returned and these arguments are ignored")
@@ -300,7 +308,8 @@ public struct IntegrationKit {
 			apple: apple,
 			levels: levels,
 			sourceTimeout: sourceTimeout,
-			productIds: productIds
+			productIds: productIds,
+			productLevels: productLevels
 		)
 		// Started here on purpose: the seed-cache-then-refresh step is not a decision the app
 		// gets to make differently, and a composition root that leaves it to be forgotten is

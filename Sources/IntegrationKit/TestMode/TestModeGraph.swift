@@ -73,7 +73,9 @@ struct TestModeGraph {
 		let store = UserDefaultsPremiumStore()
 		if flags.noPremiumCache {
 			store.cached = nil
-			debugLog(tag: tag, "stored verdict wiped before start")
+			// TM-10 row 9: the level verdicts go with it.
+			store.levels = [:]
+			debugLog(tag: tag, "stored verdict and level verdicts wiped before start")
 		}
 		// The legacy flag is the app's own starting state, not an answer from any source, which is why
 		// it is a separate flag and a separate field (TM-02 row 8). It is not implied by the wipe and
@@ -103,13 +105,13 @@ struct TestModeGraph {
 	/// `configurationIssues` as well as the log, which is silent in release (row 13).
 	static func wipeTestRunLeftovers(defaults: UserDefaults = .standard) {
 		guard defaults.bool(forKey: runMarkKey) else { return }
-		let keys = [UserDefaultsPremiumStore.defaultStateKey, UserDefaultsPremiumStore.defaultFlagKey, PriceCache.defaultKey]
+		let keys = [UserDefaultsPremiumStore.defaultStateKey, UserDefaultsPremiumStore.defaultFlagKey, UserDefaultsPremiumStore.defaultLevelsKey, PriceCache.defaultKey]
 		for key in keys {
 			defaults.removeObject(forKey: key)
 		}
 		defaults.removeObject(forKey: runMarkKey)
 		ConfigurationIssues.shared.record(
-			"a test run had used this device — its premium verdict, legacy flag and prices (\(keys.joined(separator: ", "))) were wiped before this live launch read them",
+			"a test run had used this device — its premium verdict, legacy flag, level verdicts and prices (\(keys.joined(separator: ", "))) were wiped before this live launch read them",
 			tag: tag
 		)
 	}

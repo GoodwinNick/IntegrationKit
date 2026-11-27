@@ -11,6 +11,15 @@ public protocol PremiumServicing: AnyObject {
 	/// Current answer. Read synchronously, no network.
 	var isPremium: Bool { get }
 
+	/// PM-10: whether one access level is open right now — `"lifetime"`, `"remote_play"`, as named in
+	/// the Adapty dashboard and passed in `levels`. Synchronous, no network, like `isPremium`.
+	///
+	/// - With a `productLevels` map: the level's own verdict. Buying a product opens only the level
+	///   the map ties it to; a change to any level posts `.premiumDidChange`.
+	/// - Without one: `isPremium`, because the kit cannot tell which purchase opened which level.
+	/// - A level not in `levels`: `false`, and one line in `configurationIssues`.
+	func hasAccess(level: String) -> Bool
+
 	/// Brings the layer up: seeds the cache from the legacy flag, subscribes to the Adapty push,
 	/// first refresh.
 	func start()
@@ -84,4 +93,11 @@ public protocol PremiumServicing: AnyObject {
 	/// healthy state; anything here is an integration mistake worth an assert in a test or a
 	/// non-fatal in Crashlytics.
 	var configurationIssues: [String] { get }
+}
+
+public extension PremiumServicing {
+	/// PM-10 row 27: an app's own fake written before 0.11.0 keeps compiling, and answers `isPremium`.
+	func hasAccess(level: String) -> Bool {
+		isPremium
+	}
 }
