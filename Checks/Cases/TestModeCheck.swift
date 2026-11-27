@@ -740,7 +740,7 @@ enum TestModeCheck {
 		TestModeGraph.wipeTestRunLeftovers(defaults: realUser)
 		assert(realVerdict != nil && realUser.data(forKey: "premiumStateKey") == realVerdict, "TM-08 row 4: without the mark the verdict must stay as it was")
 		assert(realUser.bool(forKey: "premiumKey"), "TM-08 row 4: and the flag")
-		assert(realUser.data(forKey: "priceCacheKey") == Data("prices".utf8), "TM-08 row 4: and the prices")
+		assert(realUser.data(forKey: "priceCacheKey") == Data("prices".utf8), "TM-08 row 4: and the prices"); assert(realUser.data(forKey: "premiumLevelsKey") == Data("{}".utf8), "TM-08 row 4: and the level verdicts")
 		realUser.set(true, forKey: TestModeGraph.runMarkKey)
 		TestModeGraph.wipeTestRunLeftovers(defaults: realUser)
 		assert(kitKeys.allSatisfy { realUser.object(forKey: $0) == nil }, "TM-08 row 11: with the mark the package's keys must go")
