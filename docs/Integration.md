@@ -15,6 +15,7 @@ compiler proves the public API is enough on its own.
 ## Contents
 
 - [Setup from scratch](#setup-from-scratch)
+- [User id](#user-id)
 - [`IntegrationKit.configure`](#integrationkitconfigure)
 - [Remote config](#remote-config)
 - [Analytics](#analytics)
@@ -57,10 +58,12 @@ which pins Adapty 2.10.x.
 
 ### Upgrading from 0.10.x
 
-Nothing breaks, and nothing changes for an app that does not pass the new map.
+Nothing breaks, and nothing changes for an app that does not pass the new map
+or call the new user id functions.
 
 | What | Then (0.10.x) | Now (0.11.0) |
 |---|---|---|
+| `IntegrationKit.persistentUserId(existing:)`, `IntegrationKit.sharedUserId()` | — | New static functions: a user id kept in a synchronized Keychain, so it survives deleting and reinstalling the app and is the same across our apps. Opt-in. An app that adopts it **changes the id of an existing user** on the first launch of that version, unless this app is the one that seeds the shared id — and a changed id is a new Adapty profile. Read [User id](#user-id) before shipping it. |
 | `PremiumServicing.hasAccess(level:)` | — | New member **with** a default implementation that answers `isPremium`, so an app's own fake keeps compiling. See [Access per level](#access-per-level). |
 | `IntegrationKit.configure(productLevels:)` | — | New argument, defaults to `[:]` — the single verdict of 0.10.x, with nothing new computed, stored or posted. |
 | `-grantLevel <levelId>` | — | New repeatable test-mode flag: the access levels a fake Adapty grant carries. Nothing changes for a run that does not pass it. |
@@ -148,6 +151,10 @@ keeps them as `INFOPLIST_KEY_*` build settings rather than literal
 - A URL scheme for legacy deep links — standard `CFBundleURLTypes` in
   `Info.plist` (Xcode → target → Info → URL Types), independent of the
   package.
+- **Keychain Sharing** — only if the app calls `persistentUserId(existing:)`
+  or `sharedUserId()`. The group `$(AppIdentifierPrefix)com.joekopp.shared`
+  must be the **first** entry of the list; see [User id](#user-id) for why the
+  order is the whole mechanism.
 
 ### 5. Run Script — dSYM upload for Crashlytics
 
@@ -244,8 +251,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 		// Must be first: a report filed before this line is dropped and counted.
 		FirebaseIntegration.configure(isDebug: isDebug)
 
+		// The user id, before `configure`. The answer can differ from the id passed in — store it
+		// back, and from here on it is the only id the app uses.
+		let deviceId = IntegrationKit.persistentUserId(existing: AppDefaults.deviceId)
+		AppDefaults.deviceId = deviceId
+
 		let kit = IntegrationKit.configure(
-			deviceId: AppDefaults.deviceId,
+			deviceId: deviceId,
 			amplitudeKey: ObfuscatedSecret.reveal(encrypted: SDKKeys.amplitudeEncrypted, secret: SDKKeys.secret),
 			adaptyKey: ObfuscatedSecret.reveal(encrypted: SDKKeys.adaptyEncrypted, secret: SDKKeys.secret),
 			placements: ["main", "onboarding"],
@@ -399,6 +411,78 @@ in both directions: a test run that also stopped crash collection would lose
 exactly the crashes the run existed to find, and a debug build that also
 silenced analytics would leave every development session unmeasurable.
 
+## User id
+
+Since 0.11.0. An id kept in `UserDefaults` dies with the app: delete and
+reinstall, and the user comes back as someone new — to Adapty, to the
+analytics, and to a backend that banned the old id. These two functions keep
+the id in the Keychain instead, synchronized through iCloud Keychain and shared
+by our apps in one access group:
+
+```swift
+public static func persistentUserId(existing: String?) -> String
+public static func sharedUserId() -> String
+```
+
+Both are static and synchronous, so they run before `configure` and need no
+kit. Call `persistentUserId` once per launch, pass the app's own stored id as
+`existing` (or `nil`), **store the answer back over the old one**, and pass it
+to `configure(deviceId:)` — the AppDelegate in step 7 does exactly that.
+
+**What `persistentUserId(existing:)` answers**, first match wins:
+
+1. This app's own Keychain slot holds an id → that id, whatever `existing` says.
+2. Otherwise the shared id becomes this app's id and is saved to its slot.
+   When there is no shared id yet, `existing` seeds it, or a fresh UUID does
+   when there is no `existing` either. An empty string counts as `nil`.
+3. A Keychain read fails with anything but "not found" — in practice a launch
+   before the first unlock after a restart (`errSecInteractionNotAllowed`,
+   −25308) → **nothing is written**, and the answer is `existing`, or a fresh
+   unsaved UUID when there is none. The next launch resolves again.
+
+Writing a stand-in on a failed read could bury the real id for good — it may
+still be on its way from another device — so the package never does. It also
+never updates or deletes these items: a change to a synchronized item goes to
+every device of the user.
+
+**An existing user's id changes.** The first of our apps to run this code with
+no shared id in the Keychain seeds it with its own id and keeps it. Every other
+app adopts that shared id on its first launch of the new version, so its old
+users get a new id. Since the id is Adapty's `customerUserId`, **a changed id is
+a new Adapty profile** — the old profile's attributes stay behind, and a backend
+that keys on the old id (a ban) no longer matches. The package never
+sends `existing` anywhere; an app whose backend needs the pair sends "old → new"
+itself. Access the user paid for is still read from the App Store receipt by the
+premium arbiter.
+
+**`sharedUserId()`** reads the shared slot, or creates a UUID and saves it — it
+is never seeded from an app's own id. After `persistentUserId` it already equals
+this app's id; it exists for code that needs the shared id on its own. On a
+failed read it answers a fresh unsaved UUID, which is **not** the shared id and
+must not be stored as one.
+
+**App side — Keychain Sharing, shared group first.** The items are written with
+no access group named, and such an item lands in the app's *default* group:
+the first entry of its `keychain-access-groups` entitlement. A read with no
+group searches every group the app belongs to. So the whole sharing mechanism
+is one line of entitlement order:
+
+1. Xcode → target → Signing & Capabilities → + Capability → Keychain Sharing.
+2. Add `$(AppIdentifierPrefix)com.joekopp.shared` and drag it to the **top** of
+   the list.
+
+An app without it, or with another group first, still gets an id that survives
+a reinstall — it just shares it with nobody, and nothing fails. The DEBUG log
+names the group each item landed in (`… saved to the Keychain, access group
+<TeamID>.com.joekopp.shared`), so the first launch tells you which case you
+are in. Groups are per team: a debug build signed with another team shares only
+with that team's builds.
+
+**Before release, check it by hand on a simulator** — Apple does not document
+that Keychain items outlive the app that wrote them, and the package's checks
+never touch a real Keychain: run the app, note the id in the log, delete the
+app, install it again, and the same id must come back.
+
 ## `IntegrationKit.configure`
 
 ```swift
@@ -424,7 +508,7 @@ public static func configure(
 
 | Parameter | What it is | Where it comes from | If you don't pass it |
 |---|---|---|---|
-| `deviceId` | One stable id, shared by Amplitude, Adapty and AppsFlyer so all three describe the same user | An app-generated/stored UUID, stable across launches | Required — no default. Amplitude, Adapty and AppsFlyer end up describing different users. |
+| `deviceId` | One stable id, shared by Amplitude, Adapty and AppsFlyer so all three describe the same user | `IntegrationKit.persistentUserId(existing:)` — see [User id](#user-id) — or an app-generated/stored UUID, stable across launches | Required — no default. Amplitude, Adapty and AppsFlyer end up describing different users. |
 | `amplitudeKey` | Amplitude project API key | Amplitude dashboard, per app | Required — no default. Amplitude never activates. |
 | `adaptyKey` | Adapty public SDK key (`public_live_...`) | Adapty dashboard, per app | Required — no default, but `""` is legal and makes the whole Adapty layer **inert** for the run (see below). Premium can then only come from the App Store receipt. |
 | `placements` | Adapty placement ids to preload paywalls/products for | Adapty dashboard, per app | An empty array means no placement is warmed up — `hasPaywall`/`products` for any placement return empty until Adapty is asked directly through a refresh. |
@@ -1580,11 +1664,12 @@ for s in Checks/*.sh; do "./$s"; done
 | `remote-config-service-check.sh` | RC-01…RC-03: Remote Config defaults, the fetch, the "is Firebase up" guard, and a failed fetch filed as a non-fatal. |
 | `price-cache-check.sh` | PM-07 rows 14–16: the price cache over `UserDefaults`, pure types with no SDK stub. |
 | `store-price-check.sh` | PM-07 row 17: `StorePrice`, pure `Decimal` and `Foundation`. |
-| `buildhost-check.sh` | That the package still compiles the way an app compiles it — against the real SDKs rather than the stubs in `Checks/Stubs/`, with the real Package.swift resolution behind it. The other seventeen never link a real SDK, so a dependency whose API moved under a `from:` range breaks here first. Runs `xcb app-sim --path BuildHost`, regenerating the xcodegen project first, because the generated `.xcodeproj` is gitignored and `xcb` exits 0 when it finds none. |
+| `user-identity-check.sh` | Since 0.11.0, UI-01 and UI-02 — the user id, against a fake Keychain (the real one is never compiled in): the app's own slot winning over `existing`, the shared id adopted and written to the app slot, the shared id seeded from `existing` and written before the app slot, a fresh UUID in both slots when there is nothing, `""` counting as `nil`, the reinstall and the second app getting the same id, a failed read writing nothing on either slot with an `error` line carrying the code, a failed write still answering and the next launch recovering, and `sharedUserId()` written once, read back, and never seeded. |
+| `buildhost-check.sh` | That the package still compiles the way an app compiles it — against the real SDKs rather than the stubs in `Checks/Stubs/`, with the real Package.swift resolution behind it. The other eighteen never link a real SDK, so a dependency whose API moved under a `from:` range breaks here first. Runs `xcb app-sim --path BuildHost`, regenerating the xcodegen project first, because the generated `.xcodeproj` is gitignored and `xcb` exits 0 when it finds none. |
 
 A test written from an approved schema goes in before the code that satisfies
 it, so an assert can be red for a while by design — a specification waiting to
-be met rather than a regression. All seventeen scripts are green as of this
+be met rather than a regression. All nineteen scripts are green as of this
 commit; a red assert names its row, and that row's "Стан у коді" column says
 where it stands.
 
@@ -1643,6 +1728,10 @@ so it can be traced to one layer without reading the message, and an
   line), every value cut with both lengths (an `info` line), every read of the
   instance id including `nil`, and every transaction sent. Search the console
   for `[IntegrationKit][FirebaseAnalytics]`.
+- **UserIdentity** (since 0.11.0) — which rule answered the user id and the
+  value, the app's own id when it was replaced or ignored, the shared id created
+  and whether it was seeded, the access group every new Keychain item landed in,
+  and an `error` line with the code for every failed read or write.
 
 **What never gets printed:** API keys, dev keys, tokens, receipts — every
 credential is logged as `"set"`/`"empty"` only, never its value. A remote
@@ -1832,7 +1921,12 @@ dashboard entry.
 - [ ] `productIds` lists every subscription id the paywall can sell
 - [ ] `handleContinue`/`handleOpen` forwarded through `kit`, not any SDK
       directly
-- [ ] `deviceId` is one stable id, the same value across app launches
+- [ ] `deviceId` is one stable id, the same value across app launches — with
+      `persistentUserId(existing:)`, the answer is stored back over the app's
+      own id before `configure`
+- [ ] With `persistentUserId`: Keychain Sharing added with
+      `$(AppIdentifierPrefix)com.joekopp.shared` **first**, the DEBUG log names
+      that group, and the id survived delete-and-reinstall on a simulator
 - [ ] Amplitude key, Adapty key, AppsFlyer dev key — real keys for this app,
       not copied from another one
 - [ ] AppsFlyer App ID confirmed against App Store Connect, not guessed
@@ -1857,5 +1951,5 @@ dashboard entry.
       of the process, not discarded — the `private var kit` in the AppDelegate
       example is a requirement, and the paragraph under it says what goes when
       it is dropped
-- [ ] `for s in Checks/*.sh; do "./$s"; done` — all seventeen green (the last
+- [ ] `for s in Checks/*.sh; do "./$s"; done` — all nineteen green (the last
       is the BuildHost build, so there is nothing to run separately)

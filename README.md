@@ -111,6 +111,21 @@ own fake keeps compiling. In a test run, `-grantLevel <id>` (repeatable) sets
 which levels the fake Adapty grants; see
 [`docs/Integration.md`](docs/Integration.md#access-per-level).
 
+Since 0.11.0, the user id can live in a synchronized Keychain, so it survives a
+reinstall and is the same across our apps. Before `configure`:
+
+```swift
+let deviceId = IntegrationKit.persistentUserId(existing: storedId)   // storedId: the app's own, or nil
+storedId = deviceId                                                  // the answer can differ — keep only it
+```
+
+It needs the Keychain Sharing capability with
+`$(AppIdentifierPrefix)com.joekopp.shared` as the **first** group. **An
+existing user's id changes** on the first launch of that version, unless this
+app is the one that seeds the shared id, and a changed id is a new Adapty
+profile. `IntegrationKit.sharedUserId()` reads the shared id on its own. See
+[`docs/Integration.md`](docs/Integration.md#user-id) before shipping it.
+
 **Store the returned `IntegrationKit` for the lifetime of the app** — on the
 `AppDelegate`, not in a local that ends with the function: pulling one member
 out of it (`let premium = IntegrationKit.configure(...).premium`) drops the
@@ -222,13 +237,16 @@ meaning of every `configure` parameter and the paywall-to-purchase flow.
 - SDK keys (Amplitude, Adapty, AppsFlyer dev key) — obtained from each
   dashboard; obfuscated keys are decoded with `ObfuscatedSecret.reveal` before
   being passed in.
-- `deviceId` — one stable id shared across Amplitude, Adapty and AppsFlyer.
+- `deviceId` — one stable id shared across Amplitude, Adapty and AppsFlyer;
+  `IntegrationKit.persistentUserId(existing:)` gives one that survives a
+  reinstall, and the app stores its answer.
 - Event names and analytics properties — the package takes plain `String`, it
   does not define an event enum.
 - Remote Config keys and their defaults — passed as `remoteConfigDefaults`, read
   back by the same key. The package defines none.
 - `GoogleService-Info.plist`, the Crashlytics dSYM Run Script, ATT usage string,
-  the `-ObjC` linker flag and Associated Domains — everything Xcode-project-side.
+  the `-ObjC` linker flag, Associated Domains and Keychain Sharing — everything
+  Xcode-project-side.
 - The product ids to look for among current entitlements — passed to
   `configure`, never hardcoded in the package. StoreKit itself is the
   package's job: on native StoreKit 2, receipt validation, restore, the
@@ -262,6 +280,7 @@ Sources/IntegrationKit/
 ├── AppsFlyer/    ATT, deep links, attribution (internal)
 ├── StoreKit/     receipt, restore, purchase, prices via native StoreKit 2 (internal)
 ├── Premium/      Adapty/Apple arbitration behind PremiumServicing
+├── Identity/     the user id over a synchronized Keychain
 └── Support/      composition-root helpers (obfuscated secrets, timeouts, debug log)
 ```
 
@@ -278,12 +297,12 @@ xcodegen that links the package and proves the public API is enough:
 cd BuildHost && xcb app-sim
 ```
 
-`Checks/` has seventeen self-checks. Sixteen compile the real source files with
+`Checks/` has nineteen self-checks. Eighteen compile the real source files with
 `swiftc` against stub SDK modules — no Xcode, no XCTest, no network, no real
-SDK linked; `integration-kit-check.sh` is the one of those sixteen that also
+SDK linked; `integration-kit-check.sh` is the one of those eighteen that also
 *runs* the composition root, the way an app does (twice: a normal launch and a
-test run). The seventeenth, `buildhost-check.sh`, runs the `BuildHost` build
-above, because the other sixteen never link a real SDK:
+test run). The nineteenth, `buildhost-check.sh`, runs the `BuildHost` build
+above, because the other eighteen never link a real SDK:
 
 ```bash
 for s in Checks/*.sh; do "./$s"; done
