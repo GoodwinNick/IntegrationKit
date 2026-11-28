@@ -39,8 +39,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 		// not reach here: a test run must not be the run that loses the crashes it went to catch.
 		FirebaseIntegration.configure(isDebug: isDebug)
 
+		// The id comes from the Keychain, before `configure`. The app's own stored id goes
+		// in, the answer is stored back — it can differ, and from then on it is the only id the app uses.
+		let deviceId = IntegrationKit.persistentUserId(existing: UserDefaults.standard.string(forKey: "userId"))
+		UserDefaults.standard.set(deviceId, forKey: "userId")
+
 		let kit = IntegrationKit.configure(
-			deviceId: "00000000-0000-0000-0000-000000000000",
+			deviceId: deviceId,
 			amplitudeKey: ObfuscatedSecret.reveal(encrypted: "", secret: "fake-secret"),
 			adaptyKey: "public_live_fake_adapty_key",
 			placements: ["main", "onboarding"],
@@ -224,6 +229,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 		if let adaptyId = await kit.adaptyProfileId() {
 			print("send \(adaptyId) to our own backend")
 		}
+		// The id our apps in one Keychain access group share — already this app's id after
+		// `persistentUserId`, readable on its own as well.
+		print("shared id \(IntegrationKit.sharedUserId())")
 		// `Analytics.appInstanceID()` in a real app: an optional, and nil while Firebase Analytics is
 		// still coming up. Unwrapping that to "" would write a join key matching nothing, forever.
 		if let appInstanceId {
